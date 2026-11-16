@@ -13,13 +13,13 @@
 vec := FAULT_VEC AND FFH;
 IF IDTR_LIMIT < SHL(vec, 4) + 15 THEN SHUTDOWN; FI;
 gate := IDTR_BASE + SHL(vec, 4);
-lo := Memory64[gate];
-hi := Memory64[gate + 8];
+lo := Linear64[gate];
+hi := Linear64[gate + 8];
 IF (SHR(lo, 47) AND 1) = 0 THEN SHUTDOWN; FI;
 target := (lo AND FFFFH) OR (SHR(lo, 32) AND FFFF0000H) OR SHL(hi, 32);
 oldRSP := RSP;
 oldFLAGS := RFLAGS;
-RSP := RSP AND FFFFFFFFFFFFFFF0H;
+RSP := RSP AND FFFFFFFFFFFFFFF0H;   (* 64-bit mode; legacy-mode delivery: TODO *)
 Push(SS);
 Push(oldRSP);
 Push(oldFLAGS);

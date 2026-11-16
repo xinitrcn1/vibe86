@@ -10,13 +10,13 @@ IF DF = 0
 FI;
 IF RepPrefix
     THEN
-        WHILE RCX != 0
+        WHILE rCX != 0
         DO
-        b := Memory[RDI];
+        b := Memory[ES:rDI];
         temp := accumulator - b;
         ModifyStatusFlags;
-        RDI := RDI + delta;
-            RCX := RCX - 1;
+        rDI := rDI + delta;
+            rCX := rCX - 1;
             Commit;
             IF RepNE
                 THEN IF ZF = 1 THEN BREAK; FI;
@@ -24,8 +24,8 @@ IF RepPrefix
             FI;
         OD;
     ELSE
-        b := Memory[RDI];
+        b := Memory[ES:rDI];
         temp := accumulator - b;
         ModifyStatusFlags;
-        RDI := RDI + delta;
+        rDI := rDI + delta;
 FI;

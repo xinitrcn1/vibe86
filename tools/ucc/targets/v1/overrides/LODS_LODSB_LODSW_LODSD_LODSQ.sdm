@@ -13,16 +13,16 @@ IF DF = 0
 FI;
 IF RepPrefix
     THEN
-        WHILE RCX != 0
+        WHILE rCX != 0
         DO
-        accumulator := Memory[RSI];
-        RSI := RSI + delta;
-            RCX := RCX - 1;
+        accumulator := Memory[DS:rSI];
+        rSI := rSI + delta;
+            rCX := rCX - 1;
             Commit;
         OD;
     ELSE
-        accumulator := Memory[RSI];
-        RSI := RSI + delta;
+        accumulator := Memory[DS:rSI];
+        rSI := rSI + delta;
 FI;
 @flags
 None.

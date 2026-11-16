@@ -136,12 +136,20 @@ class Image:
                 c = dict(c)
                 if c["op"] in ("JMP", "JCC", "JU") and isinstance(c["imm"], str):
                     c["imm"] = self.addr[c["imm"]]
-                sel = lambda s: U.SEL[s]        # noqa: E731
                 w = U.encode(c["op"], c["sz"], sel(c["dst"]), sel(c["a"]), sel(c["b"]),
-                             c["fmask"], c["cc"], c["x"], c["imm"])
+                             sel(c["c"]), c["fmask"], c["cc"], c.get("seg", 8), c["x"],
+                             c.get("vec", 0), c.get("et", 0), c.get("vl", 0), c.get("kmode", 0),
+                             c.get("kreg", 0), c.get("rnd", 4), c["imm"])
                 self.listing.append(f"{len(self.words):5d}  {fmt(c)}")
                 self.words.append(w)
         return self.words
+
+
+def sel(s):
+    """Selector number: 'V:name' is on the vector side (VSEL)."""
+    if s.startswith("V:"):
+        return U.VSEL[s[2:]]
+    return U.SEL[s]
 
 
 def fmt(c):
@@ -157,6 +165,8 @@ def fmt(c):
         s += f"  imm={c['imm']:#x}" if isinstance(c["imm"], int) else f"  ->{c['imm']}"
     if c["fmask"]:
         s += "  flags=" + "".join(f[0] for f in U.STATUS if c["fmask"] & U.FMASK[f])
+    if c["op"] in ("LD", "ST", "VLD", "VST"):
+        s += "  seg=" + {v: k for k, v in U.SEGS.items()}[c.get("seg", 8)]
     if c["op"] in ("JCC", "SETCC"):
         s += f"  cc={c['cc']}"
     if c["op"] == "JU":
@@ -167,6 +177,25 @@ def fmt(c):
 
 
 # ---------------------------------------------------------------- decoder tables
+
+def routine_signature(r):
+    """A routine's code with its labels made relative, for sharing identical ones."""
+    names = {}
+    out = []
+    for c in r.code:
+        if "label" in c:
+            names[c["label"]] = f"L{len(names)}"
+    for c in r.code:
+        if "label" in c:
+            out.append(names[c["label"]])
+        else:
+            d = dict(c)
+            d.pop("note", None)
+            if isinstance(d.get("imm"), str):
+                d["imm"] = names.get(d["imm"], d["imm"])
+            out.append(tuple(sorted(d.items())))
+    return tuple(out)
+
 
 def imm_kind(fs):
     """Immediate length class of one (map, opc, digit) from its rows."""
@@ -187,18 +216,21 @@ def imm_kind(fs):
     raise ValueError(f"immediate sizes {d} for {fs[0].name}")
 
 
+ASZ_CODE = {16: "00", 32: "01", 64: "10"}
+
+
 def sv_tables(forms, image, cfg_of):
     out = []
     groups = {}
     for f in forms:
-        groups.setdefault((f.map, f.opc), []).append(f)
-    out.append("// decoder attributes per (map, opcode[, ModRM.reg])")
-    out.append("function automatic dattr_t dec_attr(input logic [1:0] map, "
+        groups.setdefault((f.mode == 3, f.map, f.opc), []).append(f)
+    out.append("// decoder attributes per (64-bit mode, map, opcode[, ModRM.reg])")
+    out.append("function automatic dattr_t dec_attr(input logic m64, input logic [1:0] map, "
                "input logic [7:0] opc, input logic [2:0] digit);")
     out.append("  dattr_t d;")
     out.append("  d = '0;")
-    out.append("  casez ({map, opc, digit})")
-    for (m, o), fs in sorted(groups.items()):
+    out.append("  casez ({m64, map, opc, digit})")
+    for (m64, m, o), fs in sorted(groups.items()):
         digits = {f.digit for f in fs}
         per = {}
         if None in digits or len(digits) == 1:
@@ -209,40 +241,53 @@ def sv_tables(forms, image, cfg_of):
         for dg, gfs in sorted(per.items(), key=lambda x: -1 if x[0] is None else x[0]):
             modrm = any(f.modrm for f in gfs)
             ik = imm_kind(gfs)
-            cls = {"d32": 0, "d64": 1, "f64": 2}[gfs[0].vclass]
+            cls = {"d32": 0, "d64": 1, "f64": 2}[gfs[0].vclass] if m64 else 0
             sens = any(f.prefix_key() for f in fs)
             immz = any(cfg_of(f).get("immz") for f in gfs)
             plus_r = any(f.plus_r for f in gfs)
             dbits = "???" if dg is None else format(dg, "03b")
-            out.append(f"    13'b{m:02b}_{o:08b}_{dbits}: d = '{{valid: 1'b1, modrm: 1'b{int(modrm)}, "
-                       f"imm: 3'd{ik}, immz: 1'b{int(immz)}, cls: 2'd{cls}, pfx_sens: 1'b{int(sens)}, "
-                       f"plus_r: 1'b{int(plus_r)}}};")
+            out.append(f"    14'b{int(m64)}_{m:02b}_{o:08b}_{dbits}: d = '{{valid: 1'b1, "
+                       f"modrm: 1'b{int(modrm)}, imm: 3'd{ik}, immz: 1'b{int(immz)}, cls: 2'd{cls}, "
+                       f"pfx_sens: 1'b{int(sens)}, plus_r: 1'b{int(plus_r)}}};")
     out.append("    default: d = '0;")
     out.append("  endcase")
     out.append("  return d;")
     out.append("endfunction")
     out.append("")
-    out.append("// microcode entry point of an instruction form")
-    out.append("function automatic logic [V1_UADDR_W-1:0] uentry(input logic [1:0] map, "
-               "input logic [7:0] opc, input logic [2:0] digit, input logic [1:0] pfx, "
-               "input logic [1:0] osz, input logic mem, input logic sub90);")
-    out.append("  casez ({sub90, map, opc, digit, pfx, osz, mem})")
-    order = sorted(forms, key=lambda f: (f.map, f.opc, f.digit is None, f.digit or 0,
-                                         f.prefix_key() is None, f.okey == "any"))
+    out.append("// has a ModRM byte (looked up before ModRM.reg is known)")
+    out.append("function automatic logic dec_modrm(input logic m64, input logic [1:0] map, "
+               "input logic [7:0] opc);")
+    out.append("  casez ({m64, map, opc})")
+    for (m64, m, o), fs in sorted(groups.items()):
+        if any(f.modrm for f in fs):
+            out.append(f"    11'b{int(m64)}_{m:02b}_{o:08b}: return 1'b1;")
+    out.append("    default: return 1'b0;")
+    out.append("  endcase")
+    out.append("endfunction")
+    out.append("")
+    out.append("// microcode entry point: {sub90, mode, map, opc, digit, pfx, osz, mem, asz, ssz}")
+    out.append("function automatic logic [UADDR_W-1:0] uentry(input logic sub90, "
+               "input logic [1:0] mode, input logic [1:0] map, input logic [7:0] opc, "
+               "input logic [2:0] digit, input logic [1:0] pfx, input logic [1:0] osz, "
+               "input logic mem, input logic [1:0] asz, input logic ssz);")
+    out.append("  casez ({sub90, mode, map, opc, digit, pfx, osz, mem, asz, ssz})")
+    order = sorted(forms, key=lambda f: (f.mode, f.map, f.opc, f.digit is None, f.digit or 0,
+                                         f.prefix_key() is None, f.okey == "any",
+                                         len(f.spec) == 0))
     for f in order:
         sub = "1" if f.hints.get("sub90") else ("0" if (f.map, f.opc) == (0, 0x90) else "?")
         dg = "???" if f.digit is None else format(f.digit, "03b")
         pk = {None: "00", "F3": "01", "F2": "10", "66": "11"}[f.prefix_key()]
         oz = {"any": "??", "16": "01", "32": "10", "64": "11"}[f.okey]
         mm = "?" if f.mem is None else str(int(f.mem))
-        out.append(f"    18'b{sub}_{f.map:02b}_{f.opc:08b}_{dg}_{pk}_{oz}_{mm}: "
-                   f"return {U.UADDR_W}'d{image.addr[f.name]};  // {f.name}")
+        az = ASZ_CODE[f.spec["AddressSize"]] if "AddressSize" in f.spec else "??"
+        sz = {16: "0", 32: "1"}[f.spec["StackAddrSize"]] if "StackAddrSize" in f.spec else "?"
+        out.append(f"    24'b{sub}_{f.mode:02b}_{f.map:02b}_{f.opc:08b}_{dg}_{pk}_{oz}_{mm}_{az}_{sz}: "
+                   f"return {U.UADDR_W}'d{image.addr[f.routine]};  // {f.name}")
     out.append(f"    default: return {U.UADDR_W}'d{image.addr['UD']};")
     out.append("  endcase")
     out.append("endfunction")
     return out
-
-
 
 
 def main():
@@ -310,17 +355,33 @@ def main():
             errors.append(f"{page.name}: {e}")
     compiled = []
     per_page = {}
-    for f in spec:
+    content = {}        # micro-op listing -> routine name (identical routines are shared)
+    work = list(spec)
+    while work:
+        f = work.pop(0)
         page, stem = pageobj[f.page]
         lw = L.Lowerer(f, page, asts[f.page], oracle.flags_spec(page.flags), lib)
         try:
             r = lw.lower()
+        except L.NeedSpec as n:
+            # polyvariant specialization: one variant per value of the parameter
+            for v in n.values:
+                g = F.Form(**{**f.__dict__, "spec": {**f.spec, n.param: v},
+                              "hints": dict(f.hints)})
+                work.append(g)
+            continue
         except (L.LowerError, sdm.ParseError, KeyError, ValueError) as e:
             msg = f"{f.name}: {e}"
             errors.append(msg)
             per_page.setdefault(f.page, []).append(("fail", f, str(e)))
             continue
-        image.add(f.name, r)
+        sig = routine_signature(r)
+        if sig in content:
+            f.routine = content[sig]
+        else:
+            image.add(f.name, r)
+            content[sig] = f.name
+            f.routine = f.name
         compiled.append(f)
         per_page.setdefault(f.page, []).append(("ok", f, len([c for c in r.code if "op" in c])))
 

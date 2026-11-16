@@ -56,10 +56,15 @@ class Form:
     vclass: str = "d32"      # d32, d64 (default 64, 66 -> 16), f64 (always 64)
     hints: dict = field(default_factory=dict)
     cfg: dict = field(default_factory=dict)  # the .isa line's options
+    mode: int = 3            # decode mode: 0 real, 1 16-bit protected/v86, 2 32-bit, 3 64-bit
+    spec: dict = field(default_factory=dict) # on-demand specializations (AddressSize, ...)
+    routine: str = ""        # the (possibly shared) routine this form runs
 
     @property
     def name(self):
-        s = f"{self.text} [{self.opcol}]"
+        s = f"{self.text} [{self.opcol}] m{self.mode} o{self.osz}"
+        for k, v in sorted(self.spec.items()):
+            s += f" {k}={v}"
         if self.mem is not None:
             s += ":m" if self.mem else ":r"
         if self.rep:
@@ -67,7 +72,8 @@ class Form:
         return s
 
     def key(self):
-        return (self.map, self.opc, self.digit, self.prefix_key(), self.okey, self.mem)
+        return (self.mode, self.map, self.opc, self.digit, self.prefix_key(), self.okey, self.mem,
+                tuple(sorted(self.spec.items())), self.hints.get("sub90"))
 
     def prefix_key(self):
         if self.mprefix in ("F3", "F2", "66"):
@@ -228,7 +234,12 @@ def make_forms(page, cfg):
         if len(row) < 4:
             continue
         opcol, ins, open_, m64 = row[0], row[1], row[2], row[3]
-        if not (m64.startswith("Valid") or m64 in ("V", "V/V", "V/N.E.")):
+        mleg = row[4] if len(row) > 4 else ""
+        ok64 = m64.startswith("Valid") or m64 in ("V", "V/V", "V/N.E.")
+        okleg = mleg.startswith("Valid") or m64 in ("V/V",) or mleg == "V"
+        if cfg.get("mode64only"):
+            okleg = False
+        if not (ok64 or okleg):
             continue
         # only=/skip= match 'opcode | instruction'
         row_text = f"{opcol} | {ins}"
@@ -263,7 +274,29 @@ def make_forms(page, cfg):
                 o.size = 64
         if (f.page in ("Jcc", "SETcc", "CMOVcc")) or cfg.get("cc"):
             f.cc = f.opc & 0xF
-        forms.append(f)
+        f.hints["sized"] = operand_size(f) is not None
+        if ok64:
+            forms.append(f)
+        if okleg and not f.rexw:
+            # 16- and 32-bit code (real mode, 16-bit and 32-bit protected/compatibility
+            # mode): operand size from the row, or every legal size for rows that
+            # don't say (RET, PUSHF, Jcc rel32 is 32-bit, rel16 16-bit)
+            lsz = operand_size(f)
+            if lsz is None:
+                for o in f.operands:
+                    if o.kind in ("imm", "rel") and o.text.endswith(("16", "32")):
+                        lsz = int(o.text[-2:])
+            sizes = [lsz] if lsz in (8, 16, 32) else ([16, 32] if lsz is None else [])
+            for mode in (0, 1, 2):
+                for sz in sizes:
+                    g = Form(**{**f.__dict__, "operands": [Operand(**o.__dict__) for o in f.operands],
+                                "imm": list(f.imm), "hints": dict(f.hints), "spec": {}})
+                    g.mode = mode
+                    g.osz = sz
+                    for o in g.operands:
+                        if o.kind == "rel":
+                            o.size = sz
+                    forms.append(g)
     return forms, errors
 
 
@@ -273,6 +306,7 @@ def assign_classes(forms, cfg_of):
     for f in forms:
         groups.setdefault((f.map, f.opc, f.digit), []).append(f)
     for k, fs in groups.items():
+        fs64 = [f for f in fs if f.mode == 3] or fs
         cls = None
         for f in fs:
             c = cfg_of(f).get("class")
@@ -280,14 +314,13 @@ def assign_classes(forms, cfg_of):
                 cls = c
         if cls is None:
             cls = "d32"
-            if any(f.osz == 64 and not f.rexw and f.okey != "any" for f in fs) or \
-               any(f.osz == 64 and not f.rexw for f in fs if f.osz != 8):
+            if any(f.osz == 64 and not f.rexw for f in fs64 if f.osz != 8):
                 cls = "d64"
         for f in fs:
             f.vclass = cls
             if f.osz == 8:
                 f.okey = "any"
-            elif cls == "f64":
+            elif cls == "f64" and f.mode == 3:
                 f.okey = "any"
             else:
                 f.okey = str(f.osz)
@@ -303,7 +336,7 @@ def specialize(forms, cfg_of):
             variants = []
             for mem in (False, True):
                 g = Form(**{**f.__dict__, "operands": list(f.operands), "imm": list(f.imm),
-                            "hints": dict(f.hints)})
+                            "hints": dict(f.hints), "spec": dict(f.spec)})
                 g.mem = mem
                 variants.append(g)
         elif any(o.kind == "mem" for o in f.operands) or cfg_of(f).get("memonly"):
@@ -316,7 +349,7 @@ def specialize(forms, cfg_of):
             for v in variants:
                 for r in [None] + reps:
                     g = Form(**{**v.__dict__, "operands": list(v.operands), "imm": list(v.imm),
-                                "hints": dict(v.hints)})
+                                "hints": dict(v.hints), "spec": dict(v.spec)})
                     g.rep = r
                     vv.append(g)
             variants = vv

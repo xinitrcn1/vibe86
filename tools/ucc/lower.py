@@ -21,11 +21,38 @@ import oracle
 import sdm
 from sdm import (Assign, Bin, Call, Case, Do, For, If, Index, Name, Num, Prose,
                  Raise, Seg, Slice, Un, While)
-from uop import CC, FLAG, FMASK, GPR64, NTEMPS, SPECIAL, STATUS, UCC_NEG
+from uop import FLAG, FMASK, GPR64, NTEMPS, SEGS, SPECIAL, STATUS, UCC_NEG
 
 
 class LowerError(Exception):
     pass
+
+
+class NeedSpec(Exception):
+    """The routine depends on a decode-time parameter the form doesn't fix
+    yet: compile one variant per value (polyvariant specialization)."""
+
+    def __init__(self, param, values):
+        super().__init__(f"needs {param}")
+        self.param = param
+        self.values = values
+
+
+ASZ_VALUES = {0: [16, 32], 1: [16, 32], 2: [32, 16], 3: [64, 32]}
+
+# bit fields of control registers and MSRs the manual names (Intel SDM Vol. 3A
+# 2.5 "Control Registers", 2.2.1 "Extended Feature Enable Register")
+FIELDS = {
+    "CR0": {"PE": 0, "MP": 1, "EM": 2, "TS": 3, "ET": 4, "NE": 5, "WP": 16, "AM": 18,
+            "NW": 29, "CD": 30, "PG": 31},
+    "CR4": {"VME": 0, "PVI": 1, "TSD": 2, "DE": 3, "PSE": 4, "PAE": 5, "MCE": 6, "PGE": 7,
+            "PCE": 8, "OSFXSR": 9, "OSXMMEXCPT": 10, "UMIP": 11, "LA57": 12, "VMXE": 13,
+            "SMXE": 14, "FSGSBASE": 16, "PCIDE": 17, "OSXSAVE": 18, "SMEP": 20, "SMAP": 21,
+            "PKE": 22, "CET": 23, "PKS": 24},
+    "EFER": {"SCE": 0, "LME": 8, "LMA": 10, "NXE": 11, "SVME": 12, "LMSLE": 13, "FFXSR": 14,
+             "TCE": 15},
+}
+FIELDS["IA32_EFER"] = FIELDS["EFER"]
 
 
 VECTORS = {"DE": 0, "DB": 1, "BP": 3, "OF": 4, "BR": 5, "UD": 6, "NM": 7, "DF": 8,
@@ -75,6 +102,7 @@ class V:
     hi: object = None
     lo: object = None
     addr: object = None   # for 'mem' lvalues
+    seg: str = "EASEG"    # for 'mem': the segment (SEGS), EASEG = the operand's
 
     def __repr__(self):
         if self.kind == "k":
@@ -103,9 +131,12 @@ class Routine:
     def place(self, lab):
         self.code.append({"label": lab})
 
-    def emit(self, op, sz=64, dst="ZERO", a="ZERO", b="ZERO", fmask=0, cc=0, x=0, imm=0, note=""):
-        self.code.append(dict(op=op, sz=opsize(sz) if sz else 64, dst=dst, a=a, b=b,
-                              fmask=fmask, cc=cc, x=x, imm=imm, note=note))
+    def emit(self, op, sz=64, dst="ZERO", a="ZERO", b="ZERO", fmask=0, cc=0, x=0, imm=0, note="",
+             **kw):
+        u = dict(op=op, sz=opsize(sz) if sz else 64, dst=dst, a=a, b=b, c=kw.pop("c", "ZERO"),
+                 fmask=fmask, cc=cc, x=x, imm=imm, note=note)
+        u.update(kw)       # seg, vec, et, vl, kmode, kreg, rnd
+        self.code.append(u)
 
 
 class Lowerer:
@@ -320,7 +351,7 @@ class Lowerer:
             return v
         t = self.tmp()
         a, imm = self.addr_of(v.addr)
-        self.E("LD", v.w, dst=t, a=a, imm=imm)
+        self.E("LD", v.w, dst=t, a=a, imm=imm, seg=SEGS[v.seg])
         return V("sel", v.w, sel=t)
 
     def addr_of(self, addr):
@@ -336,19 +367,41 @@ class Lowerer:
 
     # ------------------------------------------------------------ names
 
+    def need(self, param, values):
+        if param in self.f.spec:
+            return self.f.spec[param]
+        raise NeedSpec(param, values)
+
     def static(self, name):
         n = name
+        m = self.f.mode
         if n in ("OperandSize", "Operandsize", "OpSize"):
             return self.f.osz
-        if n in ("AddressSize", "StackAddrSize", "StackAddressSize", "AddrSize"):
-            return 64
+        if n in ("AddressSize", "AddrSize"):
+            return self.need("AddressSize", ASZ_VALUES[m])
+        if n in ("StackAddrSize", "StackAddressSize"):
+            return 64 if m == 3 else self.need("StackAddrSize", [16, 32])
+        if n == "PE" or n == "CR0.PE":
+            return int(m != 0)
+        if n in ("VM", "EFLAGS.VM", "RFLAGS.VM") and m != 1:
+            return 0
+        if n in ("IA32_EFER.LMA", "EFER.LMA") and m in (0, 3):
+            return int(m == 3)
+        if n in ("CS.L",) and m != 3:
+            return 0
+        if n in ("CS.L",):
+            return 1
+        if n == "Mode64":
+            return int(m == 3)
+        if n == "CodeSize":
+            return {0: 16, 1: 16, 2: 32, 3: 64}[m]
         if n == "NumberOfOperands":
             return len([o for o in self.f.operands])
         if n in ("TRUE",):
             return 1
         if n in ("FALSE",):
             return 0
-        if n == "CPL":
+        if n == "CPL" and m == 0:
             return 0
         # static facts about the form, for the overrides
         if n == "MemoryOperand":
@@ -401,10 +454,23 @@ class Lowerer:
         if n in REGS:
             s, w = REGS[n]
             return V("sel", w, sel=s)
+        if n in ("rSI", "rDI", "rCX"):
+            # the string registers at the address size: SI/ESI/RSI
+            return V("sel", self.static("AddressSize"), sel={"rSI": "RSI", "rDI": "RDI",
+                                                              "rCX": "RCX"}[n])
+        if n == "sSP":
+            # the stack pointer at the stack-address size: SP/ESP/RSP
+            return V("sel", self.static("StackAddrSize"), sel="RSP")
         if n.lower() == "accumulator":
             return V("sel", self.f.osz, sel="RAX")
         if n in ("RFLAGS", "EFLAGS", "FLAGS"):
             return V("sel", {"RFLAGS": 64, "EFLAGS": 32, "FLAGS": 16}[n], sel="FLAGS")
+        if "." in n:
+            reg, _, fld = n.partition(".")
+            if reg in FIELDS and fld in FIELDS[reg]:
+                return V("field", 1, sel=reg if reg != "IA32_EFER" else "EFER", k=FIELDS[reg][fld])
+            if reg in ("EFLAGS", "RFLAGS") and fld in FLAG:
+                return V("flag", 1, sel=fld)
         if n in SPECIAL:
             return V("special", 64, sel=n)
         if n.replace(".", "_") in SPECIAL:
@@ -432,6 +498,15 @@ class Lowerer:
                 t = self.tmp()
                 self.E("RDS", 64, dst=t, imm=SPECIAL[v.sel])
                 return V("sel", 64, sel=t)
+            if v.kind == "field":
+                t = self.tmp()
+                self.E("RDS", 64, dst=t, imm=SPECIAL[v.sel])
+                self.E("SLICE", 64, dst=t, a=t, imm=v.k | (1 << 8))
+                return V("sel", 1, sel=t)
+            if v.kind == "flag":
+                t = self.tmp()
+                self.E("GETF", 8, dst=t, imm=FLAG[v.sel])
+                return V("sel", 1, sel=t)
             return v
         if isinstance(e, Prose):
             t = oracle.norm(e.text)
@@ -466,19 +541,28 @@ class Lowerer:
         w = want or self.f.osz
         if isinstance(e, Seg):
             addr = self.eval(e.addr, 64)
-            if e.seg in ("FS", "GS"):
-                raise LowerError("explicit FS/GS memory reference")
-            return V("mem", w, addr=self.as_addr(addr))
-        if isinstance(e.e, Name) and e.e.n.startswith("Memory"):
-            sfx = e.e.n[len("Memory"):]
+            return V("mem", w, addr=self.as_addr(addr), seg=self.seg_of(e.seg))
+        if isinstance(e.e, Name) and e.e.n.startswith(("Memory", "Linear", "Physical")):
+            # Memory[SEG:addr] / Memory[addr] (the operand segment), Linear[addr]
+            # (descriptor tables, the IDT), Physical[addr] (page tables); a size suffix
+            # gives the width (Memory64, Linear16, ...)
+            kind = next(k for k in ("Memory", "Linear", "Physical") if e.e.n.startswith(k))
+            sfx = e.e.n[len(kind):]
             if sfx:
                 w = int(sfx)
             idx = e.i
+            seg = {"Memory": "EASEG", "Linear": "LINEAR", "Physical": "PHYS"}[kind]
             if isinstance(idx, Seg):
+                seg = self.seg_of(idx.seg)
                 idx = idx.addr
             addr = self.eval(idx, 64)
-            return V("mem", w, addr=self.as_addr(addr))
+            return V("mem", w, addr=self.as_addr(addr), seg=seg)
         raise LowerError(f"index {e}")
+
+    @staticmethod
+    def seg_of(name):
+        """'DS:' in the manual's string operands means DS unless overridden."""
+        return "EASEG" if name == "DS" else name
 
     def as_addr(self, a):
         if a.kind == "mem":
@@ -795,6 +879,8 @@ class Lowerer:
             st = self.static(e.n)
             if st is not None:
                 return bool(st)
+            if self.rname(e.n) is not None:
+                return None
             r = oracle.condition(e.n, self.f)
             if r is not None:
                 return r
@@ -803,6 +889,9 @@ class Lowerer:
             if e.op in ("AND", "OR"):
                 a = self.static_cond(e.a)
                 b = self.static_cond(e.b)
+                if isinstance(a, str) or isinstance(b, str):
+                    return None if not (a is False or b is False or a is True or b is True) \
+                        else self._mix(e.op, a, b)
                 if e.op == "AND":
                     if a is False or b is False:
                         return False
@@ -829,6 +918,17 @@ class Lowerer:
             if isinstance(a, bool):
                 return not a
         return None
+
+    @staticmethod
+    def _mix(op, a, b):
+        """AND/OR of a static truth value and an oracle pseudocode string."""
+        if op == "AND":
+            if a is False or b is False:
+                return False
+            return a if b is True else b
+        if a is True or b is True:
+            return True
+        return a if b is False else b
 
     def prose_expr(self, text):
         t = oracle.norm(text)
@@ -868,6 +968,10 @@ class Lowerer:
     def branch(self, e, target, when):
         """Jump to target if condition e evaluates to `when`."""
         s = self.static_cond(e)
+        if isinstance(s, str):
+            # the oracle rewrote prose into pseudocode
+            self.branch(sdm.parse_expr(sdm.lex(s)[:-2]), target, when)
+            return
         if s is True or s is False:
             if s == when:
                 self.E("JMP", imm=target)
@@ -1069,7 +1173,7 @@ class Lowerer:
             t = self.tmp()
             self.E("MOV", opsize(loc.w), dst=t, a="K", imm=imm)
             s = t
-        self.E("ST", loc.w, a=a, b=s, imm=disp)
+        self.E("ST", loc.w, a=a, b=s, imm=disp, seg=SEGS[loc.seg])
 
     def store_slice(self, lhs, v):
         hi, lo = self.static_val(lhs.hi), self.static_val(lhs.lo)

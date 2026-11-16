@@ -10,15 +10,15 @@ IF DF = 0
 FI;
 IF RepPrefix
     THEN
-        WHILE RCX != 0
+        WHILE rCX != 0
         DO
-        a := Memory[RSI];
-        b := Memory[RDI];
+        a := Memory[DS:rSI];
+        b := Memory[ES:rDI];
         temp := a - b;
         ModifyStatusFlags;
-        RSI := RSI + delta;
-        RDI := RDI + delta;
-            RCX := RCX - 1;
+        rSI := rSI + delta;
+        rDI := rDI + delta;
+            rCX := rCX - 1;
             Commit;
             IF RepNE
                 THEN IF ZF = 1 THEN BREAK; FI;
@@ -26,10 +26,10 @@ IF RepPrefix
             FI;
         OD;
     ELSE
-        a := Memory[RSI];
-        b := Memory[RDI];
+        a := Memory[DS:rSI];
+        b := Memory[ES:rDI];
         temp := a - b;
         ModifyStatusFlags;
-        RSI := RSI + delta;
-        RDI := RDI + delta;
+        rSI := rSI + delta;
+        rDI := rDI + delta;
 FI;

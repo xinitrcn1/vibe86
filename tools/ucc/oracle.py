@@ -31,20 +31,27 @@ def norm(text):
 
 # conditions: phrase (regex on the normalized prose) -> function(form) giving
 # True/False, or a string of pseudocode to parse in its place
+def lma(f):
+    """IA-32e mode: static in real mode (no) and 64-bit mode (yes)."""
+    return {0: False, 3: True}.get(f.mode, "IA32_EFER.LMA = 1")
+
+
 CONDITIONS = [
-    (r"64-bit mode", lambda f: True),
-    (r"ia-32e mode( active)?", lambda f: True),
-    (r"ia-64 mode", lambda f: True),
-    (r"non-64-bit mode", lambda f: False),
-    (r"(in )?(protected|real-address|virtual-8086|compatibility) mode", lambda f: False),
-    (r"pe = 0", lambda f: False),
-    (r"pe = 1", lambda f: True),
-    (r"cr0\.pe = 0", lambda f: False),
-    (r"vm = 1", lambda f: False),
-    (r"cpl = 0", lambda f: True),
-    (r"cpl > 0", lambda f: False),
-    (r"cpl > iopl", lambda f: False),
-    (r"cpl <= iopl", lambda f: True),
+    (r"64-bit mode", lambda f: f.mode == 3),
+    (r"ia-32e mode( active)?|ia-64 mode|ia32_efer\.lma = 1", lma),
+    (r"non-64-bit mode|not in 64-bit mode", lambda f: f.mode != 3),
+    (r"compatibility mode", lambda f: False if f.mode in (0, 3) else "IA32_EFER.LMA = 1"),
+    (r"\(?real-address mode\)?|in real-address mode|pe = 0|cr0\.pe = 0", lambda f: f.mode == 0),
+    (r"\(?virtual-8086 mode\)?|vm = 1", lambda f: "VM = 1" if f.mode == 1 else False),
+    (r"\(?protected mode\)?|in protected mode",
+     lambda f: {0: False, 3: False, 2: "IA32_EFER.LMA = 0",
+                1: "IA32_EFER.LMA = 0 AND VM = 0"}[f.mode]),
+    (r"pe = 1", lambda f: f.mode != 0),
+    (r"vm = 0", lambda f: "VM = 0" if f.mode == 1 else True),
+    (r"cpl = 0", lambda f: True if f.mode == 0 else "CPL = 0"),
+    (r"cpl > 0|cpl != 0", lambda f: False if f.mode == 0 else "CPL > 0"),
+    (r"cpl > iopl", lambda f: False if f.mode == 0 else "CPL > IOPL"),
+    (r"cpl <= iopl", lambda f: True if f.mode == 0 else "CPL <= IOPL"),
     (r"(near )?call", lambda f: f.mnem == "CALL"),
     (r"near relative call", lambda f: f.mnem == "CALL" and f.opc == 0xE8),
     (r"near absolute call", lambda f: f.mnem == "CALL" and f.opc == 0xFF),
@@ -78,11 +85,11 @@ CONDITIONS = [
     (r"instruction is rcl", lambda f: f.mnem == "RCL"),
     (r"cpuid\.80000001h:ecx(\.lahf_sahf_64)?\[0\] = 1;?", lambda f: True),
     (r"\(operandsize = 32, instruction = cwde\)", lambda f: f.osz == 32),
-    (r"64-bit mode and operandsize = 64", lambda f: f.osz == 64),
-    (r"\(?operandsize = 64\)? and \(?64-bit mode\)?", lambda f: f.osz == 64),
-    (r"operandsize = 32 and ia-32e mode( active)?", lambda f: f.osz == 32),
-    (r"\(operandsize = 32 and ia-32e mode( active)?\)", lambda f: f.osz == 32),
-    (r"64-bit mode and operandsize = 32", lambda f: f.osz == 32),
+    (r"64-bit mode and operandsize = 64", lambda f: f.mode == 3 and f.osz == 64),
+    (r"\(?operandsize = 64\)? and \(?64-bit mode\)?", lambda f: f.mode == 3 and f.osz == 64),
+    (r"\(?operandsize = 32 and ia-32e mode( active)?\)?",
+     lambda f: False if f.osz != 32 else lma(f)),
+    (r"64-bit mode and operandsize = 32", lambda f: f.mode == 3 and f.osz == 32),
     (r"dest is( a)? register", lambda f: not f.mem),
     (r"dest is( a)? memory( location)?", lambda f: bool(f.mem)),
     (r"src is( a)? register", lambda f: not f.mem),

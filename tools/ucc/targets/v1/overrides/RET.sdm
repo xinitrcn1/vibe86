@@ -4,5 +4,5 @@
 @operation
 RIP := Pop();
 IF instruction has immediate operand
-    THEN RSP := RSP + SRC;
+    THEN sSP := sSP + SRC;
 FI;
