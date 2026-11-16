@@ -1,0 +1,20 @@
+# LTR—Load Task Register -- override
+# The manual's Operation with its checks: #GP(0) at CPL > 0; the selector
+# must be in the GDT (TI = 0), within its limit, and name an available TSS
+# (type 9; type 1 for a 16-bit TSS outside IA-32e mode), present (#NP). In
+# IA-32e mode the descriptor is 16 bytes (Vol. 3A 9.2.3) and its base is 64
+# bits. The descriptor is marked busy.
+@operation
+IF CR0.PE = 0 OR RFLAGS.VM = 1 THEN #UD; FI;
+IF CPL > 0 THEN #GP(0); FI;
+s := SRC AND FFFFH;
+IF (s AND FFFCH) = 0 THEN #GP(0); FI;
+IF (s AND 4) != 0 OR (s OR 7) > GDTR_LIMIT THEN #GP(s AND FFFCH); FI;
+d := Linear64[GDTR_BASE + (s AND FFF8H)];
+ty := SHR(d, 40) AND 1FH;
+IF ty != 9 AND (ty != 1 OR IA32_EFER.LMA = 1) THEN #GP(s AND FFFCH); FI;
+IF (SHR(d, 47) AND 1) = 0 THEN #NP(s AND FFFCH); FI;
+base := DescBase(d);
+IF IA32_EFER.LMA = 1 THEN base := base OR SHL(Linear32[GDTR_BASE + (s AND FFF8H) + 8], 32); FI;
+Linear64[GDTR_BASE + (s AND FFF8H)] := d OR 20000000000H;
+SetSegment(7, s, base, DescLimit(d), DescAttr(d) OR 2);

@@ -1,8 +1,30 @@
 # JMP—Jump -- override
-# The near-jump branches of the manual's Operation in 64-bit mode; the far
-# jumps (call gates, task gates) aren't implemented in v1.
+# Near jumps as the manual's Operation (64-bit: RIP-relative or absolute;
+# 16/32-bit: EIP truncated to the operand size). Far jumps to a code segment
+# through LoadCodeSegment (the manual's "IF far jump ... THEN ... code
+# segment" branches); far jumps through call gates and task gates aren't in
+# v1 (#GP if the descriptor isn't a code segment).
 @operation
-IF near relative jump
-    THEN RIP := RIP + SignExtend(DEST);
-    ELSE RIP := DEST;
+IF FarJump
+    THEN
+        IF FarPtrImm
+            THEN
+                off := DEST;
+                sel := FarSelector;
+            ELSE
+                off := Memory[DEST];
+                sel := Memory16[EffectiveAddress(DEST) + OperandSize / 8];
+        FI;
+        LoadCodeSegment(sel, CPL, 0);
+        IF OperandSize = 16 THEN off := off AND FFFFH; FI;
+        IF OperandSize = 32 THEN off := off AND FFFFFFFFH; FI;
+        RIP := off;
+    ELSE
+        IF near relative jump
+            THEN tempRIP := RIP + SignExtend(DEST);
+            ELSE tempRIP := DEST;
+        FI;
+        IF OperandSize = 16 THEN tempRIP := tempRIP AND FFFFH; FI;
+        IF OperandSize = 32 THEN tempRIP := tempRIP AND FFFFFFFFH; FI;
+        RIP := tempRIP;
 FI;

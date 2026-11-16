@@ -1,0 +1,35 @@
+# MOV—Move to/from Control Registers -- override
+# One form per control register (ModRM.reg). The manual's Operation is
+# 'DEST := SRC;' with its Protected Mode Exceptions as the checks: #GP(0)
+# at CPL > 0, setting CR0.PG with CR0.PE clear, setting PG with EFER.LME
+# and CR4.PAE clear, clearing CR4.PAE in IA-32e mode; CR8 is the TPR
+# (bits 3:0). The core flushes the TLB on CR0/CR3/CR4 writes and sets
+# EFER.LMA when paging is enabled with EFER.LME (Vol. 3A 10.8.5).
+@operation
+IF CPL > 0 THEN #GP(0); FI;
+IF CrNum != 0 AND CrNum != 2 AND CrNum != 3 AND CrNum != 4 AND CrNum != 8 THEN #UD; FI;
+IF CrDest
+    THEN
+        v := SRC;
+        IF CrNum = 0 THEN
+            IF (v AND 80000000H) != 0 AND (v AND 1) = 0 THEN #GP(0); FI;
+            IF (v AND 80000000H) != 0 AND IA32_EFER.LME = 1 AND CR4.PAE = 0 THEN #GP(0); FI;
+            WriteSpecial(CR0, v OR 10H);
+        ELSE IF CrNum = 2 THEN
+            WriteSpecial(CR2, v);
+        ELSE IF CrNum = 3 THEN
+            WriteSpecial(CR3, v);
+        ELSE IF CrNum = 4 THEN
+            IF IA32_EFER.LMA = 1 AND (v AND 20H) = 0 THEN #GP(0); FI;
+            WriteSpecial(CR4, v);
+        ELSE
+            WriteSpecial(CR8, v AND 0FH);
+        FI;
+    ELSE
+        IF CrNum = 0 THEN DEST := CR0;
+        ELSE IF CrNum = 2 THEN DEST := CR2;
+        ELSE IF CrNum = 3 THEN DEST := CR3;
+        ELSE IF CrNum = 4 THEN DEST := CR4;
+        ELSE DEST := CR8;
+        FI;
+FI;

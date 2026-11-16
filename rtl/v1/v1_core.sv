@@ -67,7 +67,7 @@ module v1_core
   logic [63:0] w_gpr [16];      // working
   logic [63:0] a_flags, w_flags;
   logic [63:0] rip, nrip;
-  logic [63:0] t [32];          // micro temporaries
+  logic [63:0] t [64];          // micro temporaries (T0-T31 routines, T32-T63 micro-traps)
   logic [63:0] hi_r, rem_r;
   logic        u_eq, u_ltu, u_lts;
   logic [63:0] sp [256];        // special registers (uop_pkg::SPECIAL)
@@ -198,7 +198,7 @@ module v1_core
   function automatic logic [63:0] rd(input logic [6:0] s);
     if (s < 7'd16) return w_gpr[s[3:0]];
     if (s < 7'd20) return {56'b0, w_gpr[s[1:0]][15:8]};
-    if (s < 7'd52) return t[s - 7'd20];
+    if (s < S_T63 + 7'd1) return t[6'(s - S_T0)];
     case (s)
       S_REG:   return reg_hi8 ? {56'b0, w_gpr[dreg[1:0]][15:8]} : w_gpr[dreg];
       S_RM:    return rm_hi8 ? {56'b0, w_gpr[drm[1:0]][15:8]} : w_gpr[drm];
@@ -371,15 +371,16 @@ module v1_core
   wire [1:0] asz_now = (mode == 2'd3) ? (p67 ? 2'd1 : 2'd2) :
                        (mode == 2'd2) ? (p67 ? 2'd0 : 2'd1) : (p67 ? 2'd1 : 2'd0);
 
-  function automatic logic [3:0] imm_bytes(input logic [2:0] k, input logic [1:0] osz);
+  function automatic logic [3:0] imm_bytes(input logic [3:0] k, input logic [1:0] osz);
     case (k)
-      3'd0: return 4'd0;
-      3'd1: return 4'd1;
-      3'd2: return 4'd2;
-      3'd3: return 4'd3;
-      3'd4: return 4'd4;
-      3'd5: return (osz == 2'd1) ? 4'd2 : 4'd4;
-      3'd6: return (osz == 2'd1) ? 4'd2 : (osz == 2'd2 ? 4'd4 : 4'd8);
+      4'd8: return (osz == 2'd1) ? 4'd4 : 4'd6;     // far pointer: offset, selector
+      4'd0: return 4'd0;
+      4'd1: return 4'd1;
+      4'd2: return 4'd2;
+      4'd3: return 4'd3;
+      4'd4: return 4'd4;
+      4'd5: return (osz == 2'd1) ? 4'd2 : 4'd4;
+      4'd6: return (osz == 2'd1) ? 4'd2 : (osz == 2'd2 ? 4'd4 : 4'd8);
       default: return 4'd8;
     endcase
   endfunction
@@ -489,6 +490,7 @@ module v1_core
 
   // a TLB miss or denied access: run WALK, then retry
   task automatic utrap(input logic [63:0] la, input logic [3:0] kind, input logic from_fetch);
+    `ifdef V1_DEBUG $display("utrap la=%h kind=%h fetch=%0d upc=%0d", la, kind, from_fetch, upc); `endif
     sp[8'd250] <= la;
     sp[8'd251] <= {60'b0, kind};
     upc_trap <= upc;
@@ -516,8 +518,8 @@ module v1_core
       endcase
     end else if (s < 7'd20) begin
       w_gpr[s[1:0]][15:8] <= v[7:0];
-    end else if (s < 7'd52) begin
-      t[s - 7'd20] <= v & m;
+    end else if (s <= S_T63) begin
+      t[6'(s - S_T0)] <= v & m;
     end else begin
       case (s)
         S_NRIP:  nrip <= v;
@@ -648,6 +650,7 @@ module v1_core
               end
             end
           end else if (need_byte && !fetch_hit) begin
+            `ifdef V1_DEBUG $display("fetch la=%h ds=%0d hit=%0d pa=%h", fetch_la, ds, ftlb.hit, ftlb.pa); `endif
             // fetch the 16-byte line holding the next byte
             if (idx == 4'd15 || fetch_limit_bad) raise(8'd13, 1'b1, 32'd0, 1'b0, 1'b0, 1'b0);
             else if (cr0_pg && !ftlb.hit) utrap({fetch_la[63:4], 4'b0}, 4'b0100 | {2'b0, cpl == 2'd3, 1'b0}, 1'b1);
@@ -777,7 +780,13 @@ module v1_core
                 else begin
                   logic [63:0] v;
                   v = imm_r | (64'(b) << {imm_i, 3'b0});
-                  if (imm_i + 1 == imm_n && !attr.immz) begin
+                  if (attr.imm == 4'd8 && imm_i + 2 >= imm_n) begin
+                    // the far pointer's selector
+                    imm2_r <= imm2_r | (64'(b) << {imm_i + 2 - imm_n, 3'b0});
+                    v = imm_r;
+                  end else if (attr.imm == 4'd8) begin
+                    // the offset, zero-extended
+                  end else if (imm_i + 1 == imm_n && !attr.immz) begin
                     case (imm_n)
                       4'd1: v = {{56{v[7]}}, v[7:0]};
                       4'd2: v = {{48{v[15]}}, v[15:0]};
@@ -800,6 +809,7 @@ module v1_core
                 nr = rip + 64'(idx);
                 if (mode != 2'd3) nr = (mode == 2'd2) ? {32'b0, nr[31:0]} : {48'b0, nr[15:0]};
                 nrip <= nr;
+                `ifdef V1_DEBUG $display("finish map=%0d opc=%h mode=%0d osz=%0d idx=%0d ds=%0d", dmap, dopc, mode, dosz, idx, ds); `endif
                 e = calc_ea(nr, dseg);
                 ea <= e;
                 easeg <= (pseg != 3'd7 && !(m64 && pseg < 3'd4)) ? pseg : dseg;
@@ -852,6 +862,7 @@ module v1_core
               if (bus_err) raise(8'd13, 1'b1, 32'd0, 1'b0, 1'b0, 1'b0);
               else if (maligned) begin
                 if (u.op == U_LD) wr(u.dst, u.sz, bus_rdata[63:0] & szmask(u.sz));
+                `ifdef V1_DEBUG if (in_trap) $display("  trap mem op=%0d addr=%h data=%h", u.op, bus_addr, bus_rdata[63:0]); `endif
                 ms <= M_IDLE;
                 upc <= upc + 1;
                 ucount <= ucount + 1;
@@ -894,6 +905,7 @@ module v1_core
             logic hold;
             next = upc + 1;
             hold = 1'b0;
+            `ifdef V1_DEBUG if (in_trap) $display("  trap upc=%0d op=%0d", upc, u.op); `endif
             ucount <= ucount + 1;
             unique case (u.op)
               U_NOP: ;
@@ -931,6 +943,7 @@ module v1_core
               end
               U_UCALL: begin ustack <= next; next = u.imm[UADDR_W-1:0]; end
               U_URET: begin
+                `ifdef V1_DEBUG $display("uret in_trap=%0d fetch=%0d upc_trap=%0d", in_trap, trap_fetch, upc_trap); `endif
                 if (in_trap) begin
                   in_trap <= 1'b0;
                   if (trap_fetch) begin
@@ -940,6 +953,7 @@ module v1_core
                 end else next = ustack;
               end
               U_END: begin
+                `ifdef V1_DEBUG $display("end upc=%0d rip=%h nrip=%h", upc, rip, nrip); `endif
                 commit();
                 rip <= nrip;
                 if (!in_delivery) begin
@@ -963,7 +977,10 @@ module v1_core
               U_RDS: wr(u.dst, 2'd3, (u.imm[7:0] == SP_MODE[7:0]) ?
                          {58'b0, cr0_pg, rf_vm, cs_d, cs_l, efer_lma, cr0_pe} :
                          (u.imm[7:0] == SP_CPL[7:0]) ? {62'b0, cpl} : sp[u.imm[7:0]]);
-              U_WRS: wr_special(u.imm[7:0], va);
+              U_WRS: begin
+                `ifdef V1_DEBUG $display("  wrs %0d <= %h", u.imm[7:0], va); `endif
+                wr_special(u.imm[7:0], va);
+              end
               U_EXC: begin
                 raise(u.imm[10] ? va[7:0] : u.imm[7:0], u.imm[8], va[31:0], u.imm[9],
                       u.imm[10] || u.imm[9], 1'b0);

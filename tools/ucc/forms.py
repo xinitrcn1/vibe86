@@ -63,6 +63,8 @@ class Form:
     @property
     def name(self):
         s = f"{self.text} [{self.opcol}] m{self.mode} o{self.osz}"
+        if "crnum" in self.hints or "sreg" in self.hints:
+            s += f" r{self.digit}"
         for k, v in sorted(self.spec.items()):
             s += f" {k}={v}"
         if self.mem is not None:
@@ -125,8 +127,9 @@ def parse_opcode(f, col):
             f.rel = f.rel or t[0] == "c"
         elif t == "io":
             f.imm.append(8)
-        elif t in ("cp", "cq"):
-            raise FormError(f"far pointer immediate '{t}'")
+        elif t == "cp":
+            f.imm.append(6)             # ptr16:32: offset, then the selector
+            f.hints["farptr"] = True
         elif OPCODE_TOKEN.match(t):
             if t.endswith("+"):
                 f.plus_r = True
@@ -172,7 +175,7 @@ def parse_operands(f, enc):
     f.mnem = parts[0]
     ops = [o.strip() for o in parts[1].split(",")] if len(parts) > 1 else []
     # description text pdftotext ran into the column ('JB rel32, -bit mode.')
-    ops = [o for o in ops if not re.search(r"[a-z]{3,}", o.replace("imm", "").replace("rel", ""))]
+    ops = [o for o in ops if not re.search(r"[a-z]{3,}", o.replace("imm", "").replace("rel", "").replace("ptr", "").replace("Sreg", ""))]
     roles = enc.get(f.open, [])
     for i, o in enumerate(ops):
         role = roles[i] if i < len(roles) else ""
@@ -201,6 +204,11 @@ def parse_operands(f, enc):
                 f.operands.append(Operand("port", 16, "DX", o))
             else:
                 f.operands.append(Operand("fixed", FIXED[o], o, o))
+        elif re.match(r"^ptr16:(16|32)$", o):
+            f.operands.append(Operand("farptr", int(o[6:]), text=o))
+            f.hints["farptr"] = True
+        elif re.match(r"^m16:(16|32|64)$", o):
+            f.operands.append(Operand("farmem", int(o[4:]), text=o))
         elif o in ("ES", "CS", "SS", "DS", "FS", "GS"):
             f.operands.append(Operand("seg", 16, o, o))
         elif o == "Sreg":
@@ -220,6 +228,9 @@ def operand_size(f):
     for o in f.operands:
         if o.kind in ("rm", "reg", "opreg", "mem", "fixed") and o.size:
             return o.size
+    for o in f.operands:
+        if o.kind in ("farptr", "farmem"):
+            return min(o.size, 64)
     for o in f.operands:
         if o.kind in ("imm", "rel") and o.size == 16:
             return 16
@@ -280,12 +291,13 @@ def make_forms(page, cfg):
                 o.size = 64
         # MOV Sreg, r/m: one form per segment register (ModRM.reg), so its
         # routine knows statically which descriptor cache it loads
-        if f.operands and f.operands[0].kind == "sreg" and cfg.get("sreg"):
-            for d in (0, 1, 2, 3, 4, 5):
+        crx = any(o.kind == "cr" for o in f.operands) and cfg.get("crreg") and f.digit is None
+        if (f.operands and f.operands[0].kind == "sreg" and cfg.get("sreg")) or crx:
+            for d in ((0, 2, 3, 4) if crx else (0, 1, 2, 3, 4, 5)):
                 g = Form(**{**f.__dict__, "operands": list(f.operands), "imm": list(f.imm),
                             "hints": dict(f.hints), "spec": {}})
                 g.digit = d
-                g.hints["sreg"] = d
+                g.hints["crnum" if crx else "sreg"] = d
                 if ok64:
                     forms.append(g)
                 if okleg:
@@ -293,7 +305,7 @@ def make_forms(page, cfg):
                         h = Form(**{**g.__dict__, "operands": list(g.operands), "imm": [],
                                     "hints": dict(g.hints), "spec": {}})
                         h.mode = mode
-                        h.osz = 16
+                        h.osz = 32 if crx else 16
                         forms.append(h)
             continue
         if (f.page in ("Jcc", "SETcc", "CMOVcc")) or cfg.get("cc"):
@@ -342,8 +354,8 @@ def assign_classes(forms, cfg_of):
                 cls = "d64"
         for f in fs:
             f.vclass = cls
-            if f.osz == 8:
-                f.okey = "any"
+            if f.osz == 8 or "crnum" in f.hints or "sreg" in f.hints or cfg_of(f).get("anyosz"):
+                f.okey = "any"          # MOV CRn ignores the operand size
             elif cls == "f64" and f.mode == 3:
                 f.okey = "any"
             else:
@@ -356,7 +368,11 @@ def specialize(forms, cfg_of):
     out = []
     for f in forms:
         variants = [f]
-        if any(o.kind == "rm" for o in f.operands):
+        if cfg_of(f).get("anymod"):
+            # the r/m operand is a register whatever ModRM.mod says (MOV CRn)
+            f.mem = False
+            f.hints["anymod"] = True
+        elif any(o.kind == "rm" for o in f.operands):
             variants = []
             for mem in (False, True):
                 g = Form(**{**f.__dict__, "operands": list(f.operands), "imm": list(f.imm),

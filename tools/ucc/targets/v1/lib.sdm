@@ -64,3 +64,37 @@ IF CR0.PE = 0 OR RFLAGS.VM = 1
         IF (ty AND 1) = 0 THEN Linear64[tb + (s AND FFF8H)] := d OR 10000000000H; FI;
         SetSegment(SEGNUM, s, DescBase(d), DescLimit(d), DescAttr(d) OR 1);
 FI;
+
+# Loading CS for a far JMP/CALL/RET or IRET to a code segment (no gates):
+# JMP's Operation, "IF far jump and ... PE = 1 ... code segment" branches,
+# and Vol. 3A 5.8.1 "Direct Calls or Jumps to Code Segments". RPL is the
+# privilege the new CS takes (CPL for JMP/CALL, the selector's RPL for
+# returns). Sets CPL.
+@function LoadCodeSegment(SELECTOR, NEWCPL, ISRETURN)
+s := SELECTOR AND FFFFH;
+IF CR0.PE = 0 OR RFLAGS.VM = 1
+    THEN
+        SetSegmentReal(1, s);
+    ELSE
+        IF (s AND FFFCH) = 0 THEN #GP(0); FI;
+        IF (s AND 4) = 0
+            THEN tb := GDTR_BASE; tl := GDTR_LIMIT;
+            ELSE tb := LDTR_BASE; tl := LDTR_LIMIT;
+        FI;
+        IF (s OR 7) > tl THEN #GP(s AND FFFCH); FI;
+        d := Linear64[tb + (s AND FFF8H)];
+        dpl := SHR(d, 45) AND 3;
+        rpl := s AND 3;
+        IF (SHR(d, 43) AND 3) != 3 THEN #GP(s AND FFFCH); FI;
+        IF (SHR(d, 42) AND 1) = 1
+            THEN
+                IF dpl > NEWCPL THEN #GP(s AND FFFCH); FI;
+            ELSE
+                IF ISRETURN = 0 AND (rpl > CPL OR dpl != CPL) THEN #GP(s AND FFFCH); FI;
+                IF ISRETURN = 1 AND dpl != rpl THEN #GP(s AND FFFCH); FI;
+        FI;
+        IF (SHR(d, 47) AND 1) = 0 THEN #NP(s AND FFFCH); FI;
+        IF (SHR(d, 40) AND 1) = 0 THEN Linear64[tb + (s AND FFF8H)] := d OR 10000000000H; FI;
+        SetSegment(1, (s AND FFFCH) OR NEWCPL, DescBase(d), DescLimit(d), DescAttr(d) OR 1);
+        WriteSpecial(CPL, NEWCPL);
+FI;

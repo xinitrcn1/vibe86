@@ -1,4 +1,5 @@
-# RDMSR—Read From Model Specific Register -- override
+# RDMSR—Read From Model Specific Register -- override (Operation and opcodes:
+# the page's opcode table has no Instruction column, SDM errata E-14)
 # 'EDX:EAX := MSR[ECX];' with the MSRs v1 has (Intel SDM Vol. 4, "Model-
 # Specific Registers"); any other ECX raises #GP(0), as the manual's
 # Protected Mode Exceptions say for a reserved or unimplemented MSR.
@@ -20,3 +21,5 @@ ELSE #GP(0);
 FI;
 EAX := tmp;
 EDX := SHR(tmp, 32);
+@opcodes
+0F 32 | RDMSR | ZO | Valid | Valid

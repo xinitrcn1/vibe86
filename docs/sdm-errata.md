@@ -22,3 +22,5 @@ Developer's Manual, Vol. 2, order no. 325383-093US (September 2026).
 | E-11 | Intel Intrinsics Guide, `_mm512_set_epi8` | `dst[511:503] := e63` | `dst[511:504] := e63` (bytes are 8 bits) | off by one | reported by the author; not in Vol. 2 (the intrinsic sections aren't compiled), fix needed if the Intrinsics Guide is ever used as a source |
 | E-12 | SDM, TZCNT and LZCNT, opcode tables | laid out as Opcode/Op-En/64-32 bit/CPUID columns without an Instruction column | | table layout | opcode overrides |
 | E-13 | SDM, CMC | no Operation section | `CF := NOT CF` (Description) | missing | override `CMC.sdm` |
+| E-14 | SDM, RDMSR, opcode table | the 0F 32 row has no Instruction column (it shares the table with the VEX MSR_IMM form) | `0F 32 \| RDMSR \| ZO \| Valid \| Valid` | table layout | opcode override |
+| E-15 | SDM, LFENCE and MFENCE, opcode tables | Opcode/Op-En/64-32 bit/CPUID layout without an Instruction column | | table layout | opcode overrides |

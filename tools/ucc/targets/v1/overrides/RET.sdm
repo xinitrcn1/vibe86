@@ -1,6 +1,6 @@
 # RET—Return From Procedure -- override
-# The near-return branch of the manual's Operation, 64-bit operand size, no
-# shadow stack; far returns (privilege changes) aren't implemented in v1.
+# The near-return branch of the manual's Operation at the operand size, no
+# shadow stack; far returns aren't in v1.
 @operation
 RIP := Pop();
 IF instruction has immediate operand

@@ -1,0 +1,20 @@
+# LLDT—Load Local Descriptor Table Register -- override
+# The manual's Operation: a null selector leaves LDTR invalid; otherwise the
+# selector must be in the GDT, within its limit, and name an LDT (type 2),
+# present; 16-byte descriptor in IA-32e mode. #GP(0) at CPL > 0.
+@operation
+IF CR0.PE = 0 OR RFLAGS.VM = 1 THEN #UD; FI;
+IF CPL > 0 THEN #GP(0); FI;
+s := SRC AND FFFFH;
+IF (s AND FFFCH) = 0
+    THEN
+        SetSegment(6, s, 0, 0, 0);
+    ELSE
+        IF (s AND 4) != 0 OR (s OR 7) > GDTR_LIMIT THEN #GP(s AND FFFCH); FI;
+        d := Linear64[GDTR_BASE + (s AND FFF8H)];
+        IF (SHR(d, 40) AND 1FH) != 2 THEN #GP(s AND FFFCH); FI;
+        IF (SHR(d, 47) AND 1) = 0 THEN #NP(s AND FFFCH); FI;
+        base := DescBase(d);
+        IF IA32_EFER.LMA = 1 THEN base := base OR SHL(Linear32[GDTR_BASE + (s AND FFF8H) + 8], 32); FI;
+        SetSegment(6, s, base, DescLimit(d), DescAttr(d));
+FI;

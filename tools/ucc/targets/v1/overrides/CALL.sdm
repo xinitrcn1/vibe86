@@ -1,12 +1,13 @@
 # CALL—Call Procedure -- override
-# The near-call branches of the manual's Operation for 64-bit mode with
-# shadow stacks disabled (v1 has no CET); the far-call branches (call gates,
-# task switches) are 300 lines v1 doesn't implement, and one of them doesn't
-# parse.
+# The near-call branches of the manual's Operation (shadow stacks disabled:
+# CET is a v1 TODO): the return address is pushed at the operand size and
+# EIP/IP truncated. Far calls aren't in v1.
 @operation
 IF near relative call
     THEN tempRIP := RIP + SignExtend(DEST);
     ELSE tempRIP := DEST;
 FI;
+IF OperandSize = 16 THEN tempRIP := tempRIP AND FFFFH; FI;
+IF OperandSize = 32 THEN tempRIP := tempRIP AND FFFFFFFFH; FI;
 Push(RIP);
 RIP := tempRIP;

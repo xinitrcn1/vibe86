@@ -104,6 +104,7 @@ class Tok:
     text: str
     line: int
     val: int = 0
+    col: int = 0
 
 
 KEYWORDS = {"IF", "THEN", "ELSE", "FI", "WHILE", "DO", "OD", "FOR", "TO", "DOWNTO", "ROF",
@@ -174,24 +175,27 @@ def lex(text):
         text = text.replace(k, v)
     text = strip_comments(text)
     toks, line = [], 1
+    linestart = 0
     for m in TOKEN.finditer(text):
         kind = m.lastgroup
         s = m.group()
+        col = m.start() - linestart
         if kind == "ws":
             continue
         if kind == "nl":
             line += 1
+            linestart = m.end()
             if toks and toks[-1].kind != "nl":
                 toks.append(Tok("nl", "\n", line - 1))
             continue
         if kind == "word":
             n = number(s)
             if n is not None:
-                toks.append(Tok("num", s, line, n))
+                toks.append(Tok("num", s, line, n, col))
             elif s in KEYWORDS:
-                toks.append(Tok("kw", s, line))
+                toks.append(Tok("kw", s, line, 0, col))
             else:
-                toks.append(Tok("id", s, line))
+                toks.append(Tok("id", s, line, 0, col))
             continue
         if kind == "other":
             toks.append(Tok("op", s, line))
@@ -271,6 +275,7 @@ class If:
     els: list = None
     line: int = 0
     closed: bool = False
+    col: int = 0
 
 
 @dataclass
@@ -591,10 +596,11 @@ class Parser:
                 return toks
             toks.append(self.take())
 
-    def if_stmt(self):
-        line = self.take().line          # IF
+    def if_stmt(self, col=None):
+        tok = self.take()                # IF
+        line = tok.line
         cond = expr_or_prose(self.condition())
-        node = If(cond, [], None, line)
+        node = If(cond, [], None, line, col=tok.col if col is None else col)
         node.then = self.block(("ELSE", "FI"))
         self.else_part(node)
         return node
@@ -610,12 +616,14 @@ class Parser:
         if tok.kind == "kw" and tok.text == "ELSE":
             self.take()
             if self.peek().kind == "kw" and self.peek().text == "IF":
-                inner = self.if_stmt()      # closed by its own FI, or by ours
+                inner = self.if_stmt(col=tok.col)   # an ELSE IF sits at its ELSE's column
                 node.els = [inner]
                 # a chain closed early: 'ELSE IF a THEN x FI; ELSE IF b ...'
                 while True:
                     self.skip_nl()
-                    if self.at_kw("ELSE"):
+                    if self.at_kw("ELSE") and self.peek().col >= node.col:
+                        # an ELSE indented at least as far as this IF continues
+                        # its chain; one further out belongs to an enclosing IF
                         tail = node
                         while tail.els and len(tail.els) == 1 and isinstance(tail.els[0], If) \
                                 and tail.els[0].els is not None:
@@ -625,9 +633,9 @@ class Parser:
                             # the chain is complete: this ELSE belongs to an
                             # enclosing IF (PUSH closes its inner chain early)
                             return
-                        self.take()
+                        etok = self.take()
                         if self.at_kw("IF"):
-                            target.els = [self.if_stmt()]
+                            target.els = [self.if_stmt(col=etok.col)]
                         else:
                             target.els = self.block(("FI", "ELSE"))
                         continue

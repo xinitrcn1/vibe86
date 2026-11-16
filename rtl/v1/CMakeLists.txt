@@ -17,7 +17,7 @@ verilate(vibe86_v1
   SOURCES ${V1_RTL}
   TOP_MODULE v1_core
   PREFIX Vv1_core
-  VERILATOR_ARGS -Wno-fatal -Wno-WIDTH -Wno-UNUSED -O3 --x-assign fast --x-initial fast
+  VERILATOR_ARGS ${V1_DEBUG_ARGS} -Wno-fatal -Wno-WIDTH -Wno-UNUSED -O3 --x-assign fast --x-initial fast
                  --output-split 20000)
 
 # testbenches: only the latest version's run under ctest

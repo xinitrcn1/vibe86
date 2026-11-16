@@ -76,7 +76,7 @@ def read_isa(path):
                     cfg[k] = {a: int(b) for a, b in (x.split(":") for x in v.split(","))}
                 elif k in ("rep", "suffixed"):
                     cfg[k] = v.split(",")
-                elif k in ("memonly", "immz", "cc", "sreg"):
+                elif k in ("memonly", "immz", "cc", "sreg", "crreg", "anymod", "anyosz"):
                     cfg[k] = True
                 else:
                     cfg[k] = v
@@ -207,7 +207,11 @@ def imm_kind(fs):
         return 0
     if len(lens) == 1:
         n = lens.pop()
+        if any(f.hints.get("farptr") for f in fs):
+            return 8
         return {1: 1, 2: 2, 3: 3, 4: 4, 8: 7}[n]
+    if any(f.hints.get("farptr") for f in fs):
+        return 8                    # ptr16:16 / ptr16:32: offset (z), then a selector
     d = {k: max(v) for k, v in by.items()}
     if d.get("16") == 2 and d.get("32") == 4 and d.get("64") == 8:
         return 6    # iw / id / io (MOV r64, imm64)
@@ -247,7 +251,7 @@ def sv_tables(forms, image, cfg_of):
             plus_r = any(f.plus_r for f in gfs)
             dbits = "???" if dg is None else format(dg, "03b")
             out.append(f"    14'b{int(m64)}_{m:02b}_{o:08b}_{dbits}: d = '{{valid: 1'b1, "
-                       f"modrm: 1'b{int(modrm)}, imm: 3'd{ik}, immz: 1'b{int(immz)}, cls: 2'd{cls}, "
+                       f"modrm: 1'b{int(modrm)}, imm: 4'd{ik}, immz: 1'b{int(immz)}, cls: 2'd{cls}, "
                        f"pfx_sens: 1'b{int(sens)}, plus_r: 1'b{int(plus_r)}}};")
     out.append("    default: d = '0;")
     out.append("  endcase")
@@ -280,7 +284,7 @@ def sv_tables(forms, image, cfg_of):
         dg = "???" if f.digit is None else format(f.digit, "03b")
         pk = {None: "00", "F3": "01", "F2": "10", "66": "11"}[f.prefix_key()]
         oz = {"any": "??", "16": "01", "32": "10", "64": "11"}[f.okey]
-        mm = "?" if f.mem is None else str(int(f.mem))
+        mm = "?" if f.mem is None or f.hints.get("anymod") else str(int(f.mem))
         az = ASZ_CODE[f.spec["AddressSize"]] if "AddressSize" in f.spec else "??"
         sz = {16: "0", 32: "1"}[f.spec["StackAddrSize"]] if "StackAddrSize" in f.spec else "?"
         out.append(f"    24'b{sub}_{f.mode:02b}_{f.map:02b}_{f.opc:08b}_{dg}_{pk}_{oz}_{mm}_{az}_{sz}: "
@@ -328,8 +332,12 @@ def main():
             continue
         fs, errs = F.make_forms(page, cfg)
         errors += errs
-        asts[page.name] = ast
-        pageobj[page.name] = (page, stem)
+        if not fs:
+            errors.append(f"{stem}: no opcode-table rows selected (layout? options?)")
+        for f in fs:
+            f.page = stem          # pages are keyed by file: two pages can share a mnemonic (MOV)
+        asts[stem] = ast
+        pageobj[stem] = (page, stem)
         all_forms += fs
     cfg_of = lambda f: f.cfg   # noqa: E731
     F.assign_classes(all_forms, cfg_of)
@@ -410,10 +418,11 @@ def main():
            f"  localparam logic [UADDR_W-1:0] UADDR_UD = {image.addr['UD']};",
            f"  localparam logic [UADDR_W-1:0] UADDR_DELIVER = {image.addr['DELIVER']};",
            f"  localparam logic [UADDR_W-1:0] UADDR_WALK = {image.addr['WALK']};",
-           "  // decoder attributes: imm 0 none, 1/2/3/4 bytes, 5 iw/id (z), 6 iw/id/io (v), 7 8 bytes;",
+           "  // decoder attributes: imm 0 none, 1/2/3/4 bytes, 5 iw/id (z), 6 iw/id/io (v), 7 8 bytes,",
+           "  //   8 a far pointer (z bytes of offset into IMM, then a 2-byte selector into IMM2);",
            "  // cls 0 default 32-bit operands, 1 default 64 (66h -> 16), 2 always 64",
            "  typedef struct packed {",
-           "    logic valid; logic modrm; logic [2:0] imm; logic immz; logic [1:0] cls;",
+           "    logic valid; logic modrm; logic [3:0] imm; logic immz; logic [1:0] cls;",
            "    logic pfx_sens; logic plus_r;",
            "  } dattr_t;",
            f"  localparam logic [UOP_W-1:0] UROM [UROM_N] = '{{"]

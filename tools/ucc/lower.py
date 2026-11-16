@@ -480,6 +480,16 @@ class Lowerer:
             return int(bool(self.f.mem))
         if n == "RegisterOffset":
             return int(len(self.f.operands) > 1 and self.f.operands[1].kind == "reg")
+        if n == "CrNum":
+            if "crnum" in self.f.hints:
+                return 8 if (self.f.digit == 0 and "CR8" in self.f.text) else self.f.hints["crnum"]
+            return None
+        if n == "CrDest":
+            return int(bool(self.f.operands) and self.f.operands[0].kind == "cr")
+        if n == "FarJump":
+            return int(any(o.kind in ("farptr", "farmem") for o in self.f.operands))
+        if n == "FarPtrImm":
+            return int(any(o.kind == "farptr" for o in self.f.operands))
         if n == "SregDest":
             return int(bool(self.f.operands) and self.f.operands[0].kind == "sreg")
         if n == "SegmentOperand":
@@ -523,6 +533,10 @@ class Lowerer:
             return V("sel", 16, sel="RDX")
         if o.kind == "sreg":
             return V("sel", 16, sel="SEGREG")
+        if o.kind == "farptr":
+            return V("sel", 64, sel="IMM", adapt=True)
+        if o.kind == "farmem":
+            return V("mem", self.f.osz, addr=V("sel", 64, sel="EA"))
         if o.kind == "seg":
             return V("special", 64, sel=o.reg)
         if o.kind == "cr":
@@ -554,6 +568,8 @@ class Lowerer:
                     return V("special", 64, sel=o.reg)
             if any(o.kind == "sreg" for o in self.f.operands):
                 return V("sel", 16, sel="SEGREG")
+        if n == "FarSelector":
+            return V("sel", 16, sel="IMM2")
         if n in ("TRAPVA", "TRAPX"):
             return V("sel", 64, sel=n)
         if n.lower() == "accumulator":
@@ -1579,15 +1595,19 @@ class Lowerer:
         # StoreFlags(value, mask): RFLAGS := (RFLAGS AND NOT mask) OR (value AND mask)
         v = self.eval(e.args[0], 64)
         m = self.eval(e.args[1], 64)
-        if m.kind != "k":
-            raise LowerError("StoreFlags mask must be constant")
         v = self.widen(v, 64)
         (s,), _ = self.srcs(v, w=64)
         t = self.tmp()
-        self.E("AND", 64, dst=t, a=s, b="K", imm=self.k32(m.k))
         f = self.tmp()
         self.E("MOV", 64, dst=f, a="FLAGS")
-        self.E("AND", 64, dst=f, a=f, b="K", imm=self.k32(~m.k))
+        if m.kind == "k":
+            self.E("AND", 64, dst=t, a=s, b="K", imm=self.k32(m.k))
+            self.E("AND", 64, dst=f, a=f, b="K", imm=self.k32(~m.k))
+        else:
+            m = self.widen(m, 64)
+            ms = self.to_sel(m, 64)
+            self.E("AND", 64, dst=t, a=s, b=ms)
+            self.E("ANDN", 64, dst=f, a=ms, b=f)       # FLAGS AND NOT mask
         self.E("OR", 64, dst=f, a=f, b=t)
         self.E("MOV", 64, dst="FLAGS", a=f)
 

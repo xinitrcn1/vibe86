@@ -3,3 +3,5 @@
 # v1 executes one micro-op at a time and its bus is in order, so there is
 # nothing to wait for.
 @operation
+@opcodes
+NP 0F AE E8 | LFENCE | ZO | Valid | Valid

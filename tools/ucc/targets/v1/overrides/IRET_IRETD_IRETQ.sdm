@@ -1,14 +1,47 @@
 # IRET/IRETD/IRETQ -- override
-# The IA-32e-mode, same-privilege branch of the manual's Operation for
-# IRETQ: pop RIP, CS, RFLAGS, RSP and SS (64-bit mode always pops SS:RSP).
-# v1 has flat segments, so the CS and SS selectors are not loaded; RFLAGS is
-# loaded with the CPL 0 mask, as POPFQ.
+# The manual's Operation for the cases v1 delivers interrupts in:
+# REAL-ADDRESS-MODE (pop IP, CS, FLAGS), and protected / IA-32e mode
+# returns to a code segment at the same or an outer privilege level
+# (RETURN-TO-SAME-PRIVILEGE-LEVEL, RETURN-TO-OUTER-PRIVILEGE-LEVEL; IA-32e
+# mode always pops SS:RSP). RFLAGS is loaded with the mask CPL allows (IOPL
+# and IF only at CPL 0 / CPL <= IOPL). Task returns (NT = 1) and returns to
+# virtual-8086 mode aren't in v1.
 @operation
-tempRIP := Pop();
-tempCS := Pop();
-tempFLAGS := Pop();
-tempRSP := Pop();
-tempSS := Pop();
-RIP := tempRIP;
-StoreFlags(tempFLAGS, 257FD5H);
-RSP := tempRSP;
+IF CR0.PE = 0
+    THEN
+        tempRIP := Pop();
+        tempCS := Pop();
+        tempFLAGS := Pop();
+        LoadCodeSegment(tempCS, 0, 1);
+        IF OperandSize = 16
+            THEN StoreFlags(tempFLAGS, 7FD5H);
+            ELSE StoreFlags(tempFLAGS, 257FD5H);
+        FI;
+        RIP := tempRIP;
+    ELSE
+        tempRIP := Pop();
+        tempCS := Pop();
+        tempFLAGS := Pop();
+        rpl := tempCS AND 3;
+        oldcpl := CPL;
+        IF rpl < oldcpl THEN #GP(tempCS AND FFFCH); FI;
+        IF Mode64 = 1 OR rpl > oldcpl
+            THEN
+                tempRSP := Pop();
+                tempSS := Pop();
+        FI;
+        LoadCodeSegment(tempCS, rpl, 1);
+        mask := 254DD5H;
+        IF oldcpl = 0 THEN mask := 257FD5H; FI;
+        IF oldcpl != 0 AND oldcpl <= IOPL THEN mask := 254FD5H; FI;
+        StoreFlags(tempFLAGS, mask);
+        IF Mode64 = 1 OR rpl > oldcpl
+            THEN
+                IF (tempSS AND FFFCH) = 0
+                    THEN WriteSpecial(SS_SEL, tempSS);
+                    ELSE LoadSegment(2, tempSS);
+                FI;
+                RSP := tempRSP;
+        FI;
+        RIP := tempRIP;
+FI;
