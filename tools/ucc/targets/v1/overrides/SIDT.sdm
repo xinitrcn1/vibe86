@@ -1,0 +1,5 @@
+# SIDT—Store Interrupt Descriptor Table Register -- override
+# 64-bit mode: 'DEST[0:15] := IDTR(Limit); DEST[16:79] := IDTR(Base);'
+@operation
+Memory16[EffectiveAddress(DEST)] := IDTR_LIMIT;
+Memory64[EffectiveAddress(DEST) + 2] := IDTR_BASE;

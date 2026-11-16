@@ -1,0 +1,19 @@
+# WRMSR—Write to Model Specific Register -- override
+# 'MSR[ECX] := EDX:EAX;' for the MSRs v1 has; others raise #GP(0).
+@operation
+tmp := SHL(ZeroExtend(EDX), 32) OR ZeroExtend(EAX);
+IF ECX = C0000080H THEN WriteSpecial(EFER, tmp);
+ELSE IF ECX = C0000100H THEN WriteSpecial(FS_BASE, tmp);
+ELSE IF ECX = C0000101H THEN WriteSpecial(GS_BASE, tmp);
+ELSE IF ECX = C0000102H THEN WriteSpecial(KERNEL_GS_BASE, tmp);
+ELSE IF ECX = C0000081H THEN WriteSpecial(STAR, tmp);
+ELSE IF ECX = C0000082H THEN WriteSpecial(LSTAR, tmp);
+ELSE IF ECX = C0000083H THEN WriteSpecial(CSTAR, tmp);
+ELSE IF ECX = C0000084H THEN WriteSpecial(FMASK, tmp);
+ELSE IF ECX = C0000103H THEN WriteSpecial(TSC_AUX, tmp);
+ELSE IF ECX = 10H THEN WriteSpecial(TSC, tmp);
+ELSE IF ECX = 1BH THEN WriteSpecial(APIC_BASE, tmp);
+ELSE IF ECX = 277H THEN WriteSpecial(PAT, tmp);
+ELSE IF ECX = 1A0H THEN WriteSpecial(MISC_ENABLE, tmp);
+ELSE #GP(0);
+FI;

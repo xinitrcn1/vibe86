@@ -1,0 +1,6 @@
+# IN—Input From Port -- override
+# The manual's Operation checks I/O permission (CPL > IOPL) in prose; at
+# CPL 0 the access is always allowed, and what remains is 'DEST :=
+# SRC; (* Read from selected I/O port *)', a port read.
+@operation
+In(DEST, SRC);

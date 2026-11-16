@@ -72,6 +72,8 @@ CONDITIONS = [
     (r"instruction is sar", lambda f: f.mnem == "SAR"),
     (r"instruction is shr", lambda f: f.mnem == "SHR"),
     (r"instruction is rol", lambda f: f.mnem == "ROL"),
+    (r"instruction is int3", lambda f: f.mnem == "INT3"),
+    (r"instruction is lidt", lambda f: f.mnem == "LIDT"),
     (r"instruction is ror", lambda f: f.mnem == "ROR"),
     (r"instruction is rcl", lambda f: f.mnem == "RCL"),
     (r"cpuid\.80000001h:ecx(\.lahf_sahf_64)?\[0\] = 1;?", lambda f: True),

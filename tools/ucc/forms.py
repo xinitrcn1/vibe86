@@ -143,6 +143,12 @@ def parse_opcode(f, col):
             f.map, rest = 1, bytes_[1:]
     else:
         f.map, rest = 0, bytes_
+    if len(rest) == 2 and rest[1] >= 0xC0:
+        # a fixed register-form ModRM byte: 'NP 0F AE F8' (SFENCE) is 0F AE /7, mod = 11
+        f.modrm = True
+        f.digit = (rest[1] >> 3) & 7
+        f.hints["regform"] = True
+        rest = rest[:1]
     if len(rest) != 1:
         raise FormError(f"opcode '{col}' isn't one byte after the escape")
     f.opc = rest[0]
@@ -180,7 +186,7 @@ def parse_operands(f, enc):
             else:
                 raise FormError(f"operand '{o}'")
             f.operands.append(Operand(kind, sz, text=o))
-        elif o in ("m",):
+        elif o in ("m",) or re.match(r"^m\d+&\d+$", o):
             f.operands.append(Operand("mem", 0, text=o))
         elif o in FIXED:
             if o == "DX" and f.mnem in ("IN", "OUT"):
@@ -302,6 +308,8 @@ def specialize(forms, cfg_of):
                 variants.append(g)
         elif any(o.kind == "mem" for o in f.operands) or cfg_of(f).get("memonly"):
             f.mem = True
+        elif f.hints.get("regform"):
+            f.mem = False
         reps = cfg_of(f).get("rep")
         if reps:
             vv = []

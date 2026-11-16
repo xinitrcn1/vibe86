@@ -1,0 +1,22 @@
+# RDMSR—Read From Model Specific Register -- override
+# 'EDX:EAX := MSR[ECX];' with the MSRs v1 has (Intel SDM Vol. 4, "Model-
+# Specific Registers"); any other ECX raises #GP(0), as the manual's
+# Protected Mode Exceptions say for a reserved or unimplemented MSR.
+@operation
+IF ECX = C0000080H THEN tmp := EFER;
+ELSE IF ECX = C0000100H THEN tmp := FS_BASE;
+ELSE IF ECX = C0000101H THEN tmp := GS_BASE;
+ELSE IF ECX = C0000102H THEN tmp := KERNEL_GS_BASE;
+ELSE IF ECX = C0000081H THEN tmp := STAR;
+ELSE IF ECX = C0000082H THEN tmp := LSTAR;
+ELSE IF ECX = C0000083H THEN tmp := CSTAR;
+ELSE IF ECX = C0000084H THEN tmp := FMASK;
+ELSE IF ECX = C0000103H THEN tmp := TSC_AUX;
+ELSE IF ECX = 10H THEN tmp := TSC;
+ELSE IF ECX = 1BH THEN tmp := APIC_BASE;
+ELSE IF ECX = 277H THEN tmp := PAT;
+ELSE IF ECX = 1A0H THEN tmp := MISC_ENABLE;
+ELSE #GP(0);
+FI;
+EAX := tmp;
+EDX := SHR(tmp, 32);

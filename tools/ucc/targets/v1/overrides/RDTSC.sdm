@@ -1,0 +1,7 @@
+# RDTSC—Read Time-Stamp Counter -- override
+# 'EDX:EAX := TimeStampCounter;' (CR4.TSD is 0 at CPL 0). v1's TSC counts
+# core clocks.
+@operation
+tsc := TSC;
+EAX := tsc;
+EDX := SHR(tsc, 32);

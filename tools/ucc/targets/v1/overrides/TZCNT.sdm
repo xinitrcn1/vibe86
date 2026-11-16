@@ -1,0 +1,13 @@
+# TZCNT -- override
+# The manual's Operation counts bit by bit in a WHILE loop and leaves the
+# flags to the Flags Affected prose; v1's bit-scan unit computes the count
+# and the flags in one step (BitScan): see rtl/v1/v1_alu.sv for the flag
+# rules, which follow the Flags Affected section.
+@operation
+DEST := BitScan(TZCNT, SRC);
+@opcodes
+F3 0F BC /r | TZCNT r16, r/m16 | RM | Valid | Valid
+F3 0F BC /r | TZCNT r32, r/m32 | RM | Valid | Valid
+F3 REX.W 0F BC /r | TZCNT r64, r/m64 | RM | Valid | N.E.
+@flags
+CF is set to 1 if the input was zero and cleared otherwise. ZF is set to 1 in case of zero output and cleared otherwise. The OF, SF, PF, and AF flags are undefined.

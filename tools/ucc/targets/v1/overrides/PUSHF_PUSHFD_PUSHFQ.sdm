@@ -1,0 +1,5 @@
+# PUSHF/PUSHFD/PUSHFQ -- override
+# The 64-bit branch of the manual's Operation: "push(RFLAGS AND 00FCFFFFH)"
+# (VM and RF are cleared in the image), without the virtual-8086 cases.
+@operation
+Push(RFLAGS AND FCFFFFH);

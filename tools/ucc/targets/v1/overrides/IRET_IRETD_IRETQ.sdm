@@ -1,0 +1,14 @@
+# IRET/IRETD/IRETQ -- override
+# The IA-32e-mode, same-privilege branch of the manual's Operation for
+# IRETQ: pop RIP, CS, RFLAGS, RSP and SS (64-bit mode always pops SS:RSP).
+# v1 has flat segments, so the CS and SS selectors are not loaded; RFLAGS is
+# loaded with the CPL 0 mask, as POPFQ.
+@operation
+tempRIP := Pop();
+tempCS := Pop();
+tempFLAGS := Pop();
+tempRSP := Pop();
+tempSS := Pop();
+RIP := tempRIP;
+StoreFlags(tempFLAGS, 257FD5H);
+RSP := tempRSP;

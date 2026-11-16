@@ -1,0 +1,35 @@
+# CMPS -- override
+# As MOVS: the 64-bit-mode half of the manual's Operation, with the
+# REPE/REPNE loop of the REP page composed in for the F3 (repeat while
+# equal) and F2 (repeat while not equal) forms. The comparison sets the
+# flags as CMP does (Flags Affected).
+@operation
+IF DF = 0
+    THEN delta := OperandBytes;
+    ELSE delta := 0 - OperandBytes;
+FI;
+IF RepPrefix
+    THEN
+        WHILE RCX != 0
+        DO
+        a := Memory[RSI];
+        b := Memory[RDI];
+        temp := a - b;
+        ModifyStatusFlags;
+        RSI := RSI + delta;
+        RDI := RDI + delta;
+            RCX := RCX - 1;
+            Commit;
+            IF RepNE
+                THEN IF ZF = 1 THEN BREAK; FI;
+                ELSE IF ZF = 0 THEN BREAK; FI;
+            FI;
+        OD;
+    ELSE
+        a := Memory[RSI];
+        b := Memory[RDI];
+        temp := a - b;
+        ModifyStatusFlags;
+        RSI := RSI + delta;
+        RDI := RDI + delta;
+FI;

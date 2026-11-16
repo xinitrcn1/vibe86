@@ -63,3 +63,35 @@ SAHF
 # misc
 NOP
 HLT
+BSF
+BSR
+POPCNT
+LZCNT
+TZCNT
+# strings (with REP/REPE/REPNE)
+MOVS_MOVSB_MOVSW_MOVSD_MOVSQ   rep=F3,F2  suffixed=MOVS  only='MOVS[BWDQ]$'
+STOS_STOSB_STOSW_STOSD_STOSQ   rep=F3,F2  suffixed=STOS  only='STOS[BWDQ]$'
+LODS_LODSB_LODSW_LODSD_LODSQ   rep=F3,F2  suffixed=LODS  only='LODS[BWDQ]$'
+CMPS_CMPSB_CMPSW_CMPSD_CMPSQ   rep=F3,F2  suffixed=CMPS  only='CMPS[BWDQ]$'
+SCAS_SCASB_SCASW_SCASD         rep=F3,F2  suffixed=SCAS  only='SCAS[BWDQ]$'
+# system
+IN                  immz
+OUT                 immz
+PUSHF_PUSHFD_PUSHFQ only='PUSHFQ|^9C.*PUSHF$'  class=d64  osz=PUSHF:16,PUSHFQ:64
+POPF_POPFD_POPFQ    only='POPFQ|^9D.*POPF$'    class=d64  osz=POPF:16,POPFQ:64
+CLI
+STI
+INT_n_INTO_INT3_INT1 skip='INTO|INT1'  immz
+IRET_IRETD_IRETQ    only='IRETQ'
+LGDT_LIDT           memonly
+SIDT                memonly
+SGDT                memonly
+CPUID
+RDTSC
+RDMSR
+WRMSR
+UD                  only='UD2'
+PAUSE
+LFENCE
+MFENCE
+SFENCE

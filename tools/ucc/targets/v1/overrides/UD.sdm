@@ -1,0 +1,5 @@
+# UD—Undefined Instruction -- override
+# The page's Operation is '#UD (* Generates invalid opcode exception *);'
+# in prose form.
+@operation
+#UD;

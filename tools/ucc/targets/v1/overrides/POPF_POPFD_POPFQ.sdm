@@ -1,0 +1,8 @@
+# POPF/POPFD/POPFQ -- override
+# The CPL 0, 64-bit branch of the manual's Operation: every flag the
+# instruction may change at CPL 0 (CF PF AF ZF SF TF IF DF OF IOPL NT AC ID)
+# is loaded; RF is cleared, VM, VIF and VIP are unaffected, bit 1 stays 1.
+@operation
+tmp := Pop();
+StoreFlags(tmp, 247FD5H);
+SetFlag(RF, 0);

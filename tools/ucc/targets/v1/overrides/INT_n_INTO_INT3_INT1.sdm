@@ -1,0 +1,12 @@
+# INT n/INTO/INT3/INT1 -- override
+# The manual's Operation (some 400 lines) is the full protected-mode and
+# IA-32e interrupt delivery; v1 delivers every exception and software
+# interrupt through one microcode routine, routines/DELIVER.sdm (the IA-32e
+# branch of this Operation for a 64-bit interrupt gate at CPL 0). What's
+# left here is raising the vector as a trap (the saved RIP is the next
+# instruction).
+@operation
+IF instruction is INT3
+    THEN #BP;
+    ELSE RaiseVector(SRC);
+FI;

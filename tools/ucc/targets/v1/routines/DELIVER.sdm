@@ -1,3 +1,35 @@
-# DELIVER -- vibe86 v1
+# DELIVER -- vibe86 v1 exception and interrupt delivery
+# The core enters here (with the working registers rolled back to the
+# faulting instruction's start) for every exception, INT n and INT3, with
+# FAULT_VEC (vector; bit 8: has an error code), FAULT_ERR and FAULT_RIP set.
+# It is the IA-32e-mode branch of INT n's Operation (Intel SDM Vol. 2A,
+# "INT n/INTO/INT3/INT1", and Vol. 3A section 6.14 "Exception and Interrupt
+# Handling in 64-bit Mode") for a 64-bit interrupt or trap gate at CPL 0:
+# no stack switch, no IST, the stack aligned to 16 bytes, then SS, RSP,
+# RFLAGS, CS, RIP and the error code pushed. Anything v1 can't deliver (an
+# IDT too short, a gate not present) shuts the core down, as a triple fault
+# would; so does a fault during delivery (the core checks that).
 @operation
-SHUTDOWN;
+vec := FAULT_VEC AND FFH;
+IF IDTR_LIMIT < SHL(vec, 4) + 15 THEN SHUTDOWN; FI;
+gate := IDTR_BASE + SHL(vec, 4);
+lo := Memory64[gate];
+hi := Memory64[gate + 8];
+IF (SHR(lo, 47) AND 1) = 0 THEN SHUTDOWN; FI;
+target := (lo AND FFFFH) OR (SHR(lo, 32) AND FFFF0000H) OR SHL(hi, 32);
+oldRSP := RSP;
+oldFLAGS := RFLAGS;
+RSP := RSP AND FFFFFFFFFFFFFFF0H;
+Push(SS);
+Push(oldRSP);
+Push(oldFLAGS);
+Push(CS);
+Push(FAULT_RIP);
+IF (FAULT_VEC AND 100H) != 0 THEN Push(FAULT_ERR); FI;
+IF (SHR(lo, 40) AND 0FH) = 0EH THEN SetFlag(INTF, 0); FI;
+SetFlag(TF, 0);
+SetFlag(NT, 0);
+SetFlag(RF, 0);
+RIP := target;
+@flags
+None.

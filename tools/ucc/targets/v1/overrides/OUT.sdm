@@ -1,0 +1,5 @@
+# OUT—Output to Port -- override
+# As IN: at CPL 0 the I/O permission checks pass; 'DEST := SRC; (* Writes
+# to selected I/O port *)' is a port write.
+@operation
+Out(DEST, SRC);

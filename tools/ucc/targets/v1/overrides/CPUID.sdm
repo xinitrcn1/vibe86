@@ -1,0 +1,26 @@
+# CPUID—CPU Identification -- override
+# The manual's Operation is a CASE over EAX for Intel's own leaves; this is
+# vibe86 v1's identification in the same form. Vendor "Vibe86Vibe86";
+# leaf 1: family 6, model 0, stepping 1; features: TSC, MSR, CMOV, POPCNT;
+# leaf 7: BMI1 (TZCNT); 80000001H: LAHF/SAHF in 64-bit mode, LZCNT, Intel 64.
+# Leaves v1 doesn't define return zeros.
+@operation
+leaf := EAX;
+EAX := 0; EBX := 0; ECX := 0; EDX := 0;
+IF leaf = 0 THEN
+    EAX := 7;
+    EBX := 65626956H;
+    EDX := 69563638H;
+    ECX := 36386562H;
+ELSE IF leaf = 1 THEN
+    EAX := 601H;
+    ECX := 800000H;
+    EDX := 8030H;
+ELSE IF leaf = 7 THEN
+    EBX := 8;
+ELSE IF leaf = 80000000H THEN
+    EAX := 80000001H;
+ELSE IF leaf = 80000001H THEN
+    ECX := 21H;
+    EDX := 20000000H;
+FI;

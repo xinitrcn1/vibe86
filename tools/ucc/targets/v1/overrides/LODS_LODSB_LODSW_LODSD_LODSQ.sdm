@@ -1,0 +1,28 @@
+# LODS -- override
+# The manual's Operation (AL/AX/EAX/RAX := SRC with (R|E)SI stepped) labels its
+# 64-bit and non-64-bit halves with prose ('64-bit Mode:') and nests an
+# 'IF DF = 0' without THEN, which doesn't parse. This is the 64-bit-mode
+# half, with the REP prefix's loop from the REP/REPE/REPZ/REPNE/REPNZ page
+# ("WHILE CountReg != 0 DO ... CountReg := CountReg - 1; OD") composed in
+# for the forms with an F3/F2 prefix. Each iteration commits, as the
+# manual's REP description allows an interrupt between iterations.
+@operation
+IF DF = 0
+    THEN delta := OperandBytes;
+    ELSE delta := 0 - OperandBytes;
+FI;
+IF RepPrefix
+    THEN
+        WHILE RCX != 0
+        DO
+        accumulator := Memory[RSI];
+        RSI := RSI + delta;
+            RCX := RCX - 1;
+            Commit;
+        OD;
+    ELSE
+        accumulator := Memory[RSI];
+        RSI := RSI + delta;
+FI;
+@flags
+None.

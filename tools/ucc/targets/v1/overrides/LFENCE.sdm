@@ -1,0 +1,5 @@
+# LFENCE -- override
+# 'Wait_On_Following_Loads/Stores_Until(preceding ... globally visible);':
+# v1 executes one micro-op at a time and its bus is in order, so there is
+# nothing to wait for.
+@operation

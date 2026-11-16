@@ -47,7 +47,9 @@ def read_sdm(path):
     with open(path) as f:
         for line in f:
             line = line.rstrip("\n")
-            if line.startswith("# ") and sec is None:
+            if line.startswith("#") and sec is None:
+                if title or not line.startswith("# "):
+                    continue
                 head = line[2:]
                 if " -- " in head:
                     title, source = head.split(" -- ", 1)

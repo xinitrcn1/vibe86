@@ -1,0 +1,5 @@
+# HLT—Halt -- override
+# 'Enter Halt state;'. The instruction retires first, so the RIP pushed when
+# an interrupt wakes the core is the one after HLT.
+@operation
+Halt;

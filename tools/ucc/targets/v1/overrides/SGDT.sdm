@@ -1,0 +1,5 @@
+# SGDT—Store Global Descriptor Table Register -- override
+# 64-bit mode: 'DEST[0:15] := GDTR(Limit); DEST[16:79] := GDTR(Base);'
+@operation
+Memory16[EffectiveAddress(DEST)] := GDTR_LIMIT;
+Memory64[EffectiveAddress(DEST) + 2] := GDTR_BASE;

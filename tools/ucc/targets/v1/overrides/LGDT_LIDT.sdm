@@ -1,0 +1,15 @@
+# LGDT/LIDT—Load Global/Interrupt Descriptor Table Register -- override
+# The 64-bit-mode branch of the manual's Operation: 'IDTR(Limit) :=
+# SRC[0:15]; IDTR(Base) := SRC[16:79];' -- an 80-bit memory operand, read as
+# a 16-bit limit and a 64-bit base.
+@operation
+limit := Memory16[EffectiveAddress(SRC)];
+base := Memory64[EffectiveAddress(SRC) + 2];
+IF instruction is LIDT
+    THEN
+        WriteSpecial(IDTR_LIMIT, limit);
+        WriteSpecial(IDTR_BASE, base);
+    ELSE
+        WriteSpecial(GDTR_LIMIT, limit);
+        WriteSpecial(GDTR_BASE, base);
+FI;

@@ -125,10 +125,16 @@ class Lowerer:
         self.binding = {}
         self.ret = None
         self.uses_rem = False
+        self.loop_ends = []
+        self.native_flags = 0          # flags a primitive (ShiftOp, BitScan) set itself
         self.find_flag_assignments(ast)
         self.bind_operands()
-        self.result_mask = self.result_flags()
         self.producer = self.find_producer(ast)
+        # 'cleared' flags come out of the producer only for a logic op (AND/OR/XOR
+        # clear OF and CF); otherwise they're cleared explicitly at the end
+        self.logic_producer = bool(self.producer) and all(
+            isinstance(n.src, Bin) and n.src.op in ("AND", "OR", "XOR") for n in self.producer_nodes)
+        self.result_mask = self.result_flags()
 
     # ------------------------------------------------------------ setup
 
@@ -156,18 +162,34 @@ class Lowerer:
     def result_flags(self):
         mask = 0
         for fl, act in self.flags.items():
-            if act in ("result", "clear") and fl not in self.assigned_flags:
+            if fl in self.assigned_flags:
+                continue
+            if act == "result" or (act == "clear" and self.logic_producer):
                 mask |= FMASK[fl]
         return mask
 
     ARITH = ("+", "-", "AND", "OR", "XOR")
 
     def find_producer(self, body):
+        prod = self._find_producer(body)
+        nodes = []
+
+        def walk(b):
+            for st in b:
+                if id(st) in prod:
+                    nodes.append(st)
+                for sub in self.children(st):
+                    walk(sub)
+        walk(body)
+        self.producer_nodes = nodes
+        return prod
+
+    def _find_producer(self, body):
         """The assignment whose arithmetic sets the 'according to the result'
         flags: the one before ModifyStatusFlags, else the last arithmetic
         assignment of the Operation."""
         last = [None]
-        marker = [None]
+        marker = []
 
         def arith(e):
             return (isinstance(e, Bin) and e.op in self.ARITH) or \
@@ -177,14 +199,16 @@ class Lowerer:
             for s in b:
                 if isinstance(s, Do) and isinstance(s.e, (Name, Call)) and \
                         getattr(s.e, "n", getattr(s.e, "f", "")) == "ModifyStatusFlags":
-                    marker[0] = last[0]
+                    marker.append(last[0])
                 if isinstance(s, Assign) and arith(s.src) and not (
                         isinstance(s.dst, Name) and s.dst.n in FMASK):
                     last[0] = s
                 for sub in self.children(s):
                     walk(sub)
         walk(body)
-        return marker[0] or last[0]
+        # every assignment a ModifyStatusFlags follows (the same comparison can
+        # appear on several paths), else the last arithmetic assignment
+        return set(map(id, marker)) if marker else ({id(last[0])} if last[0] else set())
 
     def bind_operands(self):
         ops = self.f.operands
@@ -331,6 +355,12 @@ class Lowerer:
             return int(bool(self.f.mem))
         if n == "RegisterOffset":
             return int(len(self.f.operands) > 1 and self.f.operands[1].kind == "reg")
+        if n == "RepPrefix":
+            return int(self.f.rep is not None)
+        if n == "RepNE":
+            return int(self.f.rep == "F2")
+        if n == "OperandBytes":
+            return self.f.osz // 8
         if n == "Signed":
             return int(self.page.name in ("IMUL", "IDIV"))
         return None
@@ -391,9 +421,9 @@ class Lowerer:
             st = self.static(e.n)
             if st is not None:
                 return K(st)
-            if e.n in FLAG:
+            if e.n in FLAG or e.n == "INTF":
                 t = self.tmp()
-                self.E("GETF", 8, dst=t, imm=FLAG[e.n])
+                self.E("GETF", 8, dst=t, imm=FLAG[{"INTF": "IF"}.get(e.n, e.n)])
                 return V("sel", 1, sel=t)
             v = self.rname(e.n)
             if v is None:
@@ -462,7 +492,7 @@ class Lowerer:
     CMPS = {"=": "EQ", "!=": "NE", "<": "LTU", ">": "GTU", "<=": "LEU", ">=": "GEU"}
 
     def flag_mask_for(self, e):
-        if self.cur_producer and self.cur_producer.src is e:
+        if self.cur_producer is not None and self.cur_producer.src is e:
             return self.result_mask
         return 0
 
@@ -494,8 +524,14 @@ class Lowerer:
             return self.alu("SBB", e.a, e.b.a, want, fm)
         if op not in self.ALU:
             raise LowerError(f"operator {op}")
+        # an operand's width is the context for the other one's SignExtend /
+        # ZeroExtend ('SRC1 - SignExtend(SRC2)' is at SRC1's width)
         a = self.eval(e.a, want)
-        b = self.eval(e.b, want)
+        sib = want or (a.w if a.kind == "sel" and not a.adapt else None)
+        b = self.eval(e.b, sib)
+        if want is None and isinstance(e.a, Call) and e.a.f in ("SignExtend", "ZeroExtend") \
+                and b.kind == "sel" and not b.adapt:
+            a = self.eval(e.a, b.w)
         if a.kind == "k" and b.kind == "k" and not fm:
             return K(self.fold(op, a.k, b.k))
         return self.alu(self.ALU[op], a, b, want, fm)
@@ -654,6 +690,7 @@ class Lowerer:
             (sd, sc), imm = self.srcs(d, c, w=w)
             t = self.tmp()
             self.E(kind, w, dst=t, a=sd, b=sc, imm=imm, fmask=self.result_mask_all())
+            self.native_flags |= self.result_mask_all()
             return V("sel", w, sel=t)
         if f in ("BitScan",):
             kind = e.args[0].n
@@ -663,13 +700,18 @@ class Lowerer:
             w = opsize(v.w if not v.adapt else self.f.osz)
             (s,), imm = self.srcs(v, w=w)
             t = self.tmp()
-            self.E(kind, w, dst=t, a=s, imm=imm, fmask=self.result_mask_all())
+            m = self.result_mask_all() | self.clear_mask()
+            self.E(kind, w, dst=t, a=s, imm=imm, fmask=m)
+            self.native_flags |= m
             return V("sel", w, sel=t)
         if f == "Port":
             return V("port", self.f.osz, addr=self.eval(e.args[0], 16))
         if f == "ReadMSR" or f == "WriteMSR":
             raise LowerError(f"{f} is a statement")
         raise LowerError(f"function '{f}'")
+
+    def clear_mask(self):
+        return sum(FMASK[f] for f, a in self.flags.items() if a == "clear")
 
     def result_mask_all(self):
         """Every status flag the prose doesn't call unaffected/undefined."""
@@ -1074,7 +1116,7 @@ class Lowerer:
 
     def stmt(self, s):
         if isinstance(s, Assign):
-            self.cur_producer = self.producer if s is self.producer else None
+            self.cur_producer = s if id(s) in self.producer else None
             if isinstance(s.dst, Name) and s.dst.n == "RESULT":
                 v = self.eval(s.src, self.f.osz)
                 if v.kind == "mem":
@@ -1116,7 +1158,9 @@ class Lowerer:
             if st is not True:
                 self.branch(s.cond, lend, False)
                 self.release_stmt()
+            self.loop_ends.append(lend)
             self.block(s.body)
+            self.loop_ends.pop()
             self.E("JMP", imm=ltop)
             self.r.place(lend)
             return
@@ -1158,8 +1202,11 @@ class Lowerer:
                 self.E({"SHUTDOWN": "SHUTDOWN", "Shutdown": "SHUTDOWN", "HLT": "HLT",
                         "Halt": "HLT", "Commit": "COMMIT", "COMMIT": "COMMIT"}[e.n])
                 return
-            if isinstance(e, Name) and e.n == "BREAK":
-                raise LowerError("BREAK")
+            if isinstance(e, Call) and e.f == "BREAK":
+                if not self.loop_ends:
+                    raise LowerError("BREAK outside a loop")
+                self.E("JMP", imm=self.loop_ends[-1])
+                return
             text = e.text if isinstance(e, Prose) else str(e)
             what = oracle.statement(text) if isinstance(e, Prose) else None
             if what == "skip":
@@ -1245,7 +1292,7 @@ class Lowerer:
             self.E("EXC", 32, a=s, imm=(1 << 9) | (1 << 10))   # vector from a
 
     def s_setflag(self, e):
-        name = e.args[0].n
+        name = {"INTF": "IF"}.get(e.args[0].n, e.args[0].n)
         v = self.eval(e.args[1], 1)
         (s,), imm = self.srcs(v, w=8)
         if s == "K":
@@ -1279,11 +1326,10 @@ class Lowerer:
         self.cur_producer = None
         self.block(self.ast)
         # prose 'cleared'/'set' flags nobody produced or assigned
-        produced = self.producer is not None
         for fl, act in self.flags.items():
-            if fl in self.assigned_flags:
+            if fl in self.assigned_flags or self.native_flags & FMASK[fl]:
                 continue
-            if act in ("clear", "set") and not produced:
+            if (act == "clear" and not self.logic_producer) or act == "set":
                 self.E("SETF", 8, a="ONE" if act == "set" else "ZERO", imm=FLAG[fl])
         self.E("END")
         return self.r

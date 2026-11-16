@@ -1,0 +1,6 @@
+# STI—Set Interrupt Flag -- override
+# At CPL 0 the manual's Operation reduces to 'IF := 1'. (The one-instruction
+# interrupt shadow after STI doesn't matter in v1, which takes no maskable
+# interrupts.)
+@operation
+SetFlag(INTF, 1);
