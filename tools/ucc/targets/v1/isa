@@ -23,7 +23,7 @@ IMUL
 DIV
 IDIV
 # data movement
-MOV                 skip='Sreg|moffs'
+MOV                 skip='moffs|r16/r32/m16|r64/m16'  sreg
 MOVZX
 MOVSX_MOVSXD        skip='MOVSXD r16'
 LEA                 memonly
@@ -36,11 +36,11 @@ BSWAP
 XADD
 CMPXCHG
 # stack and control transfer
-PUSH                skip='FS|GS|CS|SS|DS|ES'  class=d64
-POP                 skip='FS|GS|CS|SS|DS|ES'  class=d64
-CALL                only='rel32|r/m64'       class=f64
+PUSH                class=d64
+POP                 class=d64  skip='POP CS'
+CALL                skip='ptr16|m16:'        class=f64
 RET                 only='^C[23]'            class=f64  immz
-JMP                 only='rel8|rel32|r/m64'  class=f64
+JMP                 skip='ptr16|m16:'        class=f64
 Jcc                 skip='CXZ'               class=f64
 LEAVE               class=d64
 # shifts, rotates, bits

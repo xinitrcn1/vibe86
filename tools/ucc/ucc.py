@@ -76,7 +76,7 @@ def read_isa(path):
                     cfg[k] = {a: int(b) for a, b in (x.split(":") for x in v.split(","))}
                 elif k in ("rep", "suffixed"):
                     cfg[k] = v.split(",")
-                elif k in ("memonly", "immz", "cc"):
+                elif k in ("memonly", "immz", "cc", "sreg"):
                     cfg[k] = True
                 else:
                     cfg[k] = v
@@ -275,7 +275,8 @@ def sv_tables(forms, image, cfg_of):
                                          f.prefix_key() is None, f.okey == "any",
                                          len(f.spec) == 0))
     for f in order:
-        sub = "1" if f.hints.get("sub90") else ("0" if (f.map, f.opc) == (0, 0x90) else "?")
+        # opcode 90h: NOP/PAUSE without REX.B (sub90 = 1), XCHG with a register
+        sub = ("0" if f.plus_r else "1") if (f.map, f.opc) == (0, 0x90) else "?"
         dg = "???" if f.digit is None else format(f.digit, "03b")
         pk = {None: "00", "F3": "01", "F2": "10", "66": "11"}[f.prefix_key()]
         oz = {"any": "??", "16": "01", "32": "10", "64": "11"}[f.okey]
@@ -347,11 +348,12 @@ def main():
         page = sdm.read_sdm(os.path.join(TDIR, "routines", fn))
         ast = sdm.parse(page.operation)
         f = F.Form(page=page.name, mnem=page.name, text=page.name, opcol="", open="",
-                   osz=64)
+                   osz=64, mode=4)
+        f.trap = page.name == "WALK"
         lw = L.Lowerer(f, page, ast, oracle.flags_spec("None."), lib, name=page.name)
         try:
             image.add(page.name, lw.lower())
-        except L.LowerError as e:
+        except (L.LowerError, L.NeedSpec, TypeError) as e:
             errors.append(f"{page.name}: {e}")
     compiled = []
     per_page = {}
@@ -407,6 +409,7 @@ def main():
            f"  localparam int UROM_N = {len(words)};",
            f"  localparam logic [UADDR_W-1:0] UADDR_UD = {image.addr['UD']};",
            f"  localparam logic [UADDR_W-1:0] UADDR_DELIVER = {image.addr['DELIVER']};",
+           f"  localparam logic [UADDR_W-1:0] UADDR_WALK = {image.addr['WALK']};",
            "  // decoder attributes: imm 0 none, 1/2/3/4 bytes, 5 iw/id (z), 6 iw/id/io (v), 7 8 bytes;",
            "  // cls 0 default 32-bit operands, 1 default 64 (66h -> 16), 2 always 64",
            "  typedef struct packed {",

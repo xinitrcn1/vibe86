@@ -1,6 +1,15 @@
 # MOV—Move -- override
-# The manual's Operation is 'DEST := SRC;' followed by the segment-register
-# load rules for the MOV Sreg rows, in prose. v1 implements the
-# general-purpose rows only (the isa file skips the Sreg rows).
+# 'DEST := SRC;' for the general-purpose rows; for MOV Sreg, r/m the
+# segment-register load the rest of the Operation describes in prose,
+# through LoadSegment (lib.sdm). "Loading the SS register with a MOV
+# instruction suppresses or inhibits some debug exceptions and inhibits
+# interrupts on the following instruction boundary" (Description).
 @operation
-DEST := SRC;
+IF SregDest
+    THEN
+        IF Sreg = 1 THEN #UD; FI;
+        LoadSegment(Sreg, SRC);
+        IF Sreg = 2 THEN InhibitInterrupts; FI;
+    ELSE
+        DEST := SRC;
+FI;

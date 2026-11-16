@@ -1,7 +1,10 @@
 # PUSH—Push Word, Doubleword, or Quadword Onto the Stack -- override
-# The StackAddrSize = 64 branch of the manual's Operation (the only one in
-# 64-bit mode), through the Push helper (lib.sdm) so the value is taken
-# before RSP changes ("PUSH RSP pushes the value of RSP as it existed before
-# the instruction was executed", Description).
+# The manual's Operation by stack-address size, through the Push helper
+# (lib.sdm) so the value is taken before the stack pointer changes ("PUSH
+# RSP pushes the value of RSP as it existed before the instruction was
+# executed", Description); PUSH Sreg pushes the selector, zero-extended.
 @operation
-Push(SRC);
+IF SegmentOperand
+    THEN Push(SregValue);
+    ELSE Push(SRC);
+FI;

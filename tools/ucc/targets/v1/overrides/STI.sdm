@@ -1,6 +1,8 @@
 # STI—Set Interrupt Flag -- override
-# At CPL 0 the manual's Operation reduces to 'IF := 1'. (The one-instruction
-# interrupt shadow after STI doesn't matter in v1, which takes no maskable
-# interrupts.)
+# At CPL 0 the manual's Operation reduces to 'IF := 1' (SetFlag, since IF is
+# also the keyword). "If IF = 0, maskable hardware interrupts remain
+# inhibited on the instruction boundary following an execution of STI"
+# (Description). IOPL/VME checks for CPL > 0: TODO (v1 runs them at CPL 0).
 @operation
+IF INTF = 0 THEN InhibitInterrupts; FI;
 SetFlag(INTF, 1);

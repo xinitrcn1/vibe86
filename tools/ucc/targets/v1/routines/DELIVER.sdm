@@ -1,35 +1,140 @@
 # DELIVER -- vibe86 v1 exception and interrupt delivery
-# The core enters here (with the working registers rolled back to the
-# faulting instruction's start) for every exception, INT n and INT3, with
-# FAULT_VEC (vector; bit 8: has an error code), FAULT_ERR and FAULT_RIP set.
-# It is the IA-32e-mode branch of INT n's Operation (Intel SDM Vol. 2A,
-# "INT n/INTO/INT3/INT1", and Vol. 3A section 6.14 "Exception and Interrupt
-# Handling in 64-bit Mode") for a 64-bit interrupt or trap gate at CPL 0:
-# no stack switch, no IST, the stack aligned to 16 bytes, then SS, RSP,
-# RFLAGS, CS, RIP and the error code pushed. Anything v1 can't deliver (an
-# IDT too short, a gate not present) shuts the core down, as a triple fault
-# would; so does a fault during delivery (the core checks that).
+# The core enters here, with the working registers rolled back to the start
+# of the interrupted instruction, for every exception, INT n/INT3 and
+# external interrupt, with FAULT_VEC (bits 7:0 vector, 8 error code, 9
+# software interrupt, 10 external), FAULT_ERR and FAULT_RIP set. It is INT
+# n's Operation (Intel SDM Vol. 2A, "INT n/INTO/INT3/INT1") written for the
+# three ways the processor can be running:
+#   real-address mode: the IVT (REAL-ADDRESS-MODE branch);
+#   protected mode: 8-byte interrupt/trap gates, a privilege change through
+#     the 32-bit TSS (Vol. 3A 7.12.1 "Exception- or Interrupt-Handler
+#     Procedures");
+#   IA-32e mode: 16-byte gates, IST, a privilege change through the 64-bit
+#     TSS, the stack aligned to 16 bytes (Vol. 3A 7.14 "Exception and
+#     Interrupt Handling in 64-bit Mode").
+# v1 simplifications, each a shutdown where the manual raises a further
+# exception: an IDT too short, a gate not present, a software interrupt
+# through a gate with DPL < CPL (#GP), a fault during delivery (#DF; the core
+# checks that). Task gates and virtual-8086 mode aren't delivered.
 @operation
 vec := FAULT_VEC AND FFH;
-IF IDTR_LIMIT < SHL(vec, 4) + 15 THEN SHUTDOWN; FI;
-gate := IDTR_BASE + SHL(vec, 4);
-lo := Linear64[gate];
-hi := Linear64[gate + 8];
-IF (SHR(lo, 47) AND 1) = 0 THEN SHUTDOWN; FI;
-target := (lo AND FFFFH) OR (SHR(lo, 32) AND FFFF0000H) OR SHL(hi, 32);
-oldRSP := RSP;
-oldFLAGS := RFLAGS;
-RSP := RSP AND FFFFFFFFFFFFFFF0H;   (* 64-bit mode; legacy-mode delivery: TODO *)
-Push(SS);
-Push(oldRSP);
-Push(oldFLAGS);
-Push(CS);
-Push(FAULT_RIP);
-IF (FAULT_VEC AND 100H) != 0 THEN Push(FAULT_ERR); FI;
-IF (SHR(lo, 40) AND 0FH) = 0EH THEN SetFlag(INTF, 0); FI;
-SetFlag(TF, 0);
-SetFlag(NT, 0);
-SetFlag(RF, 0);
-RIP := target;
+soft := SHR(FAULT_VEC, 9) AND 1;
+haserr := SHR(FAULT_VEC, 8) AND 1;
+oldcpl := CPL;
+oldflags := RFLAGS;
+oldcs := CS;
+oldss := SS;
+oldrsp := RSP;
+IF CR0.PE = 0
+    THEN
+        IF IDTR_LIMIT < SHL(vec, 2) + 3 THEN SHUTDOWN; FI;
+        ip := Linear16[IDTR_BASE + SHL(vec, 2)];
+        cs := Linear16[IDTR_BASE + SHL(vec, 2) + 2];
+        SP := SP - 2;
+        Memory16[SS:SP] := oldflags;
+        SP := SP - 2;
+        Memory16[SS:SP] := oldcs;
+        SP := SP - 2;
+        Memory16[SS:SP] := FAULT_RIP;
+        SetFlag(INTF, 0);
+        SetFlag(TF, 0);
+        SetFlag(AC, 0);
+        WriteSpecial(CS_SEL, cs);
+        WriteSpecial(CS_BASE, SHL(cs, 4));
+        RIP := ip;
+    ELSE IF IA32_EFER.LMA = 1
+    THEN
+        IF IDTR_LIMIT < SHL(vec, 4) + 15 THEN SHUTDOWN; FI;
+        lo := Linear64[IDTR_BASE + SHL(vec, 4)];
+        hi := Linear64[IDTR_BASE + SHL(vec, 4) + 8];
+        IF (SHR(lo, 47) AND 1) = 0 THEN SHUTDOWN; FI;
+        IF soft = 1 AND (SHR(lo, 45) AND 3) < oldcpl THEN SHUTDOWN; FI;
+        target := (lo AND FFFFH) OR (SHR(lo, 32) AND FFFF0000H) OR SHL(hi, 32);
+        sel := SHR(lo, 16) AND FFFFH;
+        ist := SHR(lo, 32) AND 7;
+        desc := Linear64[GDTR_BASE + (sel AND FFF8H)];
+        newcpl := SHR(desc, 45) AND 3;
+        IF (SHR(desc, 42) AND 1) = 1 THEN newcpl := oldcpl; FI;
+        WriteSpecial(CS_SEL, (sel AND FFFCH) OR newcpl);
+        WriteSpecial(CS_BASE, 0);
+        WriteSpecial(CS_LIMIT, FFFFFFFFH);
+        WriteSpecial(CS_ATTR, DescAttr(desc));
+        IF ist != 0 THEN
+            RSP := Linear64[TR_BASE + 28 + SHL(ist, 3)];
+        ELSE IF newcpl < oldcpl THEN
+            RSP := Linear64[TR_BASE + 4 + SHL(newcpl, 3)];
+        FI;
+        IF newcpl < oldcpl THEN
+            WriteSpecial(SS_SEL, newcpl);
+            WriteSpecial(SS_BASE, 0);
+        FI;
+        WriteSpecial(CPL, newcpl);
+        RSP := RSP AND FFFFFFFFFFFFFFF0H;
+        RSP := RSP - 8;
+        Memory64[SS:RSP] := oldss;
+        RSP := RSP - 8;
+        Memory64[SS:RSP] := oldrsp;
+        RSP := RSP - 8;
+        Memory64[SS:RSP] := oldflags;
+        RSP := RSP - 8;
+        Memory64[SS:RSP] := oldcs;
+        RSP := RSP - 8;
+        Memory64[SS:RSP] := FAULT_RIP;
+        IF haserr = 1 THEN
+            RSP := RSP - 8;
+            Memory64[SS:RSP] := FAULT_ERR;
+        FI;
+        IF (SHR(lo, 40) AND 0FH) = 0EH THEN SetFlag(INTF, 0); FI;
+        SetFlag(TF, 0);
+        SetFlag(NT, 0);
+        SetFlag(RF, 0);
+        RIP := target;
+    ELSE
+        IF IDTR_LIMIT < SHL(vec, 3) + 7 THEN SHUTDOWN; FI;
+        g := Linear64[IDTR_BASE + SHL(vec, 3)];
+        IF (SHR(g, 47) AND 1) = 0 THEN SHUTDOWN; FI;
+        IF soft = 1 AND (SHR(g, 45) AND 3) < oldcpl THEN SHUTDOWN; FI;
+        target := (g AND FFFFH) OR (SHR(g, 32) AND FFFF0000H);
+        sel := SHR(g, 16) AND FFFFH;
+        desc := Linear64[GDTR_BASE + (sel AND FFF8H)];
+        newcpl := SHR(desc, 45) AND 3;
+        IF (SHR(desc, 42) AND 1) = 1 THEN newcpl := oldcpl; FI;
+        IF newcpl < oldcpl THEN
+            newss := Linear16[TR_BASE + 8 + SHL(newcpl, 3)];
+            newesp := Linear32[TR_BASE + 4 + SHL(newcpl, 3)];
+            ssdesc := Linear64[GDTR_BASE + (newss AND FFF8H)];
+            WriteSpecial(SS_SEL, newss);
+            WriteSpecial(SS_BASE, DescBase(ssdesc));
+            WriteSpecial(SS_LIMIT, DescLimit(ssdesc));
+            WriteSpecial(SS_ATTR, DescAttr(ssdesc));
+            ESP := newesp;
+        FI;
+        WriteSpecial(CS_SEL, (sel AND FFFCH) OR newcpl);
+        WriteSpecial(CS_BASE, DescBase(desc));
+        WriteSpecial(CS_LIMIT, DescLimit(desc));
+        WriteSpecial(CS_ATTR, DescAttr(desc));
+        WriteSpecial(CPL, newcpl);
+        IF newcpl < oldcpl THEN
+            ESP := ESP - 4;
+            Memory32[SS:ESP] := oldss;
+            ESP := ESP - 4;
+            Memory32[SS:ESP] := oldrsp;
+        FI;
+        ESP := ESP - 4;
+        Memory32[SS:ESP] := oldflags;
+        ESP := ESP - 4;
+        Memory32[SS:ESP] := oldcs;
+        ESP := ESP - 4;
+        Memory32[SS:ESP] := FAULT_RIP;
+        IF haserr = 1 THEN
+            ESP := ESP - 4;
+            Memory32[SS:ESP] := FAULT_ERR;
+        FI;
+        IF (SHR(g, 40) AND 7) = 6 THEN SetFlag(INTF, 0); FI;
+        SetFlag(TF, 0);
+        SetFlag(NT, 0);
+        SetFlag(RF, 0);
+        RIP := target;
+FI;
 @flags
 None.

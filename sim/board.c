@@ -460,6 +460,29 @@ board_io(struct board *b, int we, uint16_t port, unsigned size, uint8_t *data)
 	if (size > 2)
 		return -1;
 	b->accesses++;
+	if (port == PORT_PWR && size == 1) {
+		/* power control (as QEMU's PC machine's ACPI PM1a_CNT at 604h): a
+		   word write of 2000h (SLP_EN, sleep type 0) powers off; vsim also
+		   takes 3333h | code << 16 written as a dword, as SYSCON's "fail" */
+		if (we) {
+			uint16_t v = (uint16_t)(data[0] | data[1] << 8);
+			if (v == 0x2000) {
+				board_nvram_flush(b);
+				b->power = PWR_OFF;
+			}
+		} else
+			memset(data, 0, 2);
+		return 0;
+	}
+	if (port == PORT_PWR && size == 2 && we) {
+		uint32_t v = (uint32_t)data[0] | (uint32_t)data[1] << 8 |
+		    (uint32_t)data[2] << 16 | (uint32_t)data[3] << 24;
+		if ((v & 0xFFFF) == 0x3333) {
+			b->power = PWR_FAIL;
+			b->failcode = v >> 16;
+		}
+		return 0;
+	}
 	for (unsigned i = 0; i < n; i++) {
 		uint16_t p = (uint16_t)(port + i);
 		uint8_t *d = data + i;

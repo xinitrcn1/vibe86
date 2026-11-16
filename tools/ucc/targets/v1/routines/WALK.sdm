@@ -1,0 +1,155 @@
+# WALK -- vibe86 v1 page walk (micro-trap routine)
+# The core traps here when a memory access or an instruction fetch misses
+# the TLB, or hits an entry that doesn't allow it (D-008). TRAPVA is the
+# linear address, TRAPX the access: bit 0 write, bit 1 user (CPL 3), bit 2
+# instruction fetch. The routine walks the paging structures the way the
+# Intel SDM Vol. 3A, chapter 4 "Paging" describes:
+#   4.3 32-bit paging (CR4.PAE = 0; 4-MByte pages with CR4.PSE),
+#   4.4 PAE paging (CR4.PAE = 1, IA32_EFER.LMA = 0),
+#   4.5 4-level and 5-level paging (IA32_EFER.LMA = 1; CR4.LA57),
+# sets the accessed and dirty flags (4.8), checks access rights (4.6:
+# user/supervisor, read/write with CR0.WP, execute-disable, SMEP, SMAP) and
+# either installs the translation in the TLB and returns to retry the access,
+# or raises #PF with CR2 and the error code of 4.7.
+# v1 doesn't check reserved bits (no #PF with RSVD = 1), protection keys
+# or the PAE PDPTE registers (it reads the PDPTEs at each walk).
+@operation
+la := TRAPVA;
+kind := TRAPX;
+wr := kind AND 1;
+user := SHR(kind, 1) AND 1;
+fetch := SHR(kind, 2) AND 1;
+ifetch := 0;
+IF IA32_EFER.NXE = 1 OR CR4.SMEP = 1 THEN ifetch := fetch; FI;
+errbase := SHL(user, 2) OR SHL(wr, 1) OR SHL(ifetch, 4);
+rw := 1;
+us := 1;
+xd := 0;
+size := 0;
+wide := 1;
+IF IA32_EFER.LMA = 1
+    THEN
+        IF CR4.LA57 = 1 THEN shift := 48; ELSE shift := 39; FI;
+        table := CR3 AND 000FFFFFFFFFF000H;
+        leaf := 0;
+        WHILE leaf = 0
+        DO
+            eaddr := table + SHL(SHR(la, shift) AND 1FFH, 3);
+            pte := Physical64[eaddr];
+            IF (pte AND 1) = 0 THEN
+                WriteSpecial(CR2, la);
+                #PF(errbase);
+            FI;
+            rw := rw AND SHR(pte, 1);
+            us := us AND SHR(pte, 2);
+            IF IA32_EFER.NXE = 1 THEN xd := xd OR SHR(pte, 63); FI;
+            IF (pte AND 20H) = 0 THEN Physical64[eaddr] := pte OR 20H; FI;
+            IF shift = 12 THEN
+                leaf := 1;
+            ELSE IF (shift = 21 OR shift = 30) AND (pte AND 80H) != 0 THEN
+                leaf := 1;
+            ELSE
+                table := pte AND 000FFFFFFFFFF000H;
+                shift := shift - 9;
+            FI;
+        OD;
+        frame := pte AND 000FFFFFFFFFF000H;
+        IF shift = 30 THEN
+            size := 2;
+            frame := pte AND 000FFFFFC0000000H;
+        ELSE IF shift = 21 THEN
+            size := 1;
+            frame := pte AND 000FFFFFFFE00000H;
+        FI;
+    ELSE IF CR4.PAE = 1
+    THEN
+        pdpte := Physical64[(CR3 AND FFFFFFE0H) + SHL(SHR(la, 30) AND 3, 3)];
+        IF (pdpte AND 1) = 0 THEN
+            WriteSpecial(CR2, la);
+            #PF(errbase);
+        FI;
+        eaddr := (pdpte AND 000FFFFFFFFFF000H) + SHL(SHR(la, 21) AND 1FFH, 3);
+        pte := Physical64[eaddr];
+        IF (pte AND 1) = 0 THEN
+            WriteSpecial(CR2, la);
+            #PF(errbase);
+        FI;
+        rw := rw AND SHR(pte, 1);
+        us := us AND SHR(pte, 2);
+        IF IA32_EFER.NXE = 1 THEN xd := xd OR SHR(pte, 63); FI;
+        IF (pte AND 20H) = 0 THEN Physical64[eaddr] := pte OR 20H; FI;
+        IF (pte AND 80H) != 0 THEN
+            size := 1;
+            frame := pte AND 000FFFFFFFE00000H;
+        ELSE
+            eaddr := (pte AND 000FFFFFFFFFF000H) + SHL(SHR(la, 12) AND 1FFH, 3);
+            pte := Physical64[eaddr];
+            IF (pte AND 1) = 0 THEN
+                WriteSpecial(CR2, la);
+                #PF(errbase);
+            FI;
+            rw := rw AND SHR(pte, 1);
+            us := us AND SHR(pte, 2);
+            IF IA32_EFER.NXE = 1 THEN xd := xd OR SHR(pte, 63); FI;
+            IF (pte AND 20H) = 0 THEN Physical64[eaddr] := pte OR 20H; FI;
+            frame := pte AND 000FFFFFFFFFF000H;
+        FI;
+    ELSE
+        wide := 0;
+        eaddr := (CR3 AND FFFFF000H) + SHL(SHR(la, 22) AND 3FFH, 2);
+        pte := Physical32[eaddr];
+        IF (pte AND 1) = 0 THEN
+            WriteSpecial(CR2, la);
+            #PF(errbase);
+        FI;
+        rw := rw AND SHR(pte, 1);
+        us := us AND SHR(pte, 2);
+        IF (pte AND 20H) = 0 THEN Physical32[eaddr] := pte OR 20H; FI;
+        IF (pte AND 80H) != 0 AND CR4.PSE = 1 THEN
+            (* a 4-MByte page goes in the TLB as the 4-KByte page being accessed *)
+            frame := (pte AND FFC00000H) OR (la AND 3FF000H) OR SHL(SHR(pte, 13) AND FFH, 32);
+        ELSE
+            eaddr := (pte AND FFFFF000H) + SHL(SHR(la, 12) AND 3FFH, 2);
+            pte := Physical32[eaddr];
+            IF (pte AND 1) = 0 THEN
+                WriteSpecial(CR2, la);
+                #PF(errbase);
+            FI;
+            rw := rw AND SHR(pte, 1);
+            us := us AND SHR(pte, 2);
+            IF (pte AND 20H) = 0 THEN Physical32[eaddr] := pte OR 20H; FI;
+            frame := pte AND FFFFF000H;
+        FI;
+FI;
+(* access rights (4.6) *)
+IF user = 1 AND us = 0 THEN
+    WriteSpecial(CR2, la);
+    #PF(errbase OR 1);
+FI;
+IF wr = 1 AND rw = 0 AND (user = 1 OR CR0.WP = 1) THEN
+    WriteSpecial(CR2, la);
+    #PF(errbase OR 1);
+FI;
+IF fetch = 1 AND xd = 1 THEN
+    WriteSpecial(CR2, la);
+    #PF(errbase OR 1);
+FI;
+IF fetch = 1 AND user = 0 AND us = 1 AND CR4.SMEP = 1 THEN
+    WriteSpecial(CR2, la);
+    #PF(errbase OR 1);
+FI;
+IF fetch = 0 AND user = 0 AND us = 1 AND CR4.SMAP = 1 AND RFLAGS.AC = 0 THEN
+    WriteSpecial(CR2, la);
+    #PF(errbase OR 1);
+FI;
+(* the dirty flag on a write (4.8) *)
+dirty := SHR(pte, 6) AND 1;
+IF wr = 1 AND dirty = 0 THEN
+    IF wide = 1 THEN Physical64[eaddr] := pte OR 60H; ELSE Physical32[eaddr] := pte OR 60H; FI;
+    dirty := 1;
+FI;
+image := frame OR SHL(rw, 1) OR SHL(us, 2) OR SHL(dirty, 6) OR (pte AND 100H) OR SHL(xd, 63);
+TlbWrite(la, image, size);
+TrapReturn;
+@flags
+None.

@@ -21,7 +21,7 @@ import oracle
 import sdm
 from sdm import (Assign, Bin, Call, Case, Do, For, If, Index, Name, Num, Prose,
                  Raise, Seg, Slice, Un, While)
-from uop import FLAG, FMASK, GPR64, NTEMPS, SEGS, SPECIAL, STATUS, UCC_NEG
+from uop import FLAG, FMASK, GPR64, NTEMPS, NTRAPTEMPS, SEGS, SPECIAL, STATUS, UCC_NEG
 
 
 class LowerError(Exception):
@@ -147,7 +147,11 @@ class Lowerer:
         self.flags = flags             # prose spec
         self.lib = library             # name -> parsed body (Push, Pop, ...)
         self.r = Routine(name or form.name)
-        self.free = [f"T{i}" for i in reversed(range(NTEMPS))]
+        # micro-trap routines (WALK) run in the middle of other routines: they
+        # get their own temporaries
+        trap = getattr(form, "trap", False)
+        rng = range(NTEMPS, NTEMPS + NTRAPTEMPS) if trap else range(NTEMPS)
+        self.free = [f"T{i}" for i in reversed(rng)]
         self.vars = {}                 # pseudocode variable -> V
         self.stmt_temps = []
         self.mem_cache = {}            # 'DEST'/'SRC' memory operand -> V loaded
@@ -160,6 +164,7 @@ class Lowerer:
         self.native_flags = 0          # flags a primitive (ShiftOp, BitScan) set itself
         self.find_flag_assignments(ast)
         self.bind_operands()
+        self.liveness(ast)
         self.producer = self.find_producer(ast)
         # 'cleared' flags come out of the producer only for a logic op (AND/OR/XOR
         # clear OF and CF); otherwise they're cleared explicitly at the end
@@ -179,6 +184,65 @@ class Lowerer:
                 for sub in self.children(s):
                     walk(sub)
         walk(body)
+
+    def liveness(self, body):
+        """The last statement (in program order) that mentions each name, so a
+        pseudocode variable's temporary is freed after it; a use inside a
+        loop keeps it until the loop ends."""
+        self.pos = {}
+        self.last = {}
+        counter = [0]
+
+        def names(x, out):
+            if isinstance(x, Name):
+                out.add(x.n)
+            elif isinstance(x, list):
+                for y in x:
+                    names(y, out)
+            elif hasattr(x, "__dataclass_fields__"):
+                for f in x.__dataclass_fields__:
+                    v = getattr(x, f)
+                    if not isinstance(v, (list,)) or f not in ("then", "els", "body", "arms"):
+                        names(v, out)
+            return out
+
+        def walk(b, loop_end=None):
+            for s in b:
+                counter[0] += 1
+                me = counter[0]
+                if isinstance(s, (While, For)):
+                    # names in the loop live to its end
+                    start = me
+                    inner = set()
+                    walk(s.body)
+                    end = counter[0]
+                    names(s.body, inner)
+                    names(s.cond if isinstance(s, While) else [s.lo, s.hi], inner)
+                    for n in inner:
+                        self.last[n] = max(self.last.get(n, 0), end)
+                    self.pos[id(s)] = end
+                    continue
+                for n in names(s if not self.children(s) else
+                               (s.cond if isinstance(s, If) else s), set()):
+                    self.last[n] = max(self.last.get(n, 0), me)
+                for sub in self.children(s):
+                    walk(sub)
+                self.pos[id(s)] = counter[0]
+        walk(body)
+
+    def free_dead(self, s):
+        p = self.pos.get(id(s))
+        if p is None or getattr(self, "_inlining", 0):
+            return
+        for n in list(self.vars):
+            if n in ("RESULT",):
+                continue
+            if self.last.get(n, 1 << 30) <= p:
+                v = self.vars.pop(n)
+                for t in ([v.hi, v.lo] if v.kind == "pair" else [v]):
+                    if t is not None and t.kind == "sel" and t.sel.startswith("T") \
+                            and t.sel not in self.free:
+                        self.free.append(t.sel)
 
     @staticmethod
     def children(s):
@@ -375,6 +439,14 @@ class Lowerer:
     def static(self, name):
         n = name
         m = self.f.mode
+        if m == 4:
+            # system routines (DELIVER, WALK) run in any mode: only the
+            # operand size is static
+            if n in ("OperandSize", "Operandsize", "OpSize"):
+                return 64
+            if n in ("TRUE", "FALSE"):
+                return int(n == "TRUE")
+            return None
         if n in ("OperandSize", "Operandsize", "OpSize"):
             return self.f.osz
         if n in ("AddressSize", "AddrSize"):
@@ -387,7 +459,7 @@ class Lowerer:
             return 0
         if n in ("IA32_EFER.LMA", "EFER.LMA") and m in (0, 3):
             return int(m == 3)
-        if n in ("CS.L",) and m != 3:
+        if n in ("CS.L",) and m in (0, 1, 2):
             return 0
         if n in ("CS.L",):
             return 1
@@ -408,6 +480,17 @@ class Lowerer:
             return int(bool(self.f.mem))
         if n == "RegisterOffset":
             return int(len(self.f.operands) > 1 and self.f.operands[1].kind == "reg")
+        if n == "SregDest":
+            return int(bool(self.f.operands) and self.f.operands[0].kind == "sreg")
+        if n == "SegmentOperand":
+            return int(any(o.kind == "seg" for o in self.f.operands))
+        if n == "Sreg":
+            if "sreg" in self.f.hints:
+                return self.f.hints["sreg"]
+            for o in self.f.operands:
+                if o.kind == "seg":
+                    return {"ES": 0, "CS": 1, "SS": 2, "DS": 3, "FS": 4, "GS": 5}[o.reg]
+            return None
         if n == "RepPrefix":
             return int(self.f.rep is not None)
         if n == "RepNE":
@@ -438,6 +521,10 @@ class Lowerer:
             return K(1)
         if o.kind == "port":
             return V("sel", 16, sel="RDX")
+        if o.kind == "sreg":
+            return V("sel", 16, sel="SEGREG")
+        if o.kind == "seg":
+            return V("special", 64, sel=o.reg)
         if o.kind == "cr":
             return V("sel", 64, sel="CRn")
         raise LowerError(f"operand kind {o.kind}")
@@ -461,6 +548,14 @@ class Lowerer:
         if n == "sSP":
             # the stack pointer at the stack-address size: SP/ESP/RSP
             return V("sel", self.static("StackAddrSize"), sel="RSP")
+        if n == "SregValue":
+            for o in self.f.operands:
+                if o.kind == "seg":
+                    return V("special", 64, sel=o.reg)
+            if any(o.kind == "sreg" for o in self.f.operands):
+                return V("sel", 16, sel="SEGREG")
+        if n in ("TRAPVA", "TRAPX"):
+            return V("sel", 64, sel=n)
         if n.lower() == "accumulator":
             return V("sel", self.f.osz, sel="RAX")
         if n in ("RFLAGS", "EFLAGS", "FLAGS"):
@@ -823,7 +918,9 @@ class Lowerer:
             self.vars[p] = v
         saved["RESULT"] = self.vars.get("RESULT")
         self.vars.pop("RESULT", None)
+        self._inlining = getattr(self, "_inlining", 0) + 1
         self.block(body)
+        self._inlining -= 1
         res = self.vars.get("RESULT")
         for p, v in saved.items():
             if v is None:
@@ -958,6 +1055,8 @@ class Lowerer:
         if isinstance(e, Num):
             return e.v
         if isinstance(e, Name):
+            if e.n in self.vars and self.vars[e.n].kind == "k":
+                return self.vars[e.n].k        # a constant argument of an inlined function
             return self.static(e.n)
         if isinstance(e, Bin) and e.op in ("+", "-", "*", "/"):
             a, b = self.static_val(e.a), self.static_val(e.b)
@@ -1217,6 +1316,7 @@ class Lowerer:
     def block(self, body):
         for s in body:
             self.stmt(s)
+            self.free_dead(s)
 
     def stmt(self, s):
         if isinstance(s, Assign):
@@ -1302,9 +1402,13 @@ class Lowerer:
                 self.release_stmt()
                 return
             if isinstance(e, Name) and e.n in ("SHUTDOWN", "HLT", "Halt", "Shutdown", "Commit",
-                                               "COMMIT"):
+                                               "COMMIT", "TrapReturn", "InhibitInterrupts"):
+                if e.n == "InhibitInterrupts":
+                    self.E("WRS", 64, a="ONE", imm=SPECIAL["INT_SHADOW"])
+                    return
                 self.E({"SHUTDOWN": "SHUTDOWN", "Shutdown": "SHUTDOWN", "HLT": "HLT",
-                        "Halt": "HLT", "Commit": "COMMIT", "COMMIT": "COMMIT"}[e.n])
+                        "Halt": "HLT", "Commit": "COMMIT", "COMMIT": "COMMIT",
+                        "TrapReturn": "URET"}[e.n])
                 return
             if isinstance(e, Call) and e.f == "BREAK":
                 if not self.loop_ends:
@@ -1337,8 +1441,76 @@ class Lowerer:
     SPECIAL_STMTS = {
         "Out": "s_out", "In": "s_in", "WriteSpecial": "s_wrs", "ReadSpecial": "s_rds",
         "SetFlag": "s_setflag", "StoreFlags": "s_storeflags", "Jump": "s_jump",
-        "RaiseVector": "s_raise_vec",
+        "RaiseVector": "s_raise_vec", "TlbWrite": "s_tlbw", "TlbInvalidate": "s_tlbinv",
+        "SetSegment": "s_setseg", "SetSegmentReal": "s_setseg_real",
     }
+
+    SEGNAMES = ["ES", "CS", "SS", "DS", "FS", "GS", "LDTR", "TR"]
+
+    def s_setseg(self, e):
+        # SetSegment(n, selector, base, limit, attributes): load a descriptor cache
+        n = self.static_val(e.args[0])
+        if n is None:
+            raise LowerError("SetSegment needs a constant segment number")
+        seg = self.SEGNAMES[n]
+        for part, a in zip(("SEL", "BASE", "LIMIT", "ATTR"), e.args[1:]):
+            v = self.widen(self.eval(a, 64), 64)
+            s = self.to_sel(v, 64)
+            if isinstance(s, tuple):
+                if s[1] == 0:
+                    s = "ZERO"
+                else:
+                    t = self.tmp()
+                    self.E("MOV", 64, dst=t, a="K", imm=s[1])
+                    s = t
+            self.E("WRS", 64, a=s, imm=SPECIAL[f"{seg}_{part}"])
+        if seg == "CS":
+            # a CS load changes the decode mode: nothing else is fetched with the old one
+            pass
+
+    def s_setseg_real(self, e):
+        # SetSegmentReal(n, selector): real-address / virtual-8086 mode, base = selector * 16
+        n = self.static_val(e.args[0])
+        seg = self.SEGNAMES[n]
+        v = self.widen(self.eval(e.args[1], 16), 64)
+        s = self.to_sel(v, 64)
+        if isinstance(s, tuple):
+            t = self.tmp()
+            self.E("MOV", 64, dst=t, a="K", imm=s[1])
+            s = t
+        b = self.tmp()
+        self.E("AND", 64, dst=b, a=s, b="K", imm=0xFFFF)
+        self.E("WRS", 64, a=b, imm=SPECIAL[f"{seg}_SEL"])
+        self.E("SHL", 64, dst=b, a=b, b="K", imm=4)
+        self.E("WRS", 64, a=b, imm=SPECIAL[f"{seg}_BASE"])
+
+    def s_tlbw(self, e):
+        # TlbWrite(linear, image, size): install a translation (image: the page's
+        # physical address with the combined W, U, D, G and NX bits as in a PTE)
+        la = self.widen(self.eval(e.args[0], 64), 64)
+        im = self.widen(self.eval(e.args[1], 64), 64)
+        size = self.widen(self.eval(e.args[2], 64), 64)
+        (sa, sb), _ = self.srcs(la, im, w=64)
+        sc = self.to_sel(size, 64)
+        if isinstance(sc, tuple):
+            t = self.tmp()
+            self.E("MOV", 64, dst=t, a="K", imm=sc[1])
+            sc = t
+        self.E("TLBW", 64, a=sa, b=sb, c=sc)
+
+    def s_tlbinv(self, e):
+        # TlbInvalidate(kind, address, pcid): kind 0 all, 1 non-global, 2 page,
+        # 3 PCID, 4 page in PCID
+        kind = self.static_val(e.args[0])
+        a = self.widen(self.eval(e.args[1], 64), 64) if len(e.args) > 1 else K(0)
+        b = self.widen(self.eval(e.args[2], 64), 64) if len(e.args) > 2 else K(0)
+        sa = self.to_sel(a, 64)
+        sb = self.to_sel(b, 64)
+        if isinstance(sa, tuple):
+            sa = "ZERO"
+        if isinstance(sb, tuple):
+            sb = "ZERO"
+        self.E("TLBINV", 64, a=sa, b=sb, x=kind)
 
     def s_out(self, e):
         port = self.eval(e.args[0], 16)
@@ -1435,5 +1607,6 @@ class Lowerer:
                 continue
             if (act == "clear" and not self.logic_producer) or act == "set":
                 self.E("SETF", 8, a="ONE" if act == "set" else "ZERO", imm=FLAG[fl])
-        self.E("END")
+        if not getattr(self.f, "trap", False):
+            self.E("END")
         return self.r

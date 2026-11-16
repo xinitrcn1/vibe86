@@ -117,7 +117,7 @@ OPS = [
     "LDP", "STP",          # physical (page walks, descriptor tables are linear: seg 6)
     "LOCK", "UNLOCK",      # bus lock for read-modify-write
     "IN", "OUT",
-    "TLBW",                # install a translation: a = linear page, b = PTE image, imm = page size
+    "TLBW",                # install a translation: a = linear page, b = PTE image, c = page size
     "TLBINV",              # x: 0 all, 1 non-global, 2 page a, 3 PCID b, 4 page a in PCID b
     "CLFLUSH",             # cache maintenance (a no-op without caches, kept for ordering)
     # system
@@ -140,28 +140,28 @@ for i, n in enumerate(GPR64):
     SEL[n] = i
 for i, n in enumerate(["AH", "CH", "DH", "BH"]):
     SEL[n] = 16 + i
-NTEMPS = 24          # T0..T23 for instruction routines
-NTRAPTEMPS = 8       # T24..T31 for micro-trap routines (WALK), which interrupt others
+NTEMPS = 32          # T0..T31 for instruction routines (and DELIVER)
+NTRAPTEMPS = 32      # T32..T63 for micro-trap routines (WALK), which interrupt others
 for i in range(NTEMPS + NTRAPTEMPS):
     SEL[f"T{i}"] = 20 + i
 SEL.update({
-    "REG": 52,    # ModRM.reg (+REX.R/EVEX.R'); AH..BH for sz 8 without REX
-    "RM": 53,     # ModRM.rm (+REX.B) register, or the register in the opcode
-    "VVVV": 54,   # VEX/EVEX.vvvv general register (BMI)
-    "IMM": 55,    # the immediate, sign-extended to 64 bits (or zero-extended: immz)
-    "EA": 56,     # the memory operand's offset (before the segment base)
-    "NRIP": 57,   # next RIP (write: a jump)
-    "RIP": 58,    # this instruction's RIP
-    "FLAGS": 59,  # RFLAGS
-    "K": 60,      # imm, sign-extended
-    "ZERO": 61,
-    "ONE": 62,
-    "HI": 63,     # the multiplier's high half / the divider's high dividend
-    "REM": 64,    # the divider's remainder
-    "IMM2": 65,   # second immediate (ENTER's ib, EXTRQ/INSERTQ)
-    "SEGREG": 66, # the segment register named by ModRM.reg (MOV Sreg): its selector
-    "TRAPVA": 67, # micro-trap: the linear address that missed / faulted
-    "TRAPX": 68,  # micro-trap: access kind (bit 0 write, 1 user, 2 fetch, 3 shadow stack)
+    "REG": 84,    # ModRM.reg (+REX.R/EVEX.R'); AH..BH for sz 8 without REX
+    "RM": 85,     # ModRM.rm (+REX.B) register, or the register in the opcode
+    "VVVV": 86,   # VEX/EVEX.vvvv general register (BMI)
+    "IMM": 87,    # the immediate, sign-extended to 64 bits (or zero-extended: immz)
+    "EA": 88,     # the memory operand's offset (before the segment base)
+    "NRIP": 89,   # next RIP (write: a jump)
+    "RIP": 90,    # this instruction's RIP
+    "FLAGS": 91,  # RFLAGS
+    "K": 92,      # imm, sign-extended
+    "ZERO": 93,
+    "ONE": 94,
+    "HI": 95,     # the multiplier's high half / the divider's high dividend
+    "REM": 96,    # the divider's remainder
+    "IMM2": 97,   # second immediate (ENTER's ib, EXTRQ/INSERTQ)
+    "SEGREG": 98, # the segment register named by ModRM.reg (MOV Sreg): its selector
+    "TRAPVA": 99, # micro-trap: the linear address that missed / faulted
+    "TRAPX": 100, # micro-trap: access kind (bit 0 write, 1 user, 2 fetch, 3 shadow stack)
 })
 
 # vector-side selectors (for vec uops, VLD/VST, VGET/VSET, KOP)
@@ -225,6 +225,8 @@ SPECIAL = {
     "FAULT_ERR": 58,
     "FAULT_VEC": 59,   # bit 8: has an error code; bit 9: software interrupt; bit 10: external
     "UCOUNT": 60,      # micro-ops retired
+    "INT_SHADOW": 62,  # write 1: no interrupts (or debug traps) before the next instruction
+                       # completes (MOV SS, POP SS, STI; Intel SDM Vol. 3A 7.8.3)
     "MODE": 61,        # read-only: bit 0 PE, 1 LMA, 2 CS.L, 3 CS.D, 4 VM, 5 PG
     # segment descriptor caches: 64 + 4*seg + {0 selector, 1 base, 2 limit, 3 attributes}
     # (seg 0-5 ES CS SS DS FS GS, 6 LDTR, 7 TR)

@@ -166,6 +166,8 @@ FIXED = {"AL": 8, "CL": 8, "DL": 8, "BL": 8, "AX": 16, "DX": 16, "EAX": 32, "RAX
 
 def parse_operands(f, enc):
     ins = f.text.replace(" ,", ",")
+    # footnote marks on operands: 'MOV Sreg, r/m162', 'MOV r64/m16, Sreg2'
+    ins = re.sub(r"\b(Sreg|r/m16|r/m64|r/m32)\d\b", r"\1", ins)
     parts = ins.split(None, 1)
     f.mnem = parts[0]
     ops = [o.strip() for o in parts[1].split(",")] if len(parts) > 1 else []
@@ -199,6 +201,10 @@ def parse_operands(f, enc):
                 f.operands.append(Operand("port", 16, "DX", o))
             else:
                 f.operands.append(Operand("fixed", FIXED[o], o, o))
+        elif o in ("ES", "CS", "SS", "DS", "FS", "GS"):
+            f.operands.append(Operand("seg", 16, o, o))
+        elif o == "Sreg":
+            f.operands.append(Operand("sreg", 16, text=o))
         elif o == "1":
             f.operands.append(Operand("one", 8, text=o))
         elif re.match(r"^CR[0-8]", o):
@@ -272,6 +278,24 @@ def make_forms(page, cfg):
         for o in f.operands:
             if o.kind in ("rel",):
                 o.size = 64
+        # MOV Sreg, r/m: one form per segment register (ModRM.reg), so its
+        # routine knows statically which descriptor cache it loads
+        if f.operands and f.operands[0].kind == "sreg" and cfg.get("sreg"):
+            for d in (0, 1, 2, 3, 4, 5):
+                g = Form(**{**f.__dict__, "operands": list(f.operands), "imm": list(f.imm),
+                            "hints": dict(f.hints), "spec": {}})
+                g.digit = d
+                g.hints["sreg"] = d
+                if ok64:
+                    forms.append(g)
+                if okleg:
+                    for mode in (0, 1, 2):
+                        h = Form(**{**g.__dict__, "operands": list(g.operands), "imm": [],
+                                    "hints": dict(g.hints), "spec": {}})
+                        h.mode = mode
+                        h.osz = 16
+                        forms.append(h)
+            continue
         if (f.page in ("Jcc", "SETcc", "CMOVcc")) or cfg.get("cc"):
             f.cc = f.opc & 0xF
         f.hints["sized"] = operand_size(f) is not None

@@ -47,6 +47,7 @@ extern "C" {
 #define PORT_POST	0x80		/* POST code */
 #define PORT_COM1	0x3F8		/* 16550, 8 registers */
 #define PORT_RST	0xCF9		/* reset control: bit 2 resets */
+#define PORT_PWR	0x604		/* power control: 2000h off, 3333h|code<<16 fail */
 
 #define STRAP_ECC_SKIP	0x1u	/* jumper: skip the cold-boot ECC check */
 

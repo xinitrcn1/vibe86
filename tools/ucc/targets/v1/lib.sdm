@@ -10,3 +10,57 @@ Memory[SS:sSP] := VALUE;
 @function Pop()
 RESULT := Memory[SS:sSP];
 sSP := sSP + OperandSize / 8;
+
+# Segment descriptor fields (Intel SDM Vol. 3A, 3.4.5 "Segment Descriptors",
+# Figure 3-8). The core's descriptor caches hold the byte-granular limit and
+# the attributes as {flags nibble (G, D/B, L, AVL), access byte (P, DPL, S, type)}.
+
+@function DescBase(D)
+RESULT := (SHR(D, 16) AND FFFFFFH) OR (SHR(D, 32) AND FF000000H);
+
+@function DescLimit(D)
+lim := (D AND FFFFH) OR (SHR(D, 32) AND F0000H);
+IF (SHR(D, 55) AND 1) = 1 THEN lim := SHL(lim, 12) OR FFFH; FI;
+RESULT := lim;
+
+@function DescAttr(D)
+RESULT := (SHR(D, 40) AND FFH) OR (SHR(D, 44) AND F00H);
+
+# Loading a segment register (MOV Sreg, POP Sreg, LxS): the checks of MOV's
+# Operation (SDM Vol. 2B, MOV, "Loading a segment register while in
+# protected mode...") and Vol. 3A 5.10 "Pointer Validation". SEGNUM is a
+# constant (0-5: ES CS SS DS FS GS). The descriptor's accessed bit is set
+# as the processor does (Vol. 3A 3.4.5.1).
+@function LoadSegment(SEGNUM, SELECTOR)
+s := SELECTOR AND FFFFH;
+IF CR0.PE = 0 OR RFLAGS.VM = 1
+    THEN
+        SetSegmentReal(SEGNUM, s);
+    ELSE IF (s AND FFFCH) = 0
+    THEN
+        IF SEGNUM = 2 AND NOT (Mode64 = 1 AND CPL != 3 AND (s AND 3) = CPL)
+            THEN #GP(0);
+        FI;
+        SetSegment(SEGNUM, s, 0, 0, 0);
+    ELSE
+        IF (s AND 4) = 0
+            THEN tb := GDTR_BASE; tl := GDTR_LIMIT;
+            ELSE tb := LDTR_BASE; tl := LDTR_LIMIT;
+        FI;
+        IF (s OR 7) > tl THEN #GP(s AND FFFCH); FI;
+        d := Linear64[tb + (s AND FFF8H)];
+        dpl := SHR(d, 45) AND 3;
+        rpl := s AND 3;
+        ty := SHR(d, 40) AND 1FH;
+        IF SEGNUM = 2
+            THEN
+                IF rpl != CPL OR dpl != CPL OR (ty AND 1AH) != 12H THEN #GP(s AND FFFCH); FI;
+                IF (SHR(d, 47) AND 1) = 0 THEN #SS(s AND FFFCH); FI;
+            ELSE
+                IF (ty AND 10H) = 0 OR (ty AND 0AH) = 8 THEN #GP(s AND FFFCH); FI;
+                IF (ty AND 0CH) != 0CH AND (rpl > dpl OR CPL > dpl) THEN #GP(s AND FFFCH); FI;
+                IF (SHR(d, 47) AND 1) = 0 THEN #NP(s AND FFFCH); FI;
+        FI;
+        IF (ty AND 1) = 0 THEN Linear64[tb + (s AND FFF8H)] := d OR 10000000000H; FI;
+        SetSegment(SEGNUM, s, DescBase(d), DescLimit(d), DescAttr(d) OR 1);
+FI;

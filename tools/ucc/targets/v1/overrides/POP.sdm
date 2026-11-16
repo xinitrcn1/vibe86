@@ -1,5 +1,14 @@
 # POP—Pop a Value From the Stack -- override
-# The StackAddrSize = 64 branch of the manual's Operation; the manual's text
-# doesn't parse ('ELSE StackAddrSize = 16 THEN' lacks its IF).
+# The manual's Operation doesn't parse ('ELSE StackAddrSize = 16 THEN' lacks
+# its IF). This is Pop at the stack-address size (lib.sdm), and for POP Sreg
+# the segment load MOV describes; POP SS inhibits interrupts until the next
+# instruction completes (Description).
 @operation
-DEST := Pop();
+IF SegmentOperand
+    THEN
+        tmp := Pop();
+        LoadSegment(Sreg, tmp);
+        IF Sreg = 2 THEN InhibitInterrupts; FI;
+    ELSE
+        DEST := Pop();
+FI;
