@@ -1,0 +1,6 @@
+# MOV—Move -- override
+# The manual's Operation is 'DEST := SRC;' followed by the segment-register
+# load rules for the MOV Sreg rows, in prose. v1 implements the
+# general-purpose rows only (the isa file skips the Sreg rows).
+@operation
+DEST := SRC;

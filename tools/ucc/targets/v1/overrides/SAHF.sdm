@@ -1,0 +1,6 @@
+# SAHF—Store AH Into Flags -- override
+# RFLAGS(SF:ZF:0:AF:0:PF:1:CF) := AH, written as a masked store (bits 7 6 4
+# 2 0 of AH); bits 1, 3, 5 are left as they are. v1 reports
+# CPUID.80000001H:ECX.LAHF_SAHF_64 = 1.
+@operation
+StoreFlags(AH, D5H);

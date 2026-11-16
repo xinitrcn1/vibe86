@@ -1,0 +1,24 @@
+# IDIV—Signed Divide -- override
+# As DIV (the manual updates AL before computing AH from AX), and its range
+# check '(temp > 7FH) or (temp < 80H)' compares hexadecimal constants as
+# signed numbers, which a literal reading doesn't. The divider raises #DE
+# when the signed quotient doesn't fit.
+@operation
+IF SRC = 0
+    THEN #DE; FI;
+IF OperandSize = 8
+    THEN
+        AL := DivS(AH, AL, SRC);
+        AH := Remainder();
+    ELSE IF OperandSize = 16
+        THEN
+            AX := DivS(DX, AX, SRC);
+            DX := Remainder();
+    ELSE IF OperandSize = 32
+        THEN
+            EAX := DivS(EDX, EAX, SRC);
+            EDX := Remainder();
+    ELSE
+        RAX := DivS(RDX, RAX, SRC);
+        RDX := Remainder();
+FI;

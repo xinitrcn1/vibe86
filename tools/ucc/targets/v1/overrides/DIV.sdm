@@ -1,0 +1,25 @@
+# DIV—Unsigned Divide -- override
+# Read sequentially, the manual's Operation is wrong: 'AL := temp;' comes
+# before 'AH := AX MOD SRC;', so the remainder would be computed from the
+# updated AX. This takes quotient and remainder from one division (DivU sets
+# the divider's remainder register). The divider raises #DE when the
+# quotient doesn't fit, which is the manual's 'IF temp > FFH THEN #DE' test.
+@operation
+IF SRC = 0
+    THEN #DE; FI;
+IF OperandSize = 8
+    THEN
+        AL := DivU(AH, AL, SRC);
+        AH := Remainder();
+    ELSE IF OperandSize = 16
+        THEN
+            AX := DivU(DX, AX, SRC);
+            DX := Remainder();
+    ELSE IF OperandSize = 32
+        THEN
+            EAX := DivU(EDX, EAX, SRC);
+            EDX := Remainder();
+    ELSE
+        RAX := DivU(RDX, RAX, SRC);
+        RDX := Remainder();
+FI;

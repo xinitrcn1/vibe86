@@ -1,0 +1,12 @@
+# CALL—Call Procedure -- override
+# The near-call branches of the manual's Operation for 64-bit mode with
+# shadow stacks disabled (v1 has no CET); the far-call branches (call gates,
+# task switches) are 300 lines v1 doesn't implement, and one of them doesn't
+# parse.
+@operation
+IF near relative call
+    THEN tempRIP := RIP + SignExtend(DEST);
+    ELSE tempRIP := DEST;
+FI;
+Push(RIP);
+RIP := tempRIP;

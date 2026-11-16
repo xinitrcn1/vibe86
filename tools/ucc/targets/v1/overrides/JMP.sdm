@@ -1,0 +1,8 @@
+# JMP—Jump -- override
+# The near-jump branches of the manual's Operation in 64-bit mode; the far
+# jumps (call gates, task gates) aren't implemented in v1.
+@operation
+IF near relative jump
+    THEN RIP := RIP + SignExtend(DEST);
+    ELSE RIP := DEST;
+FI;

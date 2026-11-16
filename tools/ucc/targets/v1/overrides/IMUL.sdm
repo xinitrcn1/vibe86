@@ -1,0 +1,30 @@
+# IMUL—Signed Multiply -- override
+# The manual computes TMP_XP, "a signed integer at twice the width of the
+# SRC", and compares it with SignExtend of its low half; v1 values are at
+# most 64 bits wide, so the double-width product is the multiplier's low
+# and high halves (MulS, HighHalf) and the overflow test is the
+# multiplier's CF/OF output, which is the same test.
+@operation
+IF (NumberOfOperands = 1)
+    THEN IF (OperandSize = 8)
+        THEN
+            AL := MulS(AL, SRC);
+            AH := HighHalf();
+        ELSE IF OperandSize = 16
+            THEN
+                AX := MulS(AX, SRC);
+                DX := HighHalf();
+        ELSE IF OperandSize = 32
+            THEN
+                EAX := MulS(EAX, SRC);
+                EDX := HighHalf();
+        ELSE
+            RAX := MulS(RAX, SRC);
+            RDX := HighHalf();
+        FI;
+    ELSE IF (NumberOfOperands = 2)
+        THEN
+            DEST := IMulTrunc(DEST, SRC);
+        ELSE
+            DEST := IMulTrunc(SRC1, SRC2);
+FI;

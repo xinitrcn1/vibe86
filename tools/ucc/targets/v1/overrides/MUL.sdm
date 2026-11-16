@@ -1,0 +1,20 @@
+# MUL—Unsigned Multiply -- override
+# The manual's AX := AL * SRC compiles, but its multi-way IF nests an ELSE
+# after a closed ELSE IF; this is the same Operation with the halves named.
+@operation
+IF OperandSize = 8
+    THEN
+        AL := MulU(AL, SRC);
+        AH := HighHalf();
+    ELSE IF OperandSize = 16
+        THEN
+            AX := MulU(AX, SRC);
+            DX := HighHalf();
+    ELSE IF OperandSize = 32
+        THEN
+            EAX := MulU(EAX, SRC);
+            EDX := HighHalf();
+    ELSE
+        RAX := MulU(RAX, SRC);
+        RDX := HighHalf();
+FI;

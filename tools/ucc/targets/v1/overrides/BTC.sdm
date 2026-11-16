@@ -1,0 +1,20 @@
+# BTC -- override
+# The manual writes 'Bit(BitBase, BitOffset) := ...' with Bit() as an lvalue,
+# and leaves the addressing of a bit string in memory (a register BitOffset
+# reaches outside the operand) to the Description. This spells both out: a
+# memory BitBase with a register BitOffset addresses byte EA + (BitOffset SAR
+# 3), bit BitOffset AND 7; otherwise the offset is taken modulo the operand
+# size.
+@operation
+IF MemoryOperand AND RegisterOffset
+    THEN
+        addr := EffectiveAddress(BitBase) + SignExtend(SAR(BitOffset, 3));
+        bit := BitOffset AND 7;
+        tmp := Memory8[addr];
+        CF := Bit(tmp, bit);
+        Memory8[addr] := tmp XOR SHL(1, bit);
+    ELSE
+        bit := BitOffset AND (OperandSize - 1);
+        CF := Bit(BitBase, bit);
+        BitBase := BitBase XOR SHL(1, bit);
+FI;

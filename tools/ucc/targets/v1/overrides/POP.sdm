@@ -1,0 +1,5 @@
+# POP—Pop a Value From the Stack -- override
+# The StackAddrSize = 64 branch of the manual's Operation; the manual's text
+# doesn't parse ('ELSE StackAddrSize = 16 THEN' lacks its IF).
+@operation
+DEST := Pop();

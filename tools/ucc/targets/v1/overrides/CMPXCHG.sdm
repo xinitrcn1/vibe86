@@ -1,0 +1,17 @@
+# CMPXCHG—Compare and Exchange -- override
+# The manual's Flags Affected says CF, PF, AF, SF, OF (and ZF) are "set
+# according to the results of the comparison operation", but its Operation
+# has no subtraction to take them from; this adds the comparison the
+# Description names ("compares the value in the AL, AX, EAX, or RAX register
+# with the first operand").
+@operation
+TEMP := DEST;
+CMPTEMP := accumulator - TEMP;
+ModifyStatusFlags;
+IF accumulator = TEMP
+    THEN
+        DEST := SRC;
+    ELSE
+        accumulator := TEMP;
+        DEST := TEMP;
+FI;

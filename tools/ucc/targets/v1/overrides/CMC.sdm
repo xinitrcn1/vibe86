@@ -1,0 +1,5 @@
+# CMC—Complement Carry Flag -- override
+# The page has no Operation section; its Description says "Complements the CF
+# flag in the EFLAGS register (CF := NOT CF)".
+@operation
+CF := NOT CF;

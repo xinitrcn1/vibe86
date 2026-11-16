@@ -1,0 +1,4 @@
+# NOP—No Operation -- override
+# The manual's Operation section is a sentence ("The one-byte NOP instruction
+# is an alias mnemonic for the XCHG (E)AX, (E)AX instruction."), not code.
+@operation

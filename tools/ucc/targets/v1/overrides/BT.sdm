@@ -1,0 +1,12 @@
+# BT—Bit Test -- override
+# As BTS: the manual's 'CF := Bit(BitBase, BitOffset)' leaves the bit-string
+# addressing of a memory BitBase with a register BitOffset to the
+# Description; this spells it out.
+@operation
+IF MemoryOperand AND RegisterOffset
+    THEN
+        addr := EffectiveAddress(BitBase) + SignExtend(SAR(BitOffset, 3));
+        CF := Bit(Memory8[addr], BitOffset AND 7);
+    ELSE
+        CF := Bit(BitBase, BitOffset AND (OperandSize - 1));
+FI;

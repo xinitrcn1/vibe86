@@ -1,0 +1,14 @@
+# SAL/SAR/SHL/SHR—Shift -- override
+# The manual's Operation shifts one bit per iteration of a WHILE loop and
+# sets CF from each bit shifted out, then sets OF for 1-bit shifts. v1's
+# shifter does the same in one step (ShiftOp): the count masked to 5 bits
+# (6 with REX.W), CF the last bit shifted out, OF as the manual defines it
+# for 1-bit shifts, SF/ZF/PF of the result, and no flag changes for a zero
+# count ("If the count is 0, the flags are not affected", Flags Affected).
+@operation
+IF instruction is SAL or SHL
+    THEN DEST := ShiftOp(SHL, DEST, COUNT);
+    ELSE IF instruction is SAR
+        THEN DEST := ShiftOp(SAR, DEST, COUNT);
+    ELSE DEST := ShiftOp(SHR, DEST, COUNT);
+FI;

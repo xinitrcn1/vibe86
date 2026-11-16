@@ -1,0 +1,6 @@
+# LAHF—Load Status Flags Into AH Register -- override
+# The manual writes the flag image as RFLAGS(SF:ZF:0:AF:0:PF:1:CF), a list
+# of bits ucc doesn't parse; this is the same image as a mask (bits 7 6 4 2 0,
+# with bit 1 = 1). v1 reports CPUID.80000001H:ECX.LAHF_SAHF_64 = 1.
+@operation
+AH := (RFLAGS AND D5H) OR 2;

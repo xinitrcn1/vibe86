@@ -1,0 +1,16 @@
+# RCL/RCR/ROL/ROR—Rotate -- override
+# The manual's Operation is a CASE over the operand size computing
+# tempCOUNT ((COUNT AND countMASK) MOD SIZE, or MOD SIZE+1 through CF) and a
+# bit-at-a-time WHILE loop. v1's rotator does the rotation in one step with
+# the same count reduction and flag rules (CF the last bit rotated, OF for
+# 1-bit rotates, other flags unaffected).
+@operation
+IF instruction is ROL
+    THEN DEST := ShiftOp(ROL, DEST, COUNT);
+ELSE IF instruction is ROR
+    THEN DEST := ShiftOp(ROR, DEST, COUNT);
+ELSE IF instruction is RCL
+    THEN DEST := ShiftOp(RCL, DEST, COUNT);
+ELSE
+    DEST := ShiftOp(RCR, DEST, COUNT);
+FI;

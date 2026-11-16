@@ -1,0 +1,12 @@
+# The helper functions the SDM's Operation sections call, as pseudocode.
+# Push and Pop follow the definitions in SDM Vol. 2B, PUSH and POP
+# ("Operation", StackAddrSize = 64), with the operand size of the
+# instruction that calls them.
+
+@function Push(VALUE)
+RSP := RSP - OperandSize / 8;
+Memory[RSP] := VALUE;
+
+@function Pop()
+RESULT := Memory[RSP];
+RSP := RSP + OperandSize / 8;

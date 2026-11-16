@@ -1,0 +1,65 @@
+# The pages (and rows) of the Intel SDM Vol. 2 that the v1 core implements:
+# the general-purpose integer instructions a 64-bit compiler emits, plus what
+# a bare-metal runtime needs (IDT, MSRs, port I/O, CPUID, HLT).
+#   page-file  [only=REGEX] [skip=REGEX] [osz=MNEM:bits,...] [class=d32|d64|f64]
+#              [rep=F3,F2] [suffixed=MNEM,...] [memonly] [immz]
+
+# arithmetic and logic
+ADD
+ADC
+SUB
+SBB
+AND
+OR
+XOR
+CMP
+TEST
+INC
+DEC
+NEG
+NOT
+MUL
+IMUL
+DIV
+IDIV
+# data movement
+MOV                 skip='Sreg|moffs'
+MOVZX
+MOVSX_MOVSXD        skip='MOVSXD r16'
+LEA                 memonly
+XCHG
+CBW_CWDE_CDQE       osz=CBW:16,CWDE:32,CDQE:64
+CWD_CDQ_CQO         osz=CWD:16,CDQ:32,CQO:64
+CMOVcc
+SETcc
+BSWAP
+XADD
+CMPXCHG
+# stack and control transfer
+PUSH                skip='FS|GS|CS|SS|DS|ES'  class=d64
+POP                 skip='FS|GS|CS|SS|DS|ES'  class=d64
+CALL                only='rel32|r/m64'       class=f64
+RET                 only='^C[23]'            class=f64  immz
+JMP                 only='rel8|rel32|r/m64'  class=f64
+Jcc                 skip='CXZ'               class=f64
+LEAVE               class=d64
+# shifts, rotates, bits
+SAL_SAR_SHL_SHR
+RCL_RCR_ROL_ROR
+BT
+BTS
+BTR
+BTC
+BSF
+BSR
+# flags
+CLC
+STC
+CMC
+CLD
+STD
+LAHF
+SAHF
+# misc
+NOP
+HLT
