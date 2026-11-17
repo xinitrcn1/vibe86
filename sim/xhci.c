@@ -22,6 +22,12 @@
 
 #include "xhci.h"
 
+/* VSIM_XHCI_TRACE=1: commands, control requests, SCSI commands and port
+   writes on stderr (debugging host drivers against the model) */
+static int xtrace = -1;
+#define XT(...) do { if (xtrace < 0) xtrace = getenv("VSIM_XHCI_TRACE") != NULL; \
+	if (xtrace) fprintf(stderr, "xhci: " __VA_ARGS__); } while (0)
+
 /* ------------------------------------------------------------------ layout */
 
 #define NPORTS		4
@@ -275,6 +281,7 @@ msc_command(struct usbdev *u, const uint8_t *cb)
 	u->xlen = 0;
 	memset(u->resp, 0, sizeof u->resp);
 	uint8_t op = cb[0];
+	XT("scsi op %02x\n", op);
 	if (!u->img && op != 0x03 && op != 0x12) {
 		msc_sense(u, 0x02, 0x3A, 0x00);		/* NOT READY: medium not present */
 		return;
@@ -342,6 +349,7 @@ msc_command(struct usbdev *u, const uint8_t *cb)
 	case 0x28: case 0xA8:				/* READ(10), READ(12) */
 	case 0x2A: case 0xAA: {				/* WRITE(10), WRITE(12) */
 		uint64_t lba = be32(cb + 2);
+	XT("scsi %02x lba %llu\n", op, (unsigned long long)lba);
 		uint32_t n = (op & 0x80) ? be32(cb + 6) : (uint32_t)(cb[7] << 8 | cb[8]);
 		if (lba + n > blocks) {
 			msc_sense(u, 0x05, 0x21, 0x00);	/* LBA out of range */
@@ -826,6 +834,8 @@ running(const struct xhci *x)
 static void
 halt_hse(struct xhci *x)
 {
+	XT("host system error: a DMA failed (command %04x)\n",
+	    (unsigned)(x->d.f.cfg[4] | x->d.f.cfg[5] << 8));
 	x->usbsts |= STS_HSE | STS_HCH;
 	x->usbcmd &= ~CMD_RS;
 	x->crr = 0;
@@ -854,6 +864,7 @@ er_load(struct xhci *x)
 	uint8_t e[16];
 	unsigned sz = x->erstsz & 0xFFFF;
 	if (!sz || sz > (1u << ERST_MAX) || x->er_seg >= sz) {
+		XT("event ring: bad ERSTSZ %u\n", sz);
 		x->usbsts |= STS_HCE;
 		return -1;
 	}
@@ -865,6 +876,7 @@ er_load(struct xhci *x)
 	memcpy(&n, e + 8, 4);
 	n &= 0xFFFF;
 	if (n < 16 || n > 4096) {
+		XT("event ring: bad segment size %u\n", n);
 		x->usbsts |= STS_HCE;	/* Host Controller Error (§4.24.1) */
 		return -1;
 	}
@@ -909,6 +921,8 @@ ev_flush(struct xhci *x)
 			return;		/* full: keep the events until software catches up */
 		struct trb t = x->evq[x->evh];
 		t.c |= (uint32_t)x->pcs;
+		XT("event type %u cc %u at %llx\n", TRB_TYPE(t.c), t.s >> 24,
+		    (unsigned long long)x->er_enq);
 		if (dma_wr(x, x->er_enq, &t, 16))
 			return;
 		x->evh = (x->evh + 1) % EVQ;
@@ -972,6 +986,7 @@ static void
 port_write(struct xhci *x, int i, uint32_t v)
 {
 	uint32_t p = x->portsc[i];
+	XT("port %d write %08x (was %08x)\n", i + 1, v, p);
 	p &= ~(v & PS_CHANGE);				/* RW1C */
 	p = (p & ~(PS_WAKE | PS_PIC)) | (v & (PS_WAKE | PS_PIC));
 	if (v & PS_PED)					/* writing 1 disables */
@@ -1252,6 +1267,7 @@ do_cmd(struct xhci *x, uint64_t at, const struct trb *t)
 		memset(&x->slot[sid], 0, sizeof x->slot[sid]);
 		x->slot[sid].en = 1;
 		x->slot[sid].state = SS_ENABLED;
+		XT("cmd enable slot -> %u\n", sid);
 		ev_cmd(x, at, CC_SUCCESS, sid);
 		return;
 	}
@@ -1285,6 +1301,7 @@ do_cmd(struct xhci *x, uint64_t at, const struct trb *t)
 	case TRB_EVAL_CTX: cc = cmd_evaluate(x, sid, t); break;
 	default: cc = cmd_ep(x, sid, t, (int)type); break;
 	}
+	XT("cmd type %u slot %u -> cc %d\n", type, sid, cc);
 	ev_cmd(x, at, cc, sid);
 }
 
@@ -1408,6 +1425,9 @@ ep0_run(struct xhci *x, unsigned sid, int *budget)
 				return;
 			}
 			memcpy(e->setup, &t.p, 8);
+			XT("slot %u setup %02x %02x %04x %04x %04x\n", sid, ((uint8_t *)&t.p)[0],
+			    ((uint8_t *)&t.p)[1], (unsigned)(t.p >> 16) & 0xFFFF,
+			    (unsigned)(t.p >> 32) & 0xFFFF, (unsigned)(t.p >> 48));
 			e->in = (e->setup[0] & 0x80) != 0;
 			e->phase = 1;
 			e->skip = 0;
@@ -1733,6 +1753,7 @@ reg_read(struct xhci *x, unsigned off)
 static void
 doorbell(struct xhci *x, unsigned n, uint32_t v)
 {
+	XT("doorbell %u <- %08x (running %d)\n", n, v, running(x));
 	if (!running(x))
 		return;
 	if (n == 0) {
@@ -1761,6 +1782,7 @@ reg_write(struct xhci *x, unsigned off, uint32_t v)
 	if (off >= OPB && off < OPB + 0x400) {
 		switch (off - OPB) {
 		case 0x00:
+			XT("usbcmd <- %08x (usbsts %08x)\n", v, x->usbsts);
 			if (v & CMD_HCRST) {
 				hc_reset(x);
 				return;

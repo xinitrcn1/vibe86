@@ -6,6 +6,7 @@
  * Header and capability offsets follow the PCI Express Base Specification
  * (PCI-SIG); the exact layout we model is in docs/platform.md "PCIe".
  */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -531,6 +532,9 @@ pcie_dma(struct pcidev *d, int we, uint64_t iova, uint8_t *data, unsigned n,
 	int k = d->slot;
 	/* bus master enable at the endpoint and its root port */
 	if (!(get(&d->f, 0x04, 2) & 4) || !(get(&pc->rp[k], 0x04, 2) & 4) || !secbus(pc, k)) {
+		if (getenv("VSIM_XHCI_TRACE"))
+			fprintf(stderr, "pcie: DMA from slot %d refused: device command %04x, root port command %04x, bus %u\n",
+			    k, (unsigned)get(&d->f, 0x04, 2), (unsigned)get(&pc->rp[k], 0x04, 2), secbus(pc, k));
 		pc->dma_errors++;
 		return IO_FAULT;
 	}
