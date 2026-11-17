@@ -18,14 +18,26 @@ set(V1_RTL
 set_source_files_properties(${v1_UOP_PKG} ${v1_UCODE_PKG} PROPERTIES GENERATED TRUE)
 set(V1_RTL ${V1_RTL} CACHE INTERNAL "")
 
+# Verilator's multithreaded model (verilate THREADS): the die's partitions
+# evaluate in parallel each cycle. The core is one large sequential
+# partition, so the scheduler finds about two-way parallelism: 2 threads run
+# a firmware boot ~1.3x faster than 1 (27.4 s -> 21.4 s for 5M cycles), 4
+# no faster than 2 (and it warns, UNOPTTHREADS, waived below)
+set(VIBE86_VERILATOR_THREADS 2 CACHE STRING "threads of the Verilated die model (1: single-threaded)")
+if(VIBE86_VERILATOR_THREADS GREATER 1)
+  set(V1_THREAD_ARGS THREADS ${VIBE86_VERILATOR_THREADS})
+  set(V1_THREAD_WARN -Wno-UNOPTTHREADS)   # it splits what it can
+endif()
+
 add_library(vibe86_v1 STATIC)
 add_dependencies(vibe86_v1 ucode_v1)
 verilate(vibe86_v1
   SOURCES ${V1_RTL}
   TOP_MODULE v1_die
   PREFIX Vv1_die
+  ${V1_THREAD_ARGS}
   INCLUDE_DIRS ${VIBE86_COMMON_DIR}
-  VERILATOR_ARGS ${V1_DEBUG_ARGS} ${CMAKE_CURRENT_SOURCE_DIR}/v1.vlt -O3 --x-assign fast --x-initial fast
+  VERILATOR_ARGS ${V1_DEBUG_ARGS} ${V1_THREAD_WARN} ${CMAKE_CURRENT_SOURCE_DIR}/v1.vlt -O3 --x-assign fast --x-initial fast
                  --output-split 20000)
 
 # lint: verilator -Wall over the die must be clean (docs/synthesis.md);
