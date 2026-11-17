@@ -24,10 +24,20 @@ find_library(TPMS_LIBRARY tpms HINTS /usr/local/lib REQUIRED)
 set(VSIM_WARN -Wall -Wextra)
 
 # the board model (C11): everything outside the core
+# tpm_debug_state.h embeds tpm-debug.permall (the debug TPM's fixed state)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/tpm_debug_state.h
+  COMMAND ${CMAKE_COMMAND} -DIN=${CMAKE_CURRENT_SOURCE_DIR}/tpm-debug.permall
+          -DOUT=${CMAKE_CURRENT_BINARY_DIR}/tpm_debug_state.h -DNAME=tpm_debug_permall
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/bin2h.cmake
+  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tpm-debug.permall ${CMAKE_CURRENT_SOURCE_DIR}/bin2h.cmake
+  COMMENT "tpm_debug_state.h from tpm-debug.permall"
+  VERBATIM)
+
 add_library(vsim_board STATIC
-  board.c dram.c vga.c pmc.c i2c.c tpm.c pcie.c iommu.c xhci.c)
+  board.c dram.c vga.c pmc.c i2c.c tpm.c pcie.c iommu.c xhci.c
+  ${CMAKE_CURRENT_BINARY_DIR}/tpm_debug_state.h)
 target_include_directories(vsim_board PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
-  PRIVATE ${TPMS_INCLUDE_DIR})
+  PRIVATE ${TPMS_INCLUDE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_options(vsim_board PRIVATE ${VSIM_WARN})
 target_link_libraries(vsim_board PUBLIC ${TPMS_LIBRARY})
 

@@ -8,7 +8,7 @@ board model). Target ISA: AMD EPYC "Venice" (Zen 6) — see
 | Path | What |
 |---|---|
 | `rtl/v1/` | **v1**, the first core: not pipelined, microcoded (`v1_core.sv`, `v1_alu.sv`); `tb/` its SystemVerilog testbenches |
-| `tools/sdm/` | `extract.py`: the instruction pages of the Intel SDM Vol. 2 as `.sdm` files; `extracted/` is SDM 325383-093US |
+| `tools/sdm/` | `extract.py`: the instruction pages of the Intel SDM Vol. 2 as `.sdm` files (generated into the build tree from SDM 325383-093US) |
 | `tools/ucc/` | the microcode compiler: SDM pseudocode → micro-ops, decoder tables, entry points; `targets/<vN>/` is one core version's micro-op ISA, instruction list, overrides and routines (`--target`, default the latest) |
 | `sim/` | `vsim`: a Verilated core (`-C`, default the latest) in the board model (DDR5 memory subsystem, PCIe + IOMMU, xHCI, VGA, I2C/TPM, PMC, COM1); see [docs/platform.md](docs/platform.md) |
 | `tests/` | programs run from reset on the latest core (`tests/<group>/*.S`, checked by `run.py`) |
@@ -25,6 +25,12 @@ cmake --build build -j
 ctest --test-dir build            # rtl/<latest>/tb testbenches + tests/
 build/sim/vsim -n -b test -t build/tests/boot/long-mode.bin   # with an instruction trace
 ```
+
+The first configure downloads the SDM Vol. 2 (revision 325383-093US,
+checked by SHA-256) into the build tree, or takes it from
+`-DVIBE86_SDM_PDF=<path>`; Intel's link serves the latest revision, so a
+newer manual needs the 093US PDF passed explicitly (or the hash and the
+overrides updated together). Nothing generated is kept in the source tree.
 
 The build runs `tools/ucc` for each core version (`build/rtl/v1/gen/`: the
 micro-op and microcode packages, a listing `v1.lst`, and `v1-report.md`

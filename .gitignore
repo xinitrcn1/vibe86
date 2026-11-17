@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 *.o
 sim/tpmgen
+tools/sdm/extracted/
+work/
