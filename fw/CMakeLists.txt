@@ -134,8 +134,14 @@ fw_driver(VideoDxe SOURCES dxe/video/video.c)
 fw_driver(ConsoleDxe SOURCES dxe/console/console.c)
 fw_driver(PciDxe SOURCES dxe/pci/pci.c)
 fw_driver(UsbDxe SOURCES dxe/usb/main.c dxe/usb/xhci.c dxe/usb/hid.c dxe/usb/msc.c)
+fw_driver(FatDxe SOURCES dxe/fat/fat.c)
+fw_driver(FwCfgFsDxe SOURCES dxe/fwcfgfs/fwcfgfs.c)
+fw_driver(PlatformDxe SOURCES dxe/platform/platform.c dxe/platform/acpi.c dxe/platform/smbios.c)
 fw_driver(BdsDxe SOURCES dxe/bds/bds.c dxe/bds/boot.c dxe/bds/menu.c dxe/bds/setup.c
           dxe/bds/settings.c dxe/bds/ui.c)
+
+# the built-in EFI shell (an application; vibe86fw.h FILE_SHELL_GUID)
+fw_image(Shell SUBSYSTEM efi_application SOURCES apps/shell/shell.c ${FW_UEFILIB_SOURCES})
 
 set(FW_DRIVER_ARGS)
 set(FW_DRIVER_FILES)
@@ -149,11 +155,12 @@ add_custom_command(OUTPUT ${FD}
   COMMAND ${Python3_EXECUTABLE} -B ${FW_SRC}/tools/mkfd.py -o ${FD}
           --layout ${FW_SRC}/include/layout.h --sec ${SEC_BIN} --pei ${FW_IMAGE_Pei}
           --core ${FW_IMAGE_DxeCore} ${FW_DRIVER_ARGS}
+          --app Shell:d6a2cb7f-6a18-4e2f-b43c-766238360020=${FW_IMAGE_Shell}
           --raw d6a2cb7f-6a18-4e2f-b43c-766238360010=${ACPI_OUT}/tables
           --raw d6a2cb7f-6a18-4e2f-b43c-766238360011=${ACPI_OUT}/rsdp
           --raw d6a2cb7f-6a18-4e2f-b43c-766238360012=${ACPI_OUT}/table-loader
   DEPENDS ${FW_SRC}/tools/mkfd.py ${FW_SRC}/include/layout.h ${SEC_BIN} ${FW_IMAGE_Pei}
-          ${FW_IMAGE_DxeCore} ${FW_DRIVER_FILES} ${ACPI_OUT}/tables
+          ${FW_IMAGE_DxeCore} ${FW_DRIVER_FILES} ${FW_IMAGE_Shell} ${ACPI_OUT}/tables
   COMMENT "fw vibe86.fd"
   VERBATIM)
 add_custom_target(firmware ALL DEPENDS ${FD})

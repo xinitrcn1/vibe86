@@ -7,12 +7,13 @@ The source's comment lines say what to expect:
     // expect-exit: N          vsim's exit status (default 0: powered off)
     // expect-out: TEXT        a line the serial port (COM1) must print (contained in it)
     // expect-vga: TEXT        a line of the VGA text screen at exit (vsim -Y; contained in it)
-    // vsim-args: ARGS         extra vsim arguments (default: -b test); ${VAR}
+    // vsim-args: ARGS         extra vsim arguments (default: -b test; shell quoting); ${VAR}
                                expands from the environment (ACPI, DATA, WORK, ...)
     // requires: FILE          skip the test (exit 77) unless FILE exists; ${VAR} expands
 """
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -33,7 +34,7 @@ def main():
     outs = re.findall(r"//\s*expect-out:\s*(.*)", text)
     vgas = re.findall(r"//\s*expect-vga:\s*(.*)", text)
     args = (re.findall(r"//\s*vsim-args:\s*(.*)", text) or ["-b test -c 2000000"])[0]
-    args = expand(args).split()
+    args = shlex.split(expand(args))
     with tempfile.TemporaryDirectory() as tmp:
         vga_txt = os.path.join(tmp, "vga.txt")
         if vgas:
