@@ -7,7 +7,8 @@
 //   4. a misaligned load and store across a line boundary;
 //   5. device DMA reads what the core wrote (write-through) ...
 //   6. ... and the core reads what the device wrote (the snoop);
-//   7. WBINVD, then the data are still there.
+//   7. WBINVD, then the data are still there;
+//   8. CPUID Fn8000_001D reports the two caches.
 // expect-out: DCACHE OK
 #include "boot64.inc"
 #include "expect.inc"
@@ -95,6 +96,25 @@ main64:
 	EXPECT	%rbx, 0x112233445A5AAA88, 0x0D
 	mov	DST, %rbx
 	EXPECT	%rbx, 0x0BADC0DE600DF00D, 0x0E
+
+	// 8. CPUID Fn8000_001D (AMD64 APM Vol. 3) describes the caches: L1
+	//    data (type 1) 4096 sets x 1 way x 64 B, L1 instruction (type 2)
+	//    1024 x 1 x 64 B, then the null subleaf
+	mov	$0x8000001d, %eax
+	xor	%ecx, %ecx
+	cpuid
+	EXPECT	%rax, 0x121, 0x10
+	EXPECT	%rbx, 0x3f, 0x11
+	EXPECT	%rcx, 0xfff, 0x12
+	mov	$0x8000001d, %eax
+	mov	$1, %ecx
+	cpuid
+	EXPECT	%rax, 0x122, 0x13
+	EXPECT	%rcx, 0x3ff, 0x14
+	mov	$0x8000001d, %eax
+	mov	$2, %ecx
+	cpuid
+	EXPECT	%rax, 0, 0x15
 
 	lea	msg(%rip), %rsi
 	call	puts

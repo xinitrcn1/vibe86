@@ -229,8 +229,9 @@ change that removes most of that:
   the PAM-steered shadow region change meaning under the core), DRAM
   hoisted above 4 GiB below the 64-bit PCI window, and the flash
   (read-only). Everything else (MMIO, the APIC page, VRAM, port I/O) is
-  uncached, as the MTRRs/PAT of a PC would make it — v1 has no MTRRs, so
-  the ranges are fixed (rtl/common/platform.toml).
+  uncached, as the MTRRs/PAT of a PC would make it. The ranges are fixed
+  (rtl/common/platform.toml): v1's MTRRs and PAT hold what software writes
+  but don't steer the caches. CPUID Fn8000_001D describes both caches.
 - **Coherence**: x86 keeps instruction fetches coherent with stores
   (self-modifying code, Intel SDM Vol. 3A 11.6) and caches coherent with
   DMA. The fabric already sees every DRAM write, so it reports each one's

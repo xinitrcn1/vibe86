@@ -178,19 +178,35 @@ ecx = 2
 leaf = 0xD                               # XSAVE enumeration: zeros until XSAVE is implemented
 sub = 0
 
+# TOPOEXT cache properties (AMD64 APM Vol. 3, CPUID Fn8000_001D, "Cache
+# Topology Information"): one subleaf per cache, then a null one. EAX[4:0]
+# type (1 data, 2 instruction), [7:5] level, [8] self-initializing, [25:14]
+# logical processors sharing it - 1; EBX[11:0] line size - 1, [21:12]
+# partitions - 1, [31:22] ways - 1; ECX sets - 1; EDX[1] inclusive. v1's
+# caches (D-018): both L1, direct-mapped, 64-byte lines, one core each.
 [[leaf]]
+leaf = 0x8000_001D                       # L1 data: 256 KiB, 4096 sets x 1 way
+sub = 0
+eax = 0x121
+ebx = 0x3F
+ecx = 0xFFF
 
 [[leaf]]
+leaf = 0x8000_001D                       # L1 instruction: 64 KiB, 1024 sets x 1 way
+sub = 1
+eax = 0x122
+ebx = 0x3F
+ecx = 0x3FF
 
 [[leaf]]
+leaf = 0x8000_001D                       # no more caches (type 0)
+sub = 2
 
 [[leaf]]
 leaf = 0x8000_001E                       # TOPOEXT ids: extended APIC id 0, core 0, one thread
                                          # per core (EBX[15:8] = 0), node 0, one node
 
 [[leaf]]
-leaf = 0x8000_001D                       # TOPOEXT cache properties: subleaf 0 cache type 0,
-sub = 0                                  # i.e. no caches (v1 has none)
 leaf = 0x8000_0021
 
 # Not yet positioned (AMD-defined; check the APM): 8000_0007 EBX
