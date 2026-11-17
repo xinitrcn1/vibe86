@@ -68,6 +68,12 @@ width = 512
 desc = "write data, byte 0 = the lowest address"
 
 [[pin]]
+name = "bus_smm"
+dir = "out"
+width = 1
+desc = "SMIACT#: the core is in SMM (the chipset decodes SMRAM for it)"
+
+[[pin]]
 name = "bus_ack"
 dir = "in"
 width = 1
@@ -112,6 +118,13 @@ dir = "in"
 width = 1
 route = "nmi_core"
 desc = "NMI (one-cycle pulse)"
+
+[[pin]]
+name = "smi"
+dir = "in"
+width = 1
+route = "smi_core"
+desc = "SMI# (one-cycle pulse): enter system management mode"
 
 [[pin]]
 name = "mce_valid"

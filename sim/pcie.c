@@ -31,6 +31,21 @@ get(const struct pcifn *f, unsigned off, unsigned n)
 	return v;
 }
 
+/*
+ * The i440FX SMRAM register (72h; 82441FX datasheet 3.2.21): C_BASE_SEG
+ * 010b (A0000h-BFFFFh) fixed, G_SMRAME (bit 3) enables SMRAM, D_OPEN (6)
+ * makes it visible outside SMM, D_CLS (5), D_LCK (4). Setting D_LCK clears
+ * D_OPEN and makes D_OPEN, D_LCK and G_SMRAME read-only until reset.
+ */
+static void
+smram_written(struct pcifn *f)
+{
+	if (f->cfg[0x72] & 0x10) {
+		f->cfg[0x72] &= (uint8_t)~0x40;
+		f->wm[0x72] = 0x20;		/* only D_CLS stays writable */
+	}
+}
+
 static void
 cfg_write(struct pcifn *f, unsigned off, unsigned n, const uint8_t *d)
 {
@@ -56,7 +71,7 @@ init_host(struct pcifn *f)
 	put(f, 0x08, 4, 0x06000002, 0);	/* class 06/00/00, revision 2 */
 	for (unsigned r = 0x59; r <= 0x5F; r++)
 		put(f, r, 1, 0, 0x33);	/* PAM0-PAM6: RE/WE per half */
-	put(f, 0x72, 1, 0x02, 0x78);	/* SMRAM */
+	put(f, 0x72, 1, 0x02, 0x78);	/* SMRAM: see smram_written() */
 }
 
 static void
@@ -84,6 +99,9 @@ init_piix_pm(struct pcifn *f)
 	put(f, 0x80, 1, 0x00, 0x01);	/* PMREGMISC: PM I/O enable */
 	put(f, 0x90, 4, 0x00000001, 0x0000FFF0);	/* SMBBA */
 	put(f, 0xD2, 1, 0x00, 0x0F);	/* SMBHSTCFG */
+	/* DEVACTB (58h): device activity enables; bit 25 APMC_EN makes a write
+	   to the APM control port B2h raise SMI (board_io) */
+	put(f, 0x58, 4, 0, 0x3FFFFFFF);
 }
 
 static void
@@ -425,9 +443,11 @@ cfg_access(struct pcie *pc, int we, uint64_t off, unsigned size, uint8_t *data)
 			memset(data, 0xFF, n);	/* no device: all ones */
 		return 0;
 	}
-	if (we)
+	if (we) {
 		cfg_write(f, reg, n, data);
-	else
+		if (f == &pc->host && reg <= 0x72 && reg + n > 0x72)
+			smram_written(f);
+	} else
 		memcpy(data, f->cfg + reg, n);
 	return 0;
 }
@@ -482,8 +502,11 @@ pcie_access(struct pcie *pc, int we, uint64_t addr, unsigned size, uint8_t *data
 			memcpy(data, &v, 8);
 		return 0;
 	}
-	if ((addr >= PCI_MEM32_BASE && addr < PCI_MEM32_BASE + PCI_MEM32_SIZE) ||
-	    (addr >= PCI_MEM64_BASE && addr < PCI_MEM64_BASE + PCI_MEM64_SIZE)) {
+	/* BARs: the board decodes PCI last, so like a PC host bridge every
+	 * address nothing else claimed goes to the root ports, whose windows
+	 * forward it (firmware places BARs anywhere in the PCI hole below 4 GiB,
+	 * e.g. SeaBIOS just below the IOAPIC, not only in PCI_MEM32/64) */
+	{
 		for (int k = 0; k < PCI_SLOTS; k++) {
 			struct pcidev *d = pc->slot[k];
 			if (!d || !(get(&d->f, 0x04, 2) & 2) || !rp_forwards(&pc->rp[k], addr))
@@ -493,7 +516,9 @@ pcie_access(struct pcie *pc, int we, uint64_t addr, unsigned size, uint8_t *data
 			if (b && addr >= b && addr + n <= b + sz)
 				return d->bar(d, we, 0, addr - b, n, data);
 		}
-		return -1;			/* unclaimed: unsupported request */
+		if ((addr >= PCI_MEM32_BASE && addr < PCI_MEM32_BASE + PCI_MEM32_SIZE) ||
+		    (addr >= PCI_MEM64_BASE && addr < PCI_MEM64_BASE + PCI_MEM64_SIZE))
+			return -1;		/* unclaimed in a window: unsupported request */
 	}
 	return 1;
 }

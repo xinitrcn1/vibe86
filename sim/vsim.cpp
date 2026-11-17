@@ -392,6 +392,7 @@ struct machine {
 		top->bus_ack = 0;
 		top->intr_valid = 0;
 		top->nmi = 0;
+		top->smi = 0;
 		top->mce_valid = 0;
 		top->eval();
 		top->clk = 1;
@@ -437,6 +438,7 @@ struct machine {
 			for (int i = 0; i < 64; i++)
 				d[i] = (uint8_t)(top->bus_wdata[i / 4] >> (8 * (i % 4)));
 		int r;
+		brd.smiact = top->bus_smm;	// SMRAM decodes for the core in SMM
 		if (top->bus_io)
 			r = board_io(&brd, top->bus_we, (uint16_t)top->bus_addr, size, d);
 		else
@@ -465,6 +467,7 @@ struct machine {
 	void events()
 	{
 		top->nmi = 0;
+		top->smi = 0;
 		top->mce_valid = 0;
 		struct board_event e;
 		if (!msi_pend && board_event(&brd, &e)) {
@@ -474,6 +477,11 @@ struct machine {
 					msi_pend = true;
 					msi_vec = e.vector & 0xFF;
 				}
+				break;
+			case EV_SMI:
+				top->smi = 1;
+				top->smi_core = 0;
+				halted_for[0] = 0;
 				break;
 			case EV_NMI:
 				top->nmi = 1;

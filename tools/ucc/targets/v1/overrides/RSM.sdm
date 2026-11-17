@@ -1,0 +1,78 @@
+# RSM—Resume From System Management Mode -- override
+# The manual's Operation is prose ("ReturnFromSMM; IF (any reserved bit of
+# CR4 is set to 1) ... THEN enter SHUTDOWN; ...; ProcessorState := Restore
+# (SMMDump(IA-32e SMM STATE MAP))"). This is that restore for the AMD64
+# state-save area (AMD64 APM Vol. 2 10.2.3 Table 10-2, 10.4 "Leaving SMM";
+# the layout routines/SMI.sdm writes), RSM outside SMM is #UD:
+#   the SMBASE field (FF00h) becomes the new SMBASE (relocation, revision
+#   bit 17); the control registers are checked as the manual's Operation
+#   lists (CR0.PG = 1 with PE = 0, CR0.NW = 1 with CD = 0, reserved CR4
+#   bits, EFER.LME = 1 with PG = 1 and PAE = 0: shutdown);
+#   EFER, CR4, CR3 are loaded before CR0 so the mode (EFER.LMA) comes out
+#   as the saved CR0.PG and EFER.LME say;
+#   CPL is SS.DPL (3 in virtual-8086 mode, 0 in real mode);
+#   the auto-halt restart byte (FEC9h bit 0) returns to the HLT state;
+#   SMIACT# drops last, after the save area was read.
+@operation
+IF (SMM AND 1) = 0 THEN #UD; FI;
+st := (SMBASE AND FFFFFFFFH) + FE00H;
+cr0 := Physical64[st + 158H];
+cr3 := Physical64[st + 150H];
+cr4 := Physical64[st + 148H];
+efer := Physical64[st + D0H];
+IF (cr0 AND 80000001H) = 80000000H THEN SHUTDOWN; FI;
+IF (cr0 AND 60000000H) = 20000000H THEN SHUTDOWN; FI;
+IF (cr4 AND FFFFFFFFFF08E000H) != 0 THEN SHUTDOWN; FI;
+IF (efer AND 100H) != 0 AND (cr0 AND 80000000H) != 0 AND (cr4 AND 20H) = 0 THEN SHUTDOWN; FI;
+WriteSpecial(SMBASE, Physical32[st + 100H]);
+WriteSpecial(EFER, efer);
+WriteSpecial(CR4, cr4);
+WriteSpecial(CR3, cr3);
+WriteSpecial(CR0, cr0);
+WriteSpecial(DR6, Physical64[st + 168H]);
+WriteSpecial(DR7, Physical64[st + 160H]);
+WriteSpecial(GDTR_LIMIT, Physical32[st + 64H] AND FFFFH);
+WriteSpecial(GDTR_BASE, Physical64[st + 68H]);
+WriteSpecial(IDTR_LIMIT, Physical32[st + 84H] AND FFFFH);
+WriteSpecial(IDTR_BASE, Physical64[st + 88H]);
+SetSegment(0, Physical16[st + 00H], Physical64[st + 08H], Physical32[st + 04H], Physical16[st + 02H] AND FFFH);
+SetSegment(1, Physical16[st + 10H], Physical64[st + 18H], Physical32[st + 14H], Physical16[st + 12H] AND FFFH);
+SetSegment(2, Physical16[st + 20H], Physical64[st + 28H], Physical32[st + 24H], Physical16[st + 22H] AND FFFH);
+SetSegment(3, Physical16[st + 30H], Physical64[st + 38H], Physical32[st + 34H], Physical16[st + 32H] AND FFFH);
+SetSegment(4, Physical16[st + 40H], Physical64[st + 48H], Physical32[st + 44H], Physical16[st + 42H] AND FFFH);
+SetSegment(5, Physical16[st + 50H], Physical64[st + 58H], Physical32[st + 54H], Physical16[st + 52H] AND FFFH);
+SetSegment(6, Physical16[st + 70H], Physical64[st + 78H], Physical32[st + 74H], Physical16[st + 72H] AND FFFH);
+SetSegment(7, Physical16[st + 90H], Physical64[st + 98H], Physical32[st + 94H], Physical16[st + 92H] AND FFFH);
+fl := Physical64[st + 170H];
+IF (cr0 AND 1) = 0 THEN
+    WriteSpecial(CPL, 0);
+ELSE IF (fl AND 20000H) != 0 THEN
+    WriteSpecial(CPL, 3);
+ELSE
+    WriteSpecial(CPL, SHR(Physical16[st + 22H], 5) AND 3);
+FI;
+R15 := Physical64[st + 180H];
+R14 := Physical64[st + 188H];
+R13 := Physical64[st + 190H];
+R12 := Physical64[st + 198H];
+R11 := Physical64[st + 1A0H];
+R10 := Physical64[st + 1A8H];
+R9 := Physical64[st + 1B0H];
+R8 := Physical64[st + 1B8H];
+RDI := Physical64[st + 1C0H];
+RSI := Physical64[st + 1C8H];
+RBP := Physical64[st + 1D0H];
+RSP := Physical64[st + 1D8H];
+RBX := Physical64[st + 1E0H];
+RDX := Physical64[st + 1E8H];
+RCX := Physical64[st + 1F0H];
+RAX := Physical64[st + 1F8H];
+StoreFlags(fl, 3F7FD7H);
+Jump(Physical64[st + 178H]);
+halt := Physical8[st + C9H] AND 1;
+WriteSpecial(SMM, 0);
+IF halt = 1 THEN Halt; FI;
+@opcodes
+0F AA | RSM | ZO | Valid | Valid
+@encoding
+ZO | N/A | N/A | N/A | N/A

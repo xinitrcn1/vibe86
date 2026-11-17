@@ -225,6 +225,8 @@ SPECIAL = {
     "FIP": 42, "FDP": 43, "FOP": 44, "PKRU": 45, "TSC_ADJUST": 46,
     "U_CET": 47, "S_CET": 48, "PL0_SSP": 49, "PL1_SSP": 50, "PL2_SSP": 51,
     "PL3_SSP": 52, "ISST_ADDR": 53, "SSP": 54,
+    "SMBASE": 55,      # SMRAM state save base (AMD APM Vol. 2 10.2.3); reset 3_0000h
+    "SMM": 63,         # bit 0: in SMM (SMIACT#, NMIs and SMIs held); bit 1: SMI taken in HLT
     "CPL": 56,
     "FAULT_RIP": 57,   # delivery: RIP to push (the faulting one, or the next for traps)
     "FAULT_ERR": 58,

@@ -84,6 +84,8 @@ module v1_core
   logic        intr_pend;
   logic [7:0]  intr_vec;
   logic        nmi_pend;
+  logic        smi_pend;        // SMI# latched until taken (outside SMM; AMD APM Vol. 2 10.3)
+  wire         in_smm = sp[SP_SMM[7:0]][0];
   logic [7:0]  deliv_vec;       // the event being delivered (for #DF)
   logic [3:0]  db_data;         // data breakpoints hit by this instruction (DR6.B0-B3)
   logic        flags_loaded;    // this instruction loaded RFLAGS (IRET, POPF): RF stays
@@ -135,6 +137,7 @@ module v1_core
     else mode = 2'd2;
   end
   wire ssz = (mode != 0) && ss_attr[10];
+  assign bus_smm = sp[SP_SMM[7:0]][0];   // SMIACT#
   wire [1:0] cpl = (mode == 0) ? 2'd0 : sp[SP_CPL[7:0]][1:0];
 
   // ------------------------------------------------------------------ helpers
@@ -616,6 +619,7 @@ module v1_core
     halt_req <= 1'b0;
     intr_pend <= 1'b0;
     nmi_pend <= 1'b0;
+    smi_pend <= 1'b0;
     shadow_set <= 1'b0;
     int_shadow <= 1'b0;
     ucount <= '0;
@@ -653,6 +657,7 @@ module v1_core
       intr_ack <= 1'b0;
       sp[SP_TSC[7:0]] <= sp[SP_TSC[7:0]] + 1;
       if (nmi) nmi_pend <= 1'b1;
+      if (smi) smi_pend <= 1'b1;
       shutdown <= (st == S_SHUTDOWN);
       halted <= (st == S_HALT);
 
@@ -1159,7 +1164,8 @@ module v1_core
 
         // ------------------------------------------------------------ halted
         S_HALT: begin
-          if (nmi_pend || (intr_valid && w_flags[9])) st <= S_FETCH;
+          if ((smi_pend && !in_smm) || (nmi_pend && !in_smm) || (intr_valid && w_flags[9]))
+            st <= S_FETCH;
         end
 
         default: ;   // S_SHUTDOWN: until reset
@@ -1169,7 +1175,27 @@ module v1_core
       // Among Concurrent Exceptions and Interrupts")
       if (((st == S_FETCH && ds == D_PFX && idx == 0 && !in_delivery && !bus_req) || st == S_HALT)
           && !int_shadow) begin
-        if (nmi_pend) begin
+        if (smi_pend && !in_smm) begin
+          // SMI: above NMI and INTR (Intel SDM Vol. 3A Table 7-2: "external hardware
+          // interventions"); SMIACT# on, then the SMI routine saves the state at
+          // SMBASE + FE00h (AMD APM Vol. 2 10.3). bit 1: the processor was halted.
+          smi_pend <= 1'b0;
+          sp[SP_SMM[7:0]] <= {62'b0, st == S_HALT, 1'b1};
+          sp[SP_FAULT_RIP[7:0]] <= rip;
+          nrip <= rip;
+          upc <= UADDR_SMI;
+          udepth <= '0;
+          in_delivery <= 1'b1;
+          deliv_vec <= 8'hFF;
+          ev_valid <= 1'b1;               // traced as event "vector" FFh (not an IDT vector)
+          ev_vector <= 8'hFF;
+          ev_has_error <= 1'b0;
+          ev_error <= '0;
+          ev_rip <= rip;
+          shadow_set <= 1'b0;
+          ms <= M_IDLE;
+          st <= S_EXEC;
+        end else if (nmi_pend && !in_smm) begin   // NMIs are held in SMM until RSM
           nmi_pend <= 1'b0;
           raise(8'd2, 1'b0, 32'd0, 1'b1, 1'b0, 1'b1);
         end else if (intr_valid && w_flags[9]) begin

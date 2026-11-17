@@ -208,8 +208,10 @@ board_pic_ack(struct board *b)
 }
 
 /*
- * The legacy region below 1 MiB (test board): A0000-BFFFF is the VGA
- * window (not decoded yet: reads all ones), C0000-FFFFF is RAM shadowed
+ * The legacy region below 1 MiB (test board): A0000-BFFFF is SMRAM (RAM)
+ * for accesses in SMM (SMIACT#) when the host bridge's SMRAM register has
+ * G_SMRAME, and for every access while D_OPEN; else the VGA window (not
+ * decoded yet: reads all ones). C0000-FFFFF is RAM shadowed
  * under the host bridge's PAM registers: reads go to RAM when the region's
  * RE bit is set, else to the flash (E0000-FFFFF: its last 128 KiB, the
  * BIOS's legacy alias; C0000-DFFFF: no option ROMs, all ones); writes go to
@@ -238,7 +240,13 @@ legacy_access(struct board *b, int we, uint64_t addr, unsigned n, uint8_t *data)
 			else
 				data[i] = b->sram[a];
 		} else if (a < 0xC0000) {
-			if (!we)
+			uint8_t sm = b->pcie ? b->pcie->host.cfg[0x72] : 0;
+			if ((sm & 0x08) && (b->smiact || (sm & 0x40))) {
+				if (we)
+					b->sram[a] = data[i];
+				else
+					data[i] = b->sram[a];
+			} else if (!we)
 				data[i] = 0xFF;
 		} else {
 			unsigned pam = pam_bits(b, a);
@@ -577,6 +585,22 @@ board_io(struct board *b, int we, uint16_t port, unsigned size, uint8_t *data)
 			}
 		} else
 			memset(data, 0, 2);
+		return 0;
+	}
+	/* PIIX4 APM ports (82371AB datasheet 7.1.1): a write to APMC raises
+	   SMI when the PM function's DEVACTB.APMC_EN (58h bit 25) is set;
+	   APMS is a scratch register for the SMI handler */
+	if ((port == 0xB2 || port == 0xB3) && size == 0) {
+		uint8_t *r = port == 0xB2 ? &b->apmc : &b->apms;
+		if (!we) {
+			data[0] = *r;
+			return 0;
+		}
+		*r = data[0];
+		if (port == 0xB2 && b->pcie && (b->pcie->piix_pm.cfg[0x5B] & 0x02)) {
+			struct board_event e = { .kind = EV_SMI };
+			ev_push(b, &e);
+		}
 		return 0;
 	}
 	if (port == PORT_PWR && size == 2 && we) {

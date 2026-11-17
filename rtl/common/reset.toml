@@ -50,6 +50,8 @@ KERNEL_GS_BASE = 0
 SYSENTER_CS = 0
 SYSENTER_ESP = 0
 SYSENTER_EIP = 0
+SMBASE = 0x3_0000                        # SMRAM save area at SMBASE + FE00h (AMD APM Vol. 2 10.2.3)
+SMM = 0                                  # not in system management mode
 
 # Segment registers: selector, base, limit, attributes {G, D/B, L, AVL, P,
 # DPL, S, Type} (bits 11:0, the descriptor cache's layout).

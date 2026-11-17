@@ -447,6 +447,7 @@ def main():
            f"  localparam logic [UADDR_W-1:0] UADDR_UD = {image.addr['UD']};",
            f"  localparam logic [UADDR_W-1:0] UADDR_DELIVER = {image.addr['DELIVER']};",
            f"  localparam logic [UADDR_W-1:0] UADDR_WALK = {image.addr['WALK']};",
+           f"  localparam logic [UADDR_W-1:0] UADDR_SMI = {image.addr['SMI']};",
            "  // decoder attributes: imm 0 none, 1/2/3/4 bytes, 5 iw/id (z), 6 iw/id/io (v), 7 8 bytes,",
            "  //   8 a far pointer (z bytes of offset into IMM, then a 2-byte selector into IMM2),",
            "  //   9 a memory offset of the address size (moffs: it is the effective address);",

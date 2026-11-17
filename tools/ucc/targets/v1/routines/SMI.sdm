@@ -1,0 +1,108 @@
+# SMI -- vibe86 v1 entry into system management mode
+# The core enters here at an instruction boundary when SMI# was asserted
+# (outside SMM), with SMM bit 0 already set (SMIACT#: SMRAM decodes) and
+# SMM bit 1 set if the processor was halted; FAULT_RIP is the RIP to resume.
+#
+# AMD64 Architecture Programmer's Manual Vol. 2 (pub. 24593), chapter 10
+# "System-Management Mode": the processor state is saved in the AMD64 SMM
+# state-save area at SMBASE + FE00h..FFFFh (10.2.3, Table 10-2), then the
+# SMM entry state is loaded (10.3.1, Table 10-3): CS = SMBASE >> 4 with base
+# SMBASE, the other data segments 0 with base 0, all limits 4 GiB, RIP =
+# 8000h, RFLAGS = 2, CR0.PE/EM/TS/PG = 0, CR4 = 0, EFER = 0, DR7 = 400h.
+# The save area layout is also QEMU's for x86-64 (target/i386/tcg/
+# seg_helper.c, do_smm_enter), which firmware such as SeaBIOS relies on.
+#
+# Segment entries: selector (+0, 2 bytes), attributes (+2, 2 bytes: the
+# descriptor's bits 47:40 in 7:0, bits 55:52 in 11:8), limit (+4, 4 bytes,
+# byte granular), base (+8, 8 bytes). SMM revision 0002_0064h: AMD64 save
+# area, SMBASE relocation supported, no I/O instruction restart.
+@operation
+sb := SMBASE AND FFFFFFFFH;
+st := sb + FE00H;
+Physical16[st + 00H] := ES_SEL;
+Physical16[st + 02H] := ES_ATTR;
+Physical32[st + 04H] := ES_LIMIT;
+Physical64[st + 08H] := ES_BASE;
+Physical16[st + 10H] := CS_SEL;
+Physical16[st + 12H] := CS_ATTR;
+Physical32[st + 14H] := CS_LIMIT;
+Physical64[st + 18H] := CS_BASE;
+Physical16[st + 20H] := SS_SEL;
+Physical16[st + 22H] := SS_ATTR;
+Physical32[st + 24H] := SS_LIMIT;
+Physical64[st + 28H] := SS_BASE;
+Physical16[st + 30H] := DS_SEL;
+Physical16[st + 32H] := DS_ATTR;
+Physical32[st + 34H] := DS_LIMIT;
+Physical64[st + 38H] := DS_BASE;
+Physical16[st + 40H] := FS_SEL;
+Physical16[st + 42H] := FS_ATTR;
+Physical32[st + 44H] := FS_LIMIT;
+Physical64[st + 48H] := FS_BASE;
+Physical16[st + 50H] := GS_SEL;
+Physical16[st + 52H] := GS_ATTR;
+Physical32[st + 54H] := GS_LIMIT;
+Physical64[st + 58H] := GS_BASE;
+Physical32[st + 64H] := GDTR_LIMIT;
+Physical64[st + 68H] := GDTR_BASE;
+Physical16[st + 70H] := LDTR_SEL;
+Physical16[st + 72H] := LDTR_ATTR;
+Physical32[st + 74H] := LDTR_LIMIT;
+Physical64[st + 78H] := LDTR_BASE;
+Physical32[st + 84H] := IDTR_LIMIT;
+Physical64[st + 88H] := IDTR_BASE;
+Physical16[st + 90H] := TR_SEL;
+Physical16[st + 92H] := TR_ATTR;
+Physical32[st + 94H] := TR_LIMIT;
+Physical64[st + 98H] := TR_BASE;
+Physical64[st + A0H] := 0;
+Physical64[st + A8H] := 0;
+Physical64[st + B0H] := 0;
+Physical64[st + B8H] := 0;
+Physical32[st + C0H] := 0;
+Physical8[st + C8H] := 0;
+Physical8[st + C9H] := SHR(SMM, 1) AND 1;
+Physical8[st + CAH] := 0;
+Physical64[st + D0H] := EFER;
+Physical64[st + D8H] := 0;
+Physical64[st + E0H] := 0;
+Physical64[st + E8H] := 0;
+Physical32[st + FCH] := 00020064H;
+Physical32[st + 100H] := sb;
+Physical64[st + 148H] := CR4;
+Physical64[st + 150H] := CR3;
+Physical64[st + 158H] := CR0;
+Physical64[st + 160H] := DR7;
+Physical64[st + 168H] := DR6;
+Physical64[st + 170H] := RFLAGS;
+Physical64[st + 178H] := FAULT_RIP;
+Physical64[st + 180H] := R15;
+Physical64[st + 188H] := R14;
+Physical64[st + 190H] := R13;
+Physical64[st + 198H] := R12;
+Physical64[st + 1A0H] := R11;
+Physical64[st + 1A8H] := R10;
+Physical64[st + 1B0H] := R9;
+Physical64[st + 1B8H] := R8;
+Physical64[st + 1C0H] := RDI;
+Physical64[st + 1C8H] := RSI;
+Physical64[st + 1D0H] := RBP;
+Physical64[st + 1D8H] := RSP;
+Physical64[st + 1E0H] := RBX;
+Physical64[st + 1E8H] := RDX;
+Physical64[st + 1F0H] := RCX;
+Physical64[st + 1F8H] := RAX;
+WriteSpecial(SMM, 1);
+WriteSpecial(CR0, CR0 AND FFFFFFFF7FFFFFF2H);
+WriteSpecial(CR4, 0);
+WriteSpecial(EFER, 0);
+WriteSpecial(DR7, 400H);
+StoreFlags(2, 3F7FD7H);
+WriteSpecial(CPL, 0);
+SetSegment(1, SHR(sb, 4) AND FFFFH, sb, FFFFFFFFH, 89BH);
+SetSegment(0, 0, 0, FFFFFFFFH, 893H);
+SetSegment(2, 0, 0, FFFFFFFFH, 893H);
+SetSegment(3, 0, 0, FFFFFFFFH, 893H);
+SetSegment(4, 0, 0, FFFFFFFFH, 893H);
+SetSegment(5, 0, 0, FFFFFFFFH, 893H);
+Jump(8000H);

@@ -394,6 +394,9 @@ class Lowerer:
     # ------------------------------------------------------------ emission helpers
 
     def E(self, *a, **k):
+        if k.get("a") == "K" and k.get("b") == "K":
+            # one immediate per micro-op: K as both sources reads it twice
+            raise LowerError(f"{a[0]}: both sources are the immediate")
         self.r.emit(*a, **k)
 
     def to_sel(self, v, w=None):
@@ -1932,7 +1935,12 @@ class Lowerer:
         v = self.eval(e.args[0], 64)
         m = self.eval(e.args[1], 64)
         v = self.widen(v, 64)
-        (s,), _ = self.srcs(v, w=64)
+        (s,), kv = self.srcs(v, w=64)
+        if s == "K":
+            # a constant value: one immediate per micro-op, so it can't share
+            # the AND with a constant mask (StoreFlags(2, mask) in SMI entry)
+            s = self.tmp()
+            self.E("MOV", 64, dst=s, a="K", imm=kv)
         t = self.tmp()
         f = self.tmp()
         self.E("MOV", 64, dst=f, a="FLAGS")

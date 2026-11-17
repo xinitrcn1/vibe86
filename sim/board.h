@@ -83,7 +83,7 @@ struct qport {
 };
 
 /* events the board sends to the core, one per cycle (vsim drains them) */
-enum { EV_MSI = 1, EV_NMI, EV_MCE };
+enum { EV_MSI = 1, EV_NMI, EV_MCE, EV_SMI };
 struct board_event {
 	int kind;
 	unsigned core;		/* EV_MSI: destination APIC id */
@@ -123,6 +123,8 @@ struct board {
 	const char *nvram_file;	/* -N: kept here across runs */
 	int nvram_dirty;
 	uint8_t post;		/* last POST code (port 0x80) */
+	int smiact;		/* the core's SMIACT# (bus_smm) for the access being decoded */
+	uint8_t apmc, apms;	/* PIIX4 APM control (B2h, writes raise SMI) and status (B3h) */
 	unsigned nposts;	/* POST codes written */
 	void (*post_cb)(void *ctx, uint8_t code);	/* -t: report each one */
 	void *post_ctx;
