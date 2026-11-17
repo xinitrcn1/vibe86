@@ -121,10 +121,13 @@ def parse_opcode(f, col):
     s = re.sub(r"\b(ib|iw|id|io)\d\b", r"\1", s)  # 'ib1': a footnote mark
     s = re.sub(r"\b([0-9A-F]{2}),(?=\s)", r"\1", s)  # '66 0F E0, /r' (PAVGB)
     s = re.sub(r"/(\d|r)", r" /\1", s)
-    if re.match(r"^\s*(VEX|EVEX|MAP|XOP)\.", s):
-        if not getattr(f, "_allow_vex", False):
-            raise SkipRow("VEX/EVEX encoding (the decoder doesn't have it yet)")
     s = re.sub(r"(VEX\.\S*)\.\s+(\S)", r"\1.\2", s)   # 'VEX.LZ. 0F38.W1': a stray space
+    if re.match(r"^\s*(EVEX|MAP|XOP)\.", s):
+        raise SkipRow("EVEX/MAP/XOP encoding (the decoder doesn't have it yet)")
+    if re.match(r"^\s*VEX\.", s) and re.search(r"\b[xy]mm", f.text):
+        # VEX is decoded (the GPR instructions: BMI1/2), not yet AVX: the
+        # VEX rows of the SSE pages stay out until the vector unit has them
+        raise SkipRow("VEX-encoded SIMD (AVX) isn't implemented yet")
     toks = s.split()
     bytes_ = []
     vmap = None
@@ -376,7 +379,13 @@ def operand_size(f):
         rm = [o for o in f.operands if o.kind in ("rm", "mem") and o.size]
         if rm and rm[-1].size != 8:
             return rm[-1].size
+    # in a SIMD form an 'm32'/'m64' operand is only the size of the memory
+    # access (MOVSS xmm, m32; MOVSD xmm, m64): the operand size comes from a
+    # general register operand (MOVD xmm, r/m32; CVTSI2SS xmm, r/m64), so the
+    # opcode's default operand size isn't taken for 64 by MOVSD's row
+    simd = any(o.kind in ("vreg", "vrm") for o in f.operands)
     for o in f.operands:
+        if o.kind == "mem" and simd:
             continue
         if o.kind in ("rm", "reg", "opreg", "mem", "fixed") and o.size and o.size <= 64:
             return o.size

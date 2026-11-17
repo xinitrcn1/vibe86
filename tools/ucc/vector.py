@@ -16,6 +16,7 @@ Three parts:
   first and the last (their constants are arithmetic sequences); and
   "DEST[MAXVL-1:128] (Unmodified)" is a no-op.
 
+
 * `VectorMixin`, mixed into lower.Lowerer: vector operands (`vreg`: an
   XMM/YMM/ZMM register, `vmem`: a vector in memory, `vslice`: a lazy bit
   range of either, at a static or dynamic offset), element reads (VGET or
@@ -35,6 +36,14 @@ import re
 from sdm import Bin, Call, Name, Num, Slice
 
 MAXVL = 512
+
+
+def vlen_bits(f):
+    """The operation's vector length in bits (the SDM's VL): 128 for legacy
+    SSE and VEX.128 forms, 256 for VEX.256. Form.vl is VEX.L (0, 1 or None
+    for VEX.LIG and non-VEX forms)."""
+    return 256 if getattr(f, "vex", False) and getattr(f, "vl", None) == 1 else 128
+
 
 # ---------------------------------------------------------------- sections
 
@@ -145,13 +154,14 @@ def pick_section(sections, f):
                     s -= 20
                 if "VEX" in hs:
                     s += 5
-                vl = getattr(f, "vl", 128)
+                vl = vlen_bits(f)
                 if f"{vl}" in hs:
                     s += 3
         # 'With 64-bit Operands' (MMX) / 'With 128-bit Operands' (SSE)
-        if re.search(r"64\s*-\s*BIT OPERAND", hs) and enc == "legacy":
+        # ('With 64-bit Source Operand and r32': PMOVMSKB)
+        if re.search(r"\b64\s*-\s*BIT (SOURCE |DESTINATION )?OPERAND", hs) and enc == "legacy":
             s -= 15
-        if re.search(r"128\s*-\s*BIT OPERAND", hs):
+        if re.search(r"128\s*-\s*BIT (SOURCE |DESTINATION )?OPERAND", hs):
             s += 3
         # 'When Destination Operand is an XMM Register' / '... is r/m64'
         dst_vec = bool(f.operands) and f.operands[0].kind in ("vreg", "vrm")
@@ -172,16 +182,40 @@ def pick_section(sections, f):
                     s += 1
             elif any(x.startswith(("xmm", "ymm", "zmm", "imm")) for x in hops):
                 s -= 6
+        # a memory form is a load or a store by its first operand (MOVSS
+        # xmm2/m32, xmm1 and MOVHPS m64, xmm1 store); the header says which
+        # ('When the Source Operand is Memory...', '...and the Destination is
+        # Memory', 'Destination Operand is Memory Location')
+        store = bool(f.operands) and f.operands[0].kind in ("vrm", "mem") and f.mem
+        # 'MOVSD (128-bit Legacy SSE Version: MOVSD xmm1, m64)': the header
+        # names the form itself; its operands, register or memory, against
+        # this form's (MOVSD xmm1, xmm2 / xmm1, m64 / m64, xmm1)
+        hm = re.search(r"\b" + re.escape(mn) + r"\s+((?:xmm|ymm|zmm|m|r)[a-z0-9/]*(?:\s*,\s*[a-z0-9/]+)*)", h)
+        if hm:
+            def kind_of(t):
+                t = t.strip()
+                return "m" if t.startswith("m") else "r" if t.startswith("r") else \
+                    "i" if t.startswith("imm") else "x"
+            hk = [kind_of(t) for t in hm.group(1).split(",")]
+            fk = []
+            for o in f.operands:
+                if o.kind == "vreg":
+                    fk.append("x")
+                elif o.kind == "vrm":
+                    fk.append("m" if f.mem else "x")
+                elif o.kind == "mem" or (o.kind == "rm" and f.mem):
+                    fk.append("m")
+                elif o.kind == "imm":
+                    fk.append("i")
+                else:
+                    fk.append("r")
+            s += 8 if hk == fk[:len(hk)] and len(hk) >= min(2, len(fk)) else -8
         if "MEMORY" in hs:
-            src_mem = "SOURCE OPERAND IS MEMORY" in hs or "MEMORY SOURCE" in hs or \
-                "SOURCE OPERAND IS MEMORY LOCATION" in hs
-            dst_mem = "DESTINATION OPERAND IS MEMORY" in hs or "MEMORY DEST" in hs or \
-                "OPERAND IS MEMORY LOCATION" in hs and "DESTINATION" in hs and "SOURCE OPERAND IS XMM" in hs
-            if f.mem and src_mem and dst_vec and "SOURCE OPERAND IS XMM" not in hs:
+            src_mem = re.search(r"SOURCE (OPERAND )?IS (A )?MEMORY|MEMORY SOURCE", hs)
+            dst_mem = re.search(r"DESTINATION (OPERAND )?IS (A )?MEMORY|MEMORY DEST", hs)
+            if f.mem and store and dst_mem:
                 s += 6
-            elif f.mem and dst_mem and not dst_vec:
-                s += 6
-            elif f.mem and dst_mem and dst_vec and f.operands[0].kind == "vrm":
+            elif f.mem and not store and src_mem:
                 s += 6
             else:
                 s -= 3
@@ -192,11 +226,12 @@ def pick_section(sections, f):
         if "(SSE)" in hs and enc == "legacy":
             s += 3
         # load / store forms (MOVAPS xmm, m128 vs MOVAPS m128, xmm)
-        store = bool(f.operands) and f.operands[0].kind in ("vrm",) and f.mem
+        # (MOVHPS m64, xmm's page has one 'VMOVHPS (Store)' section for the
+        # legacy and VEX stores)
         if "STORE" in hs:
-            s += 4 if store else -4
+            s += 12 if store else -4
         if "LOAD" in hs or "REGISTER-COPY" in hs:
-            s += 2 if not store else -2
+            s += 2 if not store else -12
         return s
 
     best = max(cands, key=lambda c: score(c[0]))
@@ -213,6 +248,7 @@ def pick_section(sections, f):
 UNMODIFIED = re.compile(r"^\s*DEST\s*\[[^\]]*\]\s*\(\s*[Uu]nmodified\s*\)\s*;?\s*$", re.M)
 REPEAT = re.compile(r"\(\*\s*(Repeat|Continue)[^*]*\*\)", re.I)
 NUM = re.compile(r"\b\d+\b")
+COMMENT = re.compile(r"\(\*.*?\*\)")
 
 
 def expand_repeats(text):
@@ -229,9 +265,17 @@ def expand_repeats(text):
             for k in range(1, 7):
                 if len(out) < k or i + k >= len(lines) + 0 and i + k > len(lines) - 1 + 1:
                     break
-                first = "\n".join(out[-k:])
-                last = "\n".join(lines[i + 1:i + 1 + k])
+                # (a trailing comment is not part of the lane: PAVGW's first
+                # has '(* Temp sum before shifting is 17 bits *)')
+                first = COMMENT.sub("", "\n".join(out[-k:])).rstrip()
+                last = COMMENT.sub("", "\n".join(lines[i + 1:i + 1 + k])).rstrip()
                 gen = interpolate(first, last)
+                if gen is None and k == 1 and len(out) >= 2:
+                    # lanes told apart by an index, not a bit range
+                    # ('r32[0] := SRC[7]; r32[1] := SRC[15]; (* Repeat ...
+                    # *) r32[15] := SRC[127]': PMOVMSKB): the step is the
+                    # difference of the two statements before the elision
+                    gen = interpolate_step(COMMENT.sub("", out[-2]).rstrip(), first, last)
                 if gen is not None:
                     for g in gen:
                         out.extend(g.split("\n"))
@@ -247,9 +291,49 @@ def expand_repeats(text):
     return "\n".join(out)
 
 
+def interpolate_step(prev, first, last):
+    """The statements strictly between `first` and `last`, stepping each
+    number by its difference from `prev` (the statement before `first`)."""
+    def shape(t):
+        return re.sub(r"\s+", "", NUM.sub("#", t)).lower()
+    if not (shape(prev) == shape(first) == shape(last)):
+        return None
+    p = [int(x) for x in NUM.findall(prev)]
+    a = [int(x) for x in NUM.findall(first)]
+    b = [int(x) for x in NUM.findall(last)]
+    steps = [y - x for x, y in zip(p, a)]
+    n = None
+    for x, y, d in zip(a, b, steps):
+        if d == 0:
+            if x != y:
+                return None
+            continue
+        if (y - x) % d:
+            return None
+        m = (y - x) // d
+        if m <= 1 or (n is not None and m != n):
+            return None
+        n = m
+    if n is None:
+        return None
+    parts = NUM.split(first)
+    gen = []
+    for k in range(1, n):
+        t = parts[0]
+        for j, (x, d) in enumerate(zip(a, steps)):
+            t += str(x + d * k) + parts[j + 1]
+        gen.append(t)
+    return gen
+
+
 def interpolate(first, last):
     """The statements between `first` (lane 0) and `last` (lane n-1)."""
-    if NUM.sub("#", first).strip() != NUM.sub("#", last).strip():
+    # the template must match up to spacing and case: the manual's last lane
+    # is sometimes spelled differently (PADDUSB: 'SaturateToUnSignedByte',
+    # 'SaturateToUnsignedByte (' vs 'SaturateToUnsignedByte(')
+    def shape(t):
+        return re.sub(r"\s+", "", NUM.sub("#", t)).lower()
+    if shape(first) != shape(last):
         return None
     a = [int(x) for x in NUM.findall(first)]
     b = [int(x) for x in NUM.findall(last)]
@@ -349,7 +433,10 @@ def extract_functions(text, mnems=None):
     i = 0
     while i < len(lines):
         m = FUNC_HEAD.match(lines[i])
-        if not m or HEADER.match(lines[i]) or m.group(1).upper() in ("IF", "FOR", "WHILE", "CASE"):
+        # (a line naming one of the page's own mnemonics is a section header,
+        # not a helper: 'VMOVHPS (Store)' isn't a function of a parameter Store)
+        if not m or HEADER.match(lines[i]) or m.group(1).upper() in ("IF", "FOR", "WHILE", "CASE") \
+                or (mnems and m.group(1) in mnems and is_header(lines[i], mnems)):
             out.append(lines[i])
             i += 1
             continue
@@ -422,7 +509,7 @@ class VectorMixin:
         if n in ("ZERO_FILL", "ZeroExtend") and (self.vec_form or self.fp_et):
             return 0                     # as in r32[31:16] := ZERO_FILL
         if n == "VL" and self.vec_form:
-            return getattr(self.f, "vl", 128)
+            return vlen_bits(self.f)
         return None
 
     def vprologue(self):
@@ -508,7 +595,8 @@ class VectorMixin:
         t = self.tmp()
         if base.kind == "vreg":
             sel = base.sel
-            if self.vdest is not None and sel == self.vdest[0] and self.voverlap(off, width, doff):
+            if self.vdest is not None and sel == self.vdest[0] and not base.orig and \
+                    self.voverlap(off, width, doff):
                 sel = self.vdest[1]
             self.E("VGET", w, dst=t, a=doff or "ZERO", b=self.vs(sel), imm=off)
         else:
@@ -581,7 +669,14 @@ class VectorMixin:
             if not self.vfree:
                 raise self.Err("out of vector temporaries")
             tmp = self.vfree.pop()
+            # the copy runs once, before the body: the first write can sit in
+            # a loop or in one arm of an IF (PSRLDQ's 'FOR b ... IF ... THEN
+            # DEST[b] := ... ELSE DEST[b] := 0'), where emitting it in place
+            # would redo it every iteration and skip it on the other arm
             self.E("VMOVR", 64, dst=self.vs(tmp), a=self.vs(base.sel), note="DEST's old value")
+            pos = getattr(self, "vbody_pos", None)
+            if pos is not None:
+                self.r.code.insert(pos, self.r.code.pop())
             self.vdest = (base.sel, tmp)
         if base.sel != self.vdest[0]:
             raise self.Err("two vector destinations")
@@ -632,7 +727,7 @@ class VectorMixin:
 
     def vstore_slice(self, base, h, l, v):
         width = h - l + 1
-        if base.kind == "vreg" and l >= getattr(self.f, "vl", 128) and h == MAXVL - 1:
+        if base.kind == "vreg" and l >= vlen_bits(self.f) and h == MAXVL - 1:
             if not (v.kind == "k" and v.k == 0):
                 raise self.Err("upper vector bits := non-zero")
             sel = self.vdest_sel(base)

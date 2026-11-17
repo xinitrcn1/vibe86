@@ -299,10 +299,10 @@ PMINSB_PMINSW              signed only='PMINSW xmm'
 PMAXUB_PMAXUW              only='PMAXUB xmm'
 PMINUB_PMINUW              only='PMINUB xmm'
 PMULHUW
-PMULHW
+PMULHW                     signed   # signed words (SDM Vol. 2B PMULHW: the Operation leaves it out)
 PMULLW
 PMULUDQ
-PMADDWD
+PMADDWD                    signed   # signed words (SDM Vol. 2B PMADDWD)
 PSADBW
 PACKSSWB_PACKSSDW
 PACKUSWB

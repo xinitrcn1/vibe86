@@ -72,8 +72,10 @@ def read_isa(path):
             parts = shlex.split(line)
             cfg = {}
             for p in parts[1:]:
-                k, _, v = p.partition("=")
-                if k in ("osz",):
+                k, eq, v = p.partition("=")
+                if not eq:
+                    cfg[k] = True       # a bare flag: memonly, signed, align...
+                elif k in ("osz",):
                     cfg[k] = {a: int(b) for a, b in (x.split(":") for x in v.split(","))}
                 elif k in ("rep", "suffixed"):
                     cfg[k] = v.split(",")

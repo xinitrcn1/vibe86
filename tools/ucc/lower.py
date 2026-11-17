@@ -15,7 +15,7 @@ its result. Constants and the (pre-extended) immediate adapt to the width of
 the other operand, the way the manual reads.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import oracle
 import sdm
@@ -124,6 +124,8 @@ class V:
     seg: str = "EASEG"    # for 'mem': the segment (SEGS), EASEG = the operand's
     base: object = None   # 'vslice': the vector (vreg/vmem) it's a bit range of
     fp: str = None        # an FP element ('f32', 'f64', 'f16'): operators are FP (D-015)
+    orig: bool = False    # a vector read by a source name (SRC1, SRC2): its value
+                          # before the instruction, though DEST is the same register
 
     def __repr__(self):
         if self.kind == "k":
@@ -182,6 +184,19 @@ def assigned_names(node, out=None):
     return out
 
 
+def result_assigns(node):
+    """How many times a function body assigns RESULT, at any depth."""
+    if isinstance(node, list):
+        return sum(result_assigns(n) for n in node)
+    k = 0
+    if isinstance(node, Assign) and isinstance(node.dst, Name) and node.dst.n == "RESULT":
+        k = 1
+    if hasattr(node, "__dataclass_fields__"):
+        for f in node.__dataclass_fields__:
+            v = getattr(node, f)
+            if isinstance(v, list) or hasattr(v, "__dataclass_fields__"):
+                k += result_assigns(v)
+    return k
 
 
 class Lowerer(VectorMixin):
@@ -604,6 +619,11 @@ class Lowerer(VectorMixin):
         o = self.f.operands[idx]
         vo = self.voperand(o)
         if vo is not None:
+            if vo.kind == "vreg" and str(role).upper().startswith("SRC"):
+                # the pseudocode's operands are the values the instruction
+                # started with: in the legacy forms SRC1 is DEST's register,
+                # and UNPCKLPS reads SRC1[63:32] after writing DEST[63:32]
+                vo.orig = True
             return vo
         w = o.size or self.f.osz
         if w > 64:
@@ -663,6 +683,8 @@ class Lowerer(VectorMixin):
             # an operand named by its table text (m32, r32, r64, reg, Mem16, xmm1...)
             alias = {"Mem16": "m16", "Src": "SRC", "ZERO_FILL": None}.get(n, n)
             for i, o in enumerate(self.f.operands):
+                if o.kind == "cr" and o.text == alias:
+                    continue        # 'CR8' in MOV r64, CR8 is the register, not the operand
                 if o.text and alias and (o.text == alias or o.text.split("/")[0] == alias or
                                          (alias in ("r32", "r64", "reg") and o.kind == "reg") or
                                          (alias in ("m32", "m64", "m16") and o.kind in ("mem", "rm"))):
@@ -894,6 +916,17 @@ class Lowerer(VectorMixin):
             if op in ("*", "/"):
                 raise LowerError(f"integer {op} in an FP page")
             return self.alu(self.ALU[op], a, b, want, fm)
+        if op == ">>" and (self.vec_form or self.fp_et) and isinstance(e.b, Num) and \
+                e.b.v == 1 and isinstance(e.a, Bin) and e.a.op == "+" and \
+                isinstance(e.a.b, Num) and e.a.b.v == 1 and isinstance(e.a.a, Bin) and \
+                e.a.a.op == "+":
+            # '(SRC[7:0] + DEST[7:0] + 1) >> 1' (PAVGB/PAVGW): the sum is a
+            # bit wider than the elements ('Temp sum before shifting is 9
+            # bits'): AVGU keeps the carry
+            x = self.eval(e.a.a.a, want)
+            y = self.eval(e.a.a.b, want)
+            if not (self.is_vec(x) or self.is_vec(y)):
+                return self.alu("AVGU", x, y, want, 0)
         if op == ">>":
             a = self.eval(e.a)
             if self.is_vec(a):
@@ -1002,7 +1035,29 @@ class Lowerer(VectorMixin):
             r = self.vcall(e, want)
             if r is not None:
                 return r
+        if f == "SignExtend" and isinstance(e.args[0], Bin) and e.args[0].op == ">>":
+            # 'SignExtend(SRC[31:0] >> COUNT)' (PSRAW/PSRAD: COUNT is clamped
+            # to 16/32 before): an arithmetic shift, the sign bit filling
+            # the element for every count past its width - 1
+            x = self.eval(e.args[0].a)
+            if x.kind == "mem":
+                x = self.load(x)
+            if x.kind == "sel" and x.w in (8, 16, 32, 64):
+                c = self.eval(e.args[0].b, 64)
+                lim = x.w - 1
+                if c.kind == "k":
+                    cnt, imm = "K", min(c.k, lim)
                 else:
+                    cnt, imm = self.tmp(), 0
+                    ok = self.r.label()
+                    self.E("MOV", 64, dst=cnt, a=self.to_sel(c))
+                    self.E("CMP", 64, a=cnt, b="K", imm=lim)
+                    self.E("JU", cc=self.ucc("LEU"), imm=ok)
+                    self.E("MOV", 64, dst=cnt, a="K", imm=lim)
+                    self.r.place(ok)
+                t = self.tmp()
+                self.E("SAR", x.w, dst=t, a=x.sel, b=cnt, imm=imm)
+                return self.widen(V("sel", x.w, sel=t), want or x.w, signed=True)
         if f in ("SignExtend", "ZeroExtend"):
             v = self.eval(e.args[0])
             w = want or 64
@@ -1231,6 +1286,10 @@ class Lowerer(VectorMixin):
                 v = V("sel", v.w, sel=t)
             elif v.kind == "sel" and v.sel in self.stmt_temps:
                 self.stmt_temps.remove(v.sel)       # the argument lives through the call
+            elif v.kind == "vreg":
+                # by value too: INTERLEAVE_WORDS(DEST, SRC) reads SRC1 (DEST's
+                # register) after the helper has written DEST's low words
+                v = replace(v, orig=True)
             argv.append((p, v))
         caller = self.vars
         saved_prot = set(self.protected)
@@ -1247,7 +1306,14 @@ class Lowerer(VectorMixin):
                 t = self.tmp(keep=True)
                 self.E("MOV", opsize(v.w), dst=t, a=v.sel)
                 argv[i] = (p, V("sel", v.w, sel=t))
-        saved_live = (self.pos, self.last, getattr(self, "_inlining", 0))
+        saved_live = (self.pos, self.last, getattr(self, "_inlining", 0),
+                      getattr(self, "_result_var", False))
+        # RESULT assigned once at the body's top level is just bound to its
+        # value (a constant stays foldable); assigned more than once
+        # ('RESULT := 0; IF ... THEN RESULT := 1; FI', ValidMemType) it is a
+        # variable in a register like any other, or the last binding would
+        # stand for every path
+        self._result_var = result_assigns(body) > 1
         self.vars = dict(argv)
         if fname not in self.lib_live:
             self.liveness(body)
@@ -1274,7 +1340,7 @@ class Lowerer(VectorMixin):
                         self.free.append(t.sel)
             self.vars = caller
             self.protected = saved_prot
-            self.pos, self.last, self._inlining = saved_live
+            self.pos, self.last, self._inlining, self._result_var = saved_live
         if res is not None and res.kind == "sel" and res.sel.startswith("T"):
             self.stmt_temps.append(res.sel)         # freed with the caller's statement
         return res
@@ -1790,6 +1856,10 @@ class Lowerer(VectorMixin):
         loc = self.rname(base.n) if base.n not in self.vars else self.vars[base.n]
         if loc is None:
             raise LowerError(f"bit-field of unknown {base.n}")
+        if loc.kind == "mem" and l == 0 and width == loc.w:
+            # the whole operand ('DEST[63:0] := SRC[127:64]', MOVHPS m64, xmm):
+            # a store, not a read-modify-write of the memory
+            self.store_mem(loc, v)
             return
         if loc.kind == "mem":
             cur = self.load(loc)
@@ -1830,6 +1900,11 @@ class Lowerer(VectorMixin):
                 v = self.eval(s.src, self.f.osz)
                 if v.kind == "mem":
                     v = self.load(v)
+                if getattr(self, "_result_var", False) and v.kind != "pair":
+                    self.store_var("RESULT", v)
+                    v = self.vars["RESULT"]
+                    self.release_stmt()
+                    self.cur_producer = None
                     return
                 self.vars["RESULT"] = v
                 # keep the result's temp alive past this statement
@@ -1943,7 +2018,8 @@ class Lowerer(VectorMixin):
             lo, hi = self.static_val(s.lo), self.static_val(s.hi)
             if lo is None or hi is None:
                 raise LowerError("FOR with run-time bounds")
-            rng = range(hi, lo - 1, -1) if s.down else range(lo, hi + 1)
+            # FOR i := lo TO hi / FOR i := lo DOWNTO hi (lo is the first value)
+            rng = range(lo, hi - 1, -1) if s.down else range(lo, hi + 1)
             if (self.vec_form or self.fp_et) and len(rng) > 8:
                 # a long lane loop (D-015): a microcode loop with the index in a
                 # temporary, the lanes addressed at run time (the ROM stays O(body))
@@ -1955,7 +2031,7 @@ class Lowerer(VectorMixin):
                 self.block(s.body)
                 self.vars[s.var] = V("sel", 64, sel=j)
                 self.E("ADD" if not s.down else "SUB", 64, dst=j, a=j, b="K", imm=1)
-                self.E("CMP", 64, a=j, b="K", imm=(hi + 1) if not s.down else (lo - 1))
+                self.E("CMP", 64, a=j, b="K", imm=(hi + 1) if not s.down else (hi - 1))
                 self.E("JU", cc=self.ucc("NE"), imm=top)
                 self.vars.pop(s.var, None)
                 self.free.append(j)
@@ -2235,6 +2311,7 @@ class Lowerer(VectorMixin):
             self.E("URET")
             return self.r
         self.vprologue()
+        self.vbody_pos = len(self.r.code)     # where DEST's copy goes (vdest_sel)
         self.block(self.ast)
         self.r.place(self.done_label)
         self.vepilogue()
