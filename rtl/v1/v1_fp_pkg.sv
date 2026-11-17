@@ -1,4 +1,4 @@
-// v1_fpu: the floating-point datapath of the v1 core (D-009).
+// v1_fp_pkg: the floating-point datapath of the v1 core (D-009).
 //
 // One scalar operation per call, on f16, bf16, f32, f64 or x87's f80:
 // unpack into sign / unbiased exponent / significand, compute exactly (or
@@ -117,13 +117,16 @@ package v1_fp_pkg;
     if (f == FMT_F80) return {1'b1, 15'h7FFF, 2'b11, 62'b0};
     return (80'd1 << (fb + eb)) | (((80'd1 << eb) - 1) << fb) | (80'd1 << (fb - 1));
   endfunction
+  // operands are passed as whole unpacked values; this function reads some fields
+  /* verilator lint_off UNUSEDSIGNAL */
   function automatic logic [79:0] pack_nan(input unpacked_t u, input logic [3:0] f);
+  /* verilator lint_on UNUSEDSIGNAL */
     int fb, eb;
     fb = fbits(f);
     eb = ebits(f);
     if (f == FMT_F80) return {u.sign, 15'h7FFF, 1'b1, 1'b1, u.payload[61:0]};
     return (80'(u.sign) << (fb + eb)) | (((80'd1 << eb) - 1) << fb) | (80'd1 << (fb - 1)) |
-           80'((u.payload[61:0] >> (62 - fb + 1)) & ((64'd1 << (fb - 1)) - 1));
+           ((80'(u.payload[61:0]) >> (62 - fb + 1)) & ((80'd1 << (fb - 1)) - 80'd1));
   endfunction
 
   typedef struct packed {
@@ -139,7 +142,8 @@ package v1_fp_pkg;
                                        input logic [3:0] f, input logic [1:0] rm,
                                        input logic ftz, input int prec);
     fres_t r;
-    int p, b, emin, emax, eb, fb, lz, sh;
+    int p, b, eb, fb, lz, sh;
+    logic signed [19:0] emin, emax;
     logic signed [19:0] e;
     logic [127:0] s;
     logic [127:0] keep, half, rest;
@@ -150,8 +154,8 @@ package v1_fp_pkg;
     eb = ebits(f);
     b = bias(f);
     p = (f == FMT_F80) ? prec : fb + 1;                  // precision in bits
-    emin = 1 - b;
-    emax = b;
+    emin = 20'(1 - b);
+    emax = 20'(b);
     if (sig == 0) begin
       r.v = 80'(sign) << (width(f) - 1);
       return r;
@@ -168,7 +172,7 @@ package v1_fp_pkg;
     // at the subnormal precision instead, as v1 did, missed UE and FTZ for
     // results that round up to the smallest normal: rtl/v1/tb/tb_fpu_ref.)
     tiny = 1'b0;
-    if (e < 20'(emin)) begin
+    if (e < emin) begin
       logic [127:0] k0, r0, h0;
       logic u0;
       k0 = s >> (128 - p);
@@ -180,11 +184,11 @@ package v1_fp_pkg;
         2'd2: u0 = !sign && (r0 != 0 || st);
         default: u0 = 1'b0;
       endcase
-      tiny = !(e == 20'(emin) - 1 && u0 && k0 == (128'd1 << p) - 1);
+      tiny = !(e == emin - 20'sd1 && u0 && k0 == (128'd1 << p) - 1);
     end
     // subnormal: shift right so the exponent is emin
-    if (e < 20'(emin)) begin
-      sh = int'(20'(emin) - e);
+    if (e < emin) begin
+      sh = int'(emin) - int'(e);
       if (sh > 127) begin
         st = st | (s != 0);
         s = 0;
@@ -192,7 +196,7 @@ package v1_fp_pkg;
         st = st | ((s & ((128'd1 << sh) - 1)) != 0);
         s = s >> sh;
       end
-      e = 20'(emin);
+      e = emin;
     end
     // keep the top p bits
     keep = s >> (128 - p);
@@ -217,7 +221,7 @@ package v1_fp_pkg;
       r.x[XPE] = 1'b1;
       return r;
     end
-    if (e > 20'(emax)) begin                             // overflow
+    if (e > emax) begin                             // overflow
       r.x[XOE] = 1'b1;
       r.x[XPE] = 1'b1;
       if (rm == 2'd3 || (rm == 2'd1 && !sign) || (rm == 2'd2 && sign)) begin
@@ -312,11 +316,10 @@ package v1_fp_pkg;
         unpacked_t bb;
         bb = b;
         if (op == 4'd1) bb.sign = !bb.sign;
-        r = merge_x(add_core(a, bb, 1'b0, f, rm, ftz, prec, r.x[XDE]), r.x);
+        r = merge_x(add_core(a, bb, f, rm, ftz, prec), r.x);
       end
       4'd2, 4'd5: begin
         // the product, exactly: 128 bits, exponent a.exp + b.exp
-        unpacked_t pr;
         logic [127:0] ps;
         logic psign;
         psign = a.sign ^ b.sign;
@@ -433,8 +436,10 @@ package v1_fp_pkg;
   endfunction
 
   // a < b for ordered, non-NaN operands
+  // operands are passed as whole unpacked values; this function reads some fields
+  /* verilator lint_off UNUSEDSIGNAL */
   function automatic logic cmp_lt(input unpacked_t a, input unpacked_t b);
-    logic [81:0] ka, kb;
+  /* verilator lint_on UNUSEDSIGNAL */
     if (a.zero && b.zero) return 1'b0;
     if (a.sign != b.sign) return a.sign && !(a.zero && b.zero);
     if (a.inf || b.inf) begin
@@ -443,16 +448,17 @@ package v1_fp_pkg;
     end
     if (a.zero) return !b.sign;
     if (b.zero) return a.sign;
-    ka = {a.exp, a.sig};
-    kb = {b.exp, b.sig};
     if (a.exp != b.exp) return a.sign ? (a.exp > b.exp) : (a.exp < b.exp);
     return a.sign ? (a.sig > b.sig) : (a.sig < b.sig);
   endfunction
 
   // a + b (signs included), exactly enough, one rounding
-  function automatic fres_t add_core(input unpacked_t a, input unpacked_t b, input logic dummy,
+  // operands are passed as whole unpacked values; this function reads some fields
+  /* verilator lint_off UNUSEDSIGNAL */
+  function automatic fres_t add_core(input unpacked_t a, input unpacked_t b,
                                      input logic [3:0] f, input logic [1:0] rm, input logic ftz,
-                                     input int prec, input logic de);
+                                     input int prec);
+  /* verilator lint_on UNUSEDSIGNAL */
     fres_t r;
     logic [255:0] x, y, z;
     logic signed [19:0] e;
@@ -478,14 +484,14 @@ package v1_fp_pkg;
     // align on the larger exponent; 192 guard bits below the significand
     if (a.exp >= b.exp) begin
       e = 20'(a.exp);
-      d = int'(a.exp - b.exp);
+      d = int'(a.exp) - int'(b.exp);
       x = {a.sig, 192'b0};
       y = {b.sig, 192'b0};
       sx = a.sign;
       sy = b.sign;
     end else begin
       e = 20'(b.exp);
-      d = int'(b.exp - a.exp);
+      d = int'(b.exp) - int'(a.exp);
       x = {b.sig, 192'b0};
       y = {a.sig, 192'b0};
       sx = b.sign;
@@ -522,10 +528,12 @@ package v1_fp_pkg;
   endfunction
 
   // (a*b) + c exactly, then round once
+  // operands are passed as whole unpacked values; this function reads some fields
+  /* verilator lint_off UNUSEDSIGNAL */
   function automatic fres_t fma_core(input unpacked_t a, input unpacked_t b, input unpacked_t c,
                                      input logic [3:0] f, input logic [1:0] rm, input logic ftz,
                                      input int prec);
-    unpacked_t p;
+  /* verilator lint_on UNUSEDSIGNAL */
     logic [127:0] ps;
     fres_t r;
     if (a.zero || b.zero) begin
@@ -533,7 +541,7 @@ package v1_fp_pkg;
       z = '0;
       z.zero = 1'b1;
       z.sign = a.sign ^ b.sign;
-      return add_core(z, c, 1'b0, f, rm, ftz, prec, 1'b0);
+      return add_core(z, c, f, rm, ftz, prec);
     end
     ps = 128'(a.sig) * 128'(b.sig);              // value ps * 2^(ea+eb-126)
     // as an unpacked value with a 128-bit significand: use add on the wide form
@@ -561,10 +569,10 @@ package v1_fp_pkg;
         t = x; x = y; y = t;
         ts = sx; sx = sy; sy = ts;
         e = ec;
-        d = int'(ec - ep);
+        d = int'(ec) - int'(ep);
       end else begin
         e = ep;
-        d = int'(ep - ec);
+        d = int'(ep) - int'(ec);
       end
       if (d > 250) begin
         st = y != 0;
@@ -604,7 +612,7 @@ package v1_fp_pkg;
     root = 0;
     for (int i = 127; i >= 0; i--) begin
       rem = (rem << 2) | 256'((rad >> (2 * i)) & 256'd3);
-      trial = {130'b0, root, 2'b01};
+      trial = {128'b0, root, 2'b01};
       if (258'(rem) >= trial) begin
         rem = 256'(258'(rem) - trial);
         root = (root << 1) | 128'd1;
@@ -664,7 +672,10 @@ package v1_fp_pkg;
                                       input int iw, input logic is_signed, input logic [1:0] rm,
                                       input logic daz);
     fres_t r;
+    // the integer conversion reads sign, exponent, significand and the class bits
+    /* verilator lint_off UNUSEDSIGNAL */
     unpacked_t a;
+    /* verilator lint_on UNUSEDSIGNAL */
     logic [127:0] x;
     logic [127:0] keep, rest, half;
     logic up, inexact;
@@ -673,7 +684,7 @@ package v1_fp_pkg;
     a = unpack(av, from, daz);
     r = '0;
     if (a.nan || a.inf) begin
-      r.v = is_signed ? 80'(64'd1 << (iw - 1)) : 80'((64'd1 << iw) - 1);
+      r.v = is_signed ? (80'd1 << (iw - 1)) : ((80'd1 << iw) - 80'd1);
       if (iw == 64 && !is_signed) r.v = 80'(64'hFFFF_FFFF_FFFF_FFFF);
       r.x[XIE] = 1'b1;
       return r;
@@ -683,7 +694,7 @@ package v1_fp_pkg;
     // value = sig * 2^(exp - 63); integer part = sig >> (63 - exp)
     x = {a.sig, 64'b0};                       // binary point at bit 64
     if (a.exp > 63) begin
-      r.v = is_signed ? 80'(64'd1 << (iw - 1)) : 80'((64'd1 << iw) - 1);
+      r.v = is_signed ? (80'd1 << (iw - 1)) : ((80'd1 << iw) - 80'd1);
       if (iw == 64 && !is_signed) r.v = 80'(64'hFFFF_FFFF_FFFF_FFFF);
       r.x[XIE] = 1'b1;
       return r;
@@ -705,7 +716,7 @@ package v1_fp_pkg;
     r.x[XPE] = inexact;
     if (is_signed) begin
       if ((!a.sign && mag > ((128'd1 << (iw - 1)) - 1)) || (a.sign && mag > (128'd1 << (iw - 1)))) begin
-        r.v = 80'(64'd1 << (iw - 1));
+        r.v = (80'd1 << (iw - 1));
         r.x[XIE] = 1'b1;
         r.x[XPE] = 1'b0;
         return r;
@@ -718,7 +729,7 @@ package v1_fp_pkg;
       end
     end else begin
       if (a.sign && mag != 0 || mag > ((128'd1 << iw) - 1)) begin
-        r.v = (iw == 64) ? 80'(64'hFFFF_FFFF_FFFF_FFFF) : 80'((64'd1 << iw) - 1);
+        r.v = (iw == 64) ? 80'(64'hFFFF_FFFF_FFFF_FFFF) : ((80'd1 << iw) - 80'd1);
         r.x[XIE] = 1'b1;
         r.x[XPE] = 1'b0;
         return r;

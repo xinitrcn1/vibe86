@@ -7,7 +7,7 @@ set(V1_RTL
   ${VIBE86_COMMON_SV}
   ${v1_UOP_PKG}
   ${v1_UCODE_PKG}
-  ${CMAKE_CURRENT_SOURCE_DIR}/v1_fpu.sv
+  ${CMAKE_CURRENT_SOURCE_DIR}/v1_fp_pkg.sv
   ${CMAKE_CURRENT_SOURCE_DIR}/v1_alu.sv
   ${CMAKE_CURRENT_SOURCE_DIR}/v1_core.sv)
 set_source_files_properties(${v1_UOP_PKG} ${v1_UCODE_PKG} PROPERTIES GENERATED TRUE)
@@ -20,8 +20,17 @@ verilate(vibe86_v1
   TOP_MODULE v1_core
   PREFIX Vv1_core
   INCLUDE_DIRS ${VIBE86_COMMON_DIR}
-  VERILATOR_ARGS ${V1_DEBUG_ARGS} -Wno-fatal -Wno-WIDTH -Wno-UNUSED -O3 --x-assign fast --x-initial fast
+  VERILATOR_ARGS ${V1_DEBUG_ARGS} ${CMAKE_CURRENT_SOURCE_DIR}/v1.vlt -O3 --x-assign fast --x-initial fast
                  --output-split 20000)
+
+# lint: verilator -Wall over the core must be clean (docs/synthesis.md);
+# waivers that can't sit in the code are in v1.vlt
+find_program(VERILATOR_EXE verilator REQUIRED HINTS $ENV{VERILATOR_ROOT}/bin)
+if(VIBE86_LATEST STREQUAL "v1")
+  add_test(NAME rtl/v1/lint
+    COMMAND ${VERILATOR_EXE} -Wall --lint-only ${CMAKE_CURRENT_SOURCE_DIR}/v1.vlt
+            -I${VIBE86_COMMON_DIR} --top-module v1_core ${V1_RTL})
+endif()
 
 # testbenches: only the latest version's run under ctest
 if(VIBE86_LATEST STREQUAL "v1")

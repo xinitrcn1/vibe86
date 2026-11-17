@@ -62,7 +62,10 @@ module v1_alu
     return ~^v;
   endfunction
   // x86 condition codes over RFLAGS (Intel SDM Vol. 1, appendix B)
+  // RFLAGS is passed whole; a condition reads the arithmetic flags
+  /* verilator lint_off UNUSEDSIGNAL */
   function automatic logic cond(input logic [3:0] k, input logic [63:0] f);
+  /* verilator lint_on UNUSEDSIGNAL */
     logic r;
     case (k[3:1])
       3'd0: r = f[11];                         // O
@@ -84,7 +87,8 @@ module v1_alu
   logic [6:0]  cnt;
   logic [127:0] prod;
   logic [127:0] dvd;
-  logic [127:0] q, r;
+  logic [127:0] q;
+  logic [63:0]  r;               // a remainder is smaller than the 64-bit divisor
 
   always_comb begin
     m = szmask(sz);
@@ -170,7 +174,7 @@ module v1_alu
           case (op)
             U_SHL: begin
               res = (am << cnt) & m;
-              fl[CF] = (cnt <= 7'(n)) ? am[n - cnt] : 1'b0;
+              fl[CF] = (cnt <= 7'(n)) ? am[n - int'(cnt)] : 1'b0;
               fl[OF] = msb(res, sz) ^ fl[CF];
             end
             U_SHR: begin
@@ -192,8 +196,8 @@ module v1_alu
         if (cnt != 0) begin
           logic [6:0] k;
           k = 7'(int'(cnt) % n);
-          if (op == U_ROL) res = ((am << k) | (am >> (n - k))) & m;
-          else             res = ((am >> k) | (am << (n - k))) & m;
+          if (op == U_ROL) res = ((am << k) | (am >> (n - int'(k)))) & m;
+          else             res = ((am >> k) | (am << (n - int'(k)))) & m;
           if (k == 0) res = am;
           native = (1 << CF) | (1 << OF);
           if (op == U_ROL) begin
@@ -246,7 +250,7 @@ module v1_alu
             w2 = ({64'b0, am} << n) | {64'b0, bm};       // a:b
             w2 = w2 << cnt;
             res = 64'(w2 >> n) & m;
-            fl[CF] = (cnt <= 7'(n)) ? am[n - cnt] : 1'b0;
+            fl[CF] = (cnt <= 7'(n)) ? am[n - int'(cnt)] : 1'b0;
           end else begin
             w2 = ({64'b0, bm} << n) | {64'b0, am};       // b:a
             w2 = w2 >> cnt;
@@ -265,7 +269,7 @@ module v1_alu
         else prod = 128'($signed({{64{sext(am, sz)[63]}}, sext(am, sz)}) *
                          $signed({{64{sext(bm, sz)[63]}}, sext(bm, sz)}));
         res = prod[63:0] & m;
-        hi_out = (prod >> n) & {64'b0, m};
+        hi_out = 64'((prod >> n) & {64'b0, m});
         hi_we = (op != U_IMULT);
         if (op == U_MULU) fl[CF] = hi_out != 0;
         else fl[CF] = prod != {{64{sext(res, sz)[63]}}, sext(res, sz)};
@@ -278,11 +282,10 @@ module v1_alu
         if (bm == 0) de = 1'b1;
         else if (op == U_DIVU) begin
           q = dvd / {64'b0, bm};
-          r = dvd % {64'b0, bm};
+          r = 64'(dvd % {64'b0, bm});
           if ((q >> n) != 0) de = 1'b1;
         end else begin
           logic [127:0] sd, sv;
-          sd = (n == 64) ? dvd : 128'($signed({{64{dvd[2 * n - 1]}}, dvd[63:0]} << (64 - 2 * n)) >>> (64 - 2 * n));
           if (n == 64) sd = dvd;
           else begin
             sd = dvd;
@@ -292,14 +295,14 @@ module v1_alu
           if (n == 64 && dvd == {1'b1, 127'b0} && bm == '1) de = 1'b1;
           else begin
             q = 128'($signed(sd) / $signed(sv));
-            r = 128'($signed(sd) % $signed(sv));
+            r = 64'($signed(sd) % $signed(sv));
             // the quotient must fit in n signed bits
             if ($signed(q) > $signed(128'((128'd1 << (n - 1)) - 1)) ||
                 $signed(q) < -$signed(128'(128'd1 << (n - 1)))) de = 1'b1;
           end
         end
         res = q[63:0] & m;
-        hi_out = r[63:0] & m;
+        hi_out = r & m;
         rem_we = 1'b1;
       end
       U_ZEXT: res = am;

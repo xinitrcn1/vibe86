@@ -91,9 +91,9 @@ module tb_alu_ref;
       a = rnd64() & m;
       b = rnd64() & m;
       c = 64'(cnt);
-      flags_in = {52'b0, $urandom_range(0, 1) ? 12'h8D5 : 12'h000} | 2;
+      flags_in = {52'b0, $urandom_range(0, 1) != 0 ? 12'h8D5 : 12'h000} | 2;
       want = ref_shxd(left, bits, a, b, cnt, flags_in, fo);
-      run(left ? U_SHLD : U_SHRD, bits == 16 ? 2'd1 : bits == 32 ? 2'd2 : 2'd3);
+      run(left != 0 ? U_SHLD : U_SHRD, bits == 16 ? 2'd1 : bits == 32 ? 2'd2 : 2'd3);
       // the defined flags: none for a masked count of 0; CF SF ZF PF; OF for 1
       mask = 6'b011011;
       if ((cnt & (bits == 64 ? 63 : 31)) == 1) mask = 6'b111011;
@@ -101,7 +101,7 @@ module tb_alu_ref;
       if ((cnt & (bits == 64 ? 63 : 31)) != 0 && ((fl ^ fl_of(fo)) & mask & native) != 0 ||
           ((cnt & (bits == 64 ? 63 : 31)) == 0 && native != 0 && ((fl ^ fl_of(flags_in)) & native) != 0) ||
           (res & m) !== want)
-        fail($sformatf("sh%sd%0d %h, %h, %0d -> %h fl %b, host %h fl %b", left ? "l" : "r", bits,
+        fail($sformatf("sh%sd%0d %h, %h, %0d -> %h fl %b, host %h fl %b", left != 0 ? "l" : "r", bits,
                        a, b, cnt, res, fl, want, fl_of(fo)));
     end
     c = 0;
@@ -110,7 +110,7 @@ module tb_alu_ref;
       int ox, bits;
       logic [63:0] fo, want, m;
       ox = $urandom_range(0, 1);
-      bits = $urandom_range(0, 1) ? 64 : 32;
+      bits = $urandom_range(0, 1) != 0 ? 64 : 32;
       m = (bits == 64) ? '1 : 64'hFFFF_FFFF;
       a = rnd64() & m;
       b = rnd64() & m;
@@ -122,9 +122,9 @@ module tb_alu_ref;
       // ADCX writes CF only, ADOX OF only: compare that flag and that
       // nothing else is claimed (native)
       if ((res & m) !== want ||
-          (ox ? (fl[5] !== fo[11] || native != 6'h20) : (fl[0] !== fo[0])))
+          (ox != 0 ? (fl[5] !== fo[11] || native != 6'h20) : (fl[0] !== fo[0])))
         fail($sformatf("ad%sx%0d %h + %h (flags %h) -> %h fl %b native %b, host %h flags %h",
-                       ox ? "o" : "c", bits, a, b, flags_in, res, fl, native, want, fo));
+                       ox != 0 ? "o" : "c", bits, a, b, flags_in, res, fl, native, want, fo));
     end
     // ---- MUL / IMUL: high halves, CF = OF
     for (int i = 0; i < 4000; i++) begin
@@ -133,7 +133,7 @@ module tb_alu_ref;
       logic [127:0] p;
       bit sgn;
       s = $urandom_range(0, 3);
-      sgn = $urandom_range(0, 1);
+      sgn = 1'($urandom_range(0, 1));
       m = (s == 3) ? '1 : (64'd1 << (8 << s)) - 1;
       a = rnd64() & m;
       b = rnd64() & m;
@@ -142,7 +142,7 @@ module tb_alu_ref;
       if (!sgn) p = {64'b0, a} * {64'b0, b};
       else p = 128'($signed({{64{a[(8 << s) - 1]}}, a | (a[(8 << s) - 1] ? ~m : 0)}) *
                     $signed({{64{b[(8 << s) - 1]}}, b | (b[(8 << s) - 1] ? ~m : 0)}));
-      if (res !== (p[63:0] & m) || hi_out !== ((p >> (8 << s)) & {64'b0, m}))
+      if (res !== (p[63:0] & m) || hi_out !== 64'((p >> (8 << s)) & {64'b0, m}))
         fail($sformatf("mul%s%0d %h * %h -> %h:%h", sgn ? "s" : "u", 8 << s, a, b, hi_out, res));
     end
     // ---- DIV / IDIV at the edges
@@ -184,7 +184,7 @@ module tb_alu_ref;
       if (de || res !== ((-64'd3) & m) || hi_out !== 1)
         fail($sformatf("idiv%0d 7 / -2: %h r %h", 8 << s, res, hi_out));
     end
-    if (errors) $fatal(1, "tb_alu_ref: %0d of %0d checks failed", errors, checks);
+    if (errors != 0) $fatal(1, "tb_alu_ref: %0d of %0d checks failed", errors, checks);
     $display("tb_alu_ref: %0d checks agree with the host / the edges", checks);
     $finish;
   end
