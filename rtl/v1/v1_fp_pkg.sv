@@ -226,7 +226,8 @@ package v1_fp_pkg;
       r.x[XPE] = 1'b1;
       if (rm == 2'd3 || (rm == 2'd1 && !sign) || (rm == 2'd2 && sign)) begin
         // the largest finite number
-        if (f == FMT_F80) r.v = {sign, 15'h7FFE, 64'hFFFF_FFFF_FFFF_FFFF};
+        // (x87 with FCW.PC < 64: the largest number of that precision)
+        if (f == FMT_F80) r.v = {sign, 15'h7FFE, 64'hFFFF_FFFF_FFFF_FFFF << (64 - p)};
         else r.v = (80'(sign) << (fb + eb)) | (80'((1 << eb) - 2) << fb) | ((80'd1 << fb) - 1);
       end else begin
         if (f == FMT_F80) r.v = {sign, 15'h7FFF, 1'b1, 63'b0};
