@@ -36,7 +36,7 @@ import subprocess
 import sys
 
 FOOTER = re.compile(r"^\S.*\s{2,}Vol\.\s+2[A-D]\s+[0-9A-Z]+-[0-9]+\s*$")
-HEADER_LINE = re.compile(r"^([A-Z][A-Za-z0-9/ ]*?[A-Za-z0-9])\s*—\s*(\S.*?)\s*$")
+HEADER_LINE = re.compile(r"^([A-Z][A-Za-z0-9/ ,]*?[A-Za-z0-9])\s*—\s*(\S.*?)\s*$")   # a comma: MOVDQA,VMOVDQA32/64
 
 # the headings that end a section of an instruction page
 HEADINGS = (
@@ -174,6 +174,18 @@ def mode_cols(m):
     return full.get(a, a), full.get(b, b)
 
 
+def is_stacked(body):
+    """The 'Opcode/Instruction' layout: the instruction under its opcode
+    ('Opcode/' on one line, or 'Opcode' then 'Instruction' on the next)."""
+    lines = [l.strip() for l, _ in body if l != "\0page" and l.strip()]
+    for k, s in enumerate(lines):
+        if re.match(r"^Opcode\s?\*?\s?/", s):
+            return True
+        if re.match(r"^Opcode\s{2,}", s) and k + 1 < len(lines) and lines[k + 1].startswith("Instruction"):
+            return True
+    return False
+
+
 def opcode_rows_stacked(body):
     """The 'Opcode/Instruction | Op/En | 64/32 bit Mode Support | CPUID
     Feature Flag | Description' layout of the SSE/AVX pages: the instruction
@@ -185,7 +197,7 @@ def opcode_rows_stacked(body):
         if line == "\0page":
             continue
         s = line.strip()
-        if re.match(r"^Opcode\s?\*?\s?/", s):
+        if re.match(r"^Opcode\s?\*?\s?/", s) or re.match(r"^Opcode\s{2,}", s):
             in_table = True
             cur = None
             continue
@@ -318,7 +330,7 @@ def main(argv):
             f.write(f"# {title} -- Intel SDM 325383-{rev}, {page or '?'}\n")
             f.write("@opcodes\n")
             rows = opcode_rows(body)
-            if any(re.match(r"^Opcode\s?\*?\s?/", l.strip()) for l, _ in body if l != "\0page"):
+            if is_stacked(body):
                 rows = [r for r in rows if len(r) == 5 and r[1] and r[3] in
                         ("Valid", "Invalid", "N.E.", "N.S.", "Inv.")] + opcode_rows_stacked(body)
             for r in rows:

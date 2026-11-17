@@ -1,0 +1,11 @@
+# PSADBW -- override: 'TEMP0 := ABS(DEST[7:0] - SRC[7:0]) ... DEST[15:0] :=
+# SUM(TEMP0:TEMP7)' -- the sum of the absolute differences of the bytes of
+# each quadword, zero-extended into it (legacy 128-bit form).
+@operation
+FOR q := 0 TO 1
+    s := 0;
+    FOR b := 0 TO 7
+        s := s + ZeroExtend(ABS(DEST[64 * q + 8 * b + 7:64 * q + 8 * b] - SRC[64 * q + 8 * b + 7:64 * q + 8 * b]));
+    ENDFOR
+    DEST[64 * q + 63:64 * q] := s;
+ENDFOR

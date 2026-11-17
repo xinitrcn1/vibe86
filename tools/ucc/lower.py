@@ -21,7 +21,8 @@ import oracle
 import sdm
 from sdm import (Assign, Bin, Call, Case, Do, For, If, Index, Name, Num, Prose,
                  Raise, Seg, Slice, Un, While)
-from uop import FLAG, FMASK, GPR64, NTEMPS, NTRAPTEMPS, SEGS, SPECIAL, STATUS, UCC_NEG
+from uop import ET, FLAG, FMASK, GPR64, NTEMPS, NTRAPTEMPS, SEGS, SPECIAL, STATUS, UCC_NEG
+from vector import VectorMixin
 
 
 class LowerError(Exception):
@@ -121,6 +122,8 @@ class V:
     lo: object = None
     addr: object = None   # for 'mem' lvalues
     seg: str = "EASEG"    # for 'mem': the segment (SEGS), EASEG = the operand's
+    base: object = None   # 'vslice': the vector (vreg/vmem) it's a bit range of
+    fp: str = None        # an FP element ('f32', 'f64', 'f16'): operators are FP (D-015)
 
     def __repr__(self):
         if self.kind == "k":
@@ -179,7 +182,13 @@ def assigned_names(node, out=None):
     return out
 
 
-class Lowerer:
+
+
+class Lowerer(VectorMixin):
+    V = V
+    Err = LowerError
+    ETN = ET
+
     def __init__(self, form, page, ast, flags, library, name=None):
         self.f = form
         self.page = page
@@ -205,6 +214,7 @@ class Lowerer:
         self.loop_ends = []
         self.lib_live = {}
         self.native_flags = 0          # flags a primitive (ShiftOp, BitScan) set itself
+        self.vsetup()
         self.find_flag_assignments(ast)
         self.bind_operands()
         self.liveness(ast)
@@ -371,6 +381,15 @@ class Lowerer:
             b["SRC1"] = 1
             b["SRC2"] = 2
             b["SRC"] = 1
+        if self.vec_form:
+            # vector forms (D-015): the immediate isn't a source; a two-operand
+            # (legacy SSE) form's SRC1 is DEST, a VEX/EVEX form's is vvvv
+            regs = [i for i, o in enumerate(ops) if o.kind != "imm"]
+            b.pop("COUNT", None)           # the shift pages' COUNT is a local
+            if len(regs) == 2:
+                b["SRC1"], b["SRC2"], b["SRC"] = regs[0], regs[1], regs[1]
+            elif len(regs) == 3:
+                b["SRC1"], b["SRC2"], b["SRC"] = regs[1], regs[2], regs[1]
         self.binding = b
 
     # ------------------------------------------------------------ temps
@@ -488,6 +507,9 @@ class Lowerer:
 
     def static(self, name):
         n = name
+        vs = self.vstatic(n)
+        if vs is not None:
+            return vs
         m = self.f.mode
         if m == 4:
             # system routines (DELIVER, WALK) run in any mode: only the
@@ -580,6 +602,9 @@ class Lowerer:
 
     def operand(self, idx, role):
         o = self.f.operands[idx]
+        vo = self.voperand(o)
+        if vo is not None:
+            return vo
         w = o.size or self.f.osz
         if w > 64:
             w = 64          # a wide memory operand (m128, m512) is used through its address
@@ -634,7 +659,15 @@ class Lowerer:
             return V("sel", 8, sel="IMM2")
         if n == "sBP":
             return V("sel", self.static("StackAddrSize"), sel="RBP")
-        if n == "imm8" or n == "imm16":
+        if True:
+            # an operand named by its table text (m32, r32, r64, reg, Mem16, xmm1...)
+            alias = {"Mem16": "m16", "Src": "SRC", "ZERO_FILL": None}.get(n, n)
+            for i, o in enumerate(self.f.operands):
+                if o.text and alias and (o.text == alias or o.text.split("/")[0] == alias or
+                                         (alias in ("r32", "r64", "reg") and o.kind == "reg") or
+                                         (alias in ("m32", "m64", "m16") and o.kind in ("mem", "rm"))):
+                    return self.operand(i, n)
+        if n in ("imm8", "imm16", "ORDER", "IMM8", "Imm8", "imm", "IMM0", "SELECT"):
             for i, o in enumerate(self.f.operands):
                 if o.kind == "imm":
                     return self.operand(i, n)
@@ -724,6 +757,8 @@ class Lowerer:
             raise LowerError(f"prose value '{e.text}'")
         if isinstance(e, Un):
             a = self.eval(e.a, want)
+            if self.is_vec(a) and e.op == "NOT":
+                return self.vlogic("NOT", a, None)
             if a.kind == "k":
                 return K(-a.k if e.op == "-" else ~a.k)
             w = want or a.w
@@ -741,6 +776,10 @@ class Lowerer:
             return self.call(e, want)
         if isinstance(e, Slice):
             return self.slice(e)
+        if isinstance(e, Index) and isinstance(e.e, Name) and not e.e.n.startswith(
+                ("Memory", "Linear", "Physical", "Mem")) and (self.vec_form or self.fp_et):
+            # a bit of a register or variable (DEST[0] := SRC[31], MASK[7])
+            return self.slice(Slice(e.e, e.i, e.i))
         if isinstance(e, (Index, Seg)):
             return self.memref(e, want)
         raise LowerError(f"expression {e}")
@@ -807,6 +846,27 @@ class Lowerer:
             self.E("MOV", 8, dst=t, a="ZERO")
             self.r.place(lend)
             return V("sel", 1, sel=t)
+        if op == "*" and self.vec_form and not self.fp_et and not self.is_static(e):
+            a = self.eval(e.a, want)
+            b = self.eval(e.b, want)
+            if a.kind != "k" and b.kind != "k":
+                return self.vmul(a, b, want)
+            for x, y in ((a, b), (b, a)):
+                if y.kind == "k" and y.k > 0 and y.k & (y.k - 1) == 0:
+                    return self.alu("SHL", x, K(y.k.bit_length() - 1), want, 0)
+            return self.vmul(a, b, want)
+        if op in ("*", "/") and self.fp_et and not self.is_static(e):
+            a = self.eval(e.a, want)
+            b = self.eval(e.b, want)
+            if a.fp or b.fp:
+                return self.fp_binop(op, a, b, want)
+            raise LowerError(f"integer {op} in an FP page")
+        if op == "*" and not self.is_static(e):
+            # multiplication by a constant power of two: a shift ('ORDER[1:0] * 32')
+            for x, y in ((e.a, e.b), (e.b, e.a)):
+                k = self.static_val(y)
+                if k and k > 0 and k & (k - 1) == 0:
+                    return self.alu("SHL", self.eval(x, want), K(k.bit_length() - 1), want, 0)
         if op in ("*", "/", "MOD", "SignedModulus"):
             sv = self.static_val(e) if op in ("*", "/") else None
             if sv is not None:
@@ -820,6 +880,25 @@ class Lowerer:
         if op == "-" and isinstance(e.b, Bin) and e.b.op == "+" and isinstance(e.b.b, Name) \
                 and e.b.b.n == "CF":
             return self.alu("SBB", e.a, e.b.a, want, fm)
+        if op in ("AND", "OR", "XOR") and (self.vec_form or self.fp_et) and not self.is_bool(e):
+            a = self.eval(e.a, want)
+            b = self.eval(e.b, want)
+            if self.is_vec(a) or self.is_vec(b):
+                return self.vlogic(op, a, b)
+            return self.alu(self.ALU[op], a, b, want, self.flag_mask_for(e))
+        if self.fp_et and op in ("+", "-", "*", "/"):
+            a = self.eval(e.a, want)
+            b = self.eval(e.b, want)
+            if a.fp or b.fp:
+                return self.fp_binop(op, a, b, want)
+            if op in ("*", "/"):
+                raise LowerError(f"integer {op} in an FP page")
+            return self.alu(self.ALU[op], a, b, want, fm)
+        if op == ">>":
+            a = self.eval(e.a)
+            if self.is_vec(a):
+                return self.vshift(a, self.eval(e.b, 64))
+            return self.alu(self.ALU[op], a, self.eval(e.b, 8), want, fm)
         if op not in self.ALU:
             raise LowerError(f"operator {op}")
         # an operand's width is the context for the other one's SignExtend /
@@ -835,6 +914,9 @@ class Lowerer:
         if a.kind == "k" and b.kind == "k" and not fm:
             return K(self.fold(op, a.k, b.k))
         return self.alu(self.ALU[op], a, b, want, fm)
+
+    def is_static(self, e):
+        return self.static_val(e) is not None
 
     @staticmethod
     def fold(op, a, b):
@@ -916,6 +998,11 @@ class Lowerer:
 
     def call(self, e, want):
         f = e.f
+        if self.vec_form or self.fp_et:
+            r = self.vcall(e, want)
+            if r is not None:
+                return r
+                else:
         if f in ("SignExtend", "ZeroExtend"):
             v = self.eval(e.args[0])
             w = want or 64
@@ -1222,6 +1309,11 @@ class Lowerer:
 
     def slice(self, e):
         v = self.eval(e.e)
+        if self.is_vec(v):
+            # a bit range of a vector: [i+w-1:i] with i static or not
+            width = self.width_of(e.hi, e.lo)
+            lo = self.eval(e.lo, 64)
+            return self.vslice(v, lo.k if lo.kind == "k" else lo, width)
         hi = self.eval(e.hi)
         lo = self.eval(e.lo)
         if hi.kind != "k" or lo.kind != "k":
@@ -1241,6 +1333,19 @@ class Lowerer:
         if l == 0 and width in (8, 16, 32, 64) and v.kind == "sel":
             return V("sel", width, sel=v.sel)
         return self._slice(v, l, width)
+
+    def width_of(self, hi, lo):
+        """The static width of [hi:lo]: constants, or hi = lo + c."""
+        h, l = self.static_val(hi), self.static_val(lo)
+        if h is not None and l is not None:
+            return abs(h - l) + 1
+        if hi == lo:
+            return 1                       # a single bit: X[8 * j + 7]
+        if isinstance(hi, Bin) and hi.op == "+" and isinstance(hi.b, Num) and hi.a == lo:
+            return hi.b.v + 1
+        if isinstance(hi, Bin) and hi.op == "+" and isinstance(hi.a, Num) and hi.b == lo:
+            return hi.a.v + 1
+        raise LowerError(f"bit range [{hi}:{lo}] of no static width")
 
     def _slice(self, v, l, width):
         t = self.tmp()
@@ -1399,6 +1504,11 @@ class Lowerer:
         if isinstance(e, Bin) and e.op in self.CMPS:
             a = self.eval(e.a)
             b = self.eval(e.b)
+            if a.fp or b.fp:
+                t = self.fp_cmp(e.op, a, b)
+                self.E("CMP", 8, a=t, b="ZERO")
+                self.E("JU", cc=self.ucc("NE" if when else "EQ"), imm=target)
+                return
             fixed = [v.w for v in (a, b) if not v.adapt and v.kind != "k"]
             w = opsize(max(fixed) if fixed else 64)
             if a.kind == "pair" or b.kind == "pair":
@@ -1416,6 +1526,9 @@ class Lowerer:
             (sa, sb), imm = self.srcs(a, b, w=w)
             self.E("CMP", w, a=sa, b=sb, imm=imm)
             c = self.CMPS[e.op]
+            if self.f.cfg.get("signed") and c not in ("EQ", "NE"):
+                # pages whose elements compare signed (PCMPGT, PMINSW, PMAXSW)
+                c = c.replace("U", "S")
             self.E("JU", cc=self.ucc(c if when else UCC_NEG[c]), imm=target)
             self.release_stmt_partial()
             return
@@ -1462,6 +1575,10 @@ class Lowerer:
             raise LowerError("flag-list assignment (override it)")
         want = self.lvalue_width(lhs)
         v = self.eval(rhs_e, want)
+        if v is None and (self.vec_form or self.fp_et) and isinstance(rhs_e, Call) and \
+                rhs_e.f in self.lib:
+            # DEST := HELPER(...): the page's helper wrote DEST itself
+            return
         self.store(lhs, v)
 
     def lvalue_width(self, lhs):
@@ -1482,6 +1599,9 @@ class Lowerer:
             hi, lo = self.static_val(lhs.hi), self.static_val(lhs.lo)
             if hi is not None and lo is not None:
                 return abs(hi - lo) + 1
+        if isinstance(lhs, Index) and isinstance(lhs.e, Name) and not lhs.e.n.startswith(
+                ("Memory", "Linear", "Physical", "Mem")) and (self.vec_form or self.fp_et):
+            return 1
         if isinstance(lhs, (Index, Seg)):
             return self.memref(lhs, None).w
         return None
@@ -1489,6 +1609,11 @@ class Lowerer:
     def store(self, lhs, v):
         if isinstance(lhs, Name):
             n = lhs.n
+            loc = self.vars.get(n) or (self.rname(n) if n not in self.vars else None)
+            if loc is not None and loc.kind in ("vreg", "vmem"):
+                # a whole vector operand: its width (the legacy 128 bits)
+                self.vwrite(loc, 0, loc.w, v)
+                return
             if n in self.vars or (self.rname(n) is None and self.static(n) is None and n not in FLAG):
                 self.store_var(n, v)
                 return
@@ -1530,6 +1655,10 @@ class Lowerer:
             return
         if isinstance(lhs, Slice):
             self.store_slice(lhs, v)
+            return
+        if isinstance(lhs, Index) and isinstance(lhs.e, Name) and not lhs.e.n.startswith(
+                ("Memory", "Linear", "Physical", "Mem")) and (self.vec_form or self.fp_et):
+            self.store_slice(Slice(lhs.e, lhs.i, lhs.i), v)
             return
         if isinstance(lhs, (Index, Seg)):
             loc = self.memref(lhs, None)
@@ -1631,6 +1760,25 @@ class Lowerer:
         self.E("ST", loc.w, a=a, b=s, imm=disp, seg=SEGS[loc.seg])
 
     def store_slice(self, lhs, v):
+        base = lhs.e
+        if isinstance(base, Name):
+            loc = self.vars.get(base.n) or self.rname(base.n)
+            if loc is None and isinstance(base, Name) and (self.vec_form or self.fp_et):
+                # a variable first assigned by bit field: a vector temporary
+                # (TMP_DEST[127:0] := ...) or a scalar one (TEMP0[31:0] := ...)
+                h = self.static_val(lhs.hi)
+                if h is not None and h >= 64:
+                    loc = self.vtemp_var(base.n)
+                elif h is not None:
+                    self.scalar_var(base.n)
+            if loc is not None and loc.kind in ("vreg", "vmem"):
+                width = self.width_of(lhs.hi, lhs.lo)
+                lo = self.eval(lhs.lo, 64)
+                if lo.kind == "k":
+                    self.vstore_slice(loc, lo.k + width - 1, lo.k, v)
+                else:
+                    self.vstore_dyn(loc, lo, width, v)
+                return
         hi, lo = self.static_val(lhs.hi), self.static_val(lhs.lo)
         if hi is None or lo is None:
             raise LowerError("dynamic bit-field assignment")
@@ -1642,6 +1790,7 @@ class Lowerer:
         loc = self.rname(base.n) if base.n not in self.vars else self.vars[base.n]
         if loc is None:
             raise LowerError(f"bit-field of unknown {base.n}")
+            return
         if loc.kind == "mem":
             cur = self.load(loc)
         else:
@@ -1795,6 +1944,22 @@ class Lowerer:
             if lo is None or hi is None:
                 raise LowerError("FOR with run-time bounds")
             rng = range(hi, lo - 1, -1) if s.down else range(lo, hi + 1)
+            if (self.vec_form or self.fp_et) and len(rng) > 8:
+                # a long lane loop (D-015): a microcode loop with the index in a
+                # temporary, the lanes addressed at run time (the ROM stays O(body))
+                j = self.tmp(keep=True)
+                self.E("MOV", 64, dst=j, a="K", imm=rng[0])
+                top = self.r.label()
+                self.r.place(top)
+                self.vars[s.var] = V("sel", 64, sel=j)
+                self.block(s.body)
+                self.vars[s.var] = V("sel", 64, sel=j)
+                self.E("ADD" if not s.down else "SUB", 64, dst=j, a=j, b="K", imm=1)
+                self.E("CMP", 64, a=j, b="K", imm=(hi + 1) if not s.down else (lo - 1))
+                self.E("JU", cc=self.ucc("NE"), imm=top)
+                self.vars.pop(s.var, None)
+                self.free.append(j)
+                return
             for i in rng:
                 self.vars[s.var] = K(i)
                 self._static_vars = getattr(self, "_static_vars", {})
@@ -1802,7 +1967,40 @@ class Lowerer:
             self.vars.pop(s.var, None)
             return
         if isinstance(s, Case):
-            raise LowerError("CASE (override it)")
+            # CASE subject OF v1: ...; v2: ...; DEFAULT: ... ESAC: a compare
+            # chain on the subject, evaluated once (static subjects fold)
+            subj = self.eval(s.subject)
+            if subj.kind == "mem":
+                subj = self.load(subj)
+            end = self.r.label()
+            if subj.kind == "k":
+                for val, body in s.arms:
+                    if val is None or self.static_val(val) == subj.k:
+                        self.block(body)
+                        break
+                return
+            if subj.kind == "sel" and subj.sel in self.stmt_temps:
+                self.stmt_temps.remove(subj.sel)     # lives through the arms
+            default = None
+            for val, body in s.arms:
+                if val is None:
+                    default = body
+                    continue
+                nxt = self.r.label()
+                v = self.eval(val)
+                w = opsize(subj.w if not subj.adapt else 64)
+                (sa, sb), imm = self.srcs(subj, v, w=w)
+                self.E("CMP", w, a=sa, b=sb, imm=imm)
+                self.E("JU", cc=self.ucc("NE"), imm=nxt)
+                self.block(body)
+                self.E("JMP", imm=end)
+                self.r.place(nxt)
+            if default is not None:
+                self.block(default)
+            self.r.place(end)
+            if subj.kind == "sel" and subj.sel.startswith("T") and subj.sel not in self.free:
+                self.free.append(subj.sel)
+            return
         raise LowerError(f"statement {s}")
 
     SPECIAL_STMTS = {
@@ -2036,8 +2234,10 @@ class Lowerer:
             self.r.place(self.done_label)
             self.E("URET")
             return self.r
+        self.vprologue()
         self.block(self.ast)
         self.r.place(self.done_label)
+        self.vepilogue()
         # prose 'cleared'/'set' flags nobody produced or assigned
         for fl, act in self.flags.items():
             if fl in self.assigned_flags or self.native_flags & FMASK[fl]:

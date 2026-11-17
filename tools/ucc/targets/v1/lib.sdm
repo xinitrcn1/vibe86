@@ -361,4 +361,15 @@ DO
     i := i + 8;
 OD;
 
+# SIMD instruction checks (Intel SDM Vol. 2A 2.5, the exception classes;
+# Vol. 1 13.5): legacy SSE needs CR0.EM = 0 and CR4.OSFXSR = 1 (#UD), and
+# CR0.TS = 0 (#NM, so a lazy OS saves the state); VEX/EVEX instructions also
+# need CR4.OSXSAVE = 1 and XCR0 to enable the state they use (#UD).
+# ucc's vector lowering inlines these before every SIMD form (D-015).
+@function SIMD_Check_Legacy()
+IF CR0.EM = 1 OR CR4.OSFXSR = 0 THEN #UD; FI;
+IF CR0.TS = 1 THEN #NM; FI;
 
+@function SIMD_Check_VEX(STATE)
+IF CR4.OSXSAVE = 0 OR (XCR0 AND STATE) != STATE THEN #UD; FI;
+IF CR0.TS = 1 THEN #NM; FI;

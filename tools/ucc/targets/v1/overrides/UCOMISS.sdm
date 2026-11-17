@@ -1,0 +1,6 @@
+# UCOMISS -- override: the manual's 'RESULT := OrderedCompare(...)' / CASE on the
+# result sets ZF, PF, CF (unordered 111, greater 000, less 001, equal 100) and
+# clears OF, SF, AF; CompareFlags(a, b, signaling) is that one FP compare
+# (UCOMIS: only an SNaN raises invalid).
+@operation
+tmp := CompareFlags(DEST[31:0], SRC[31:0], 0);

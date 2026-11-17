@@ -1,0 +1,11 @@
+# PSRLDQ -- override: 'TEMP := COUNT; IF (TEMP > 15) THEN TEMP := 16; FI; DEST
+# := DEST >> (TEMP * 8)' -- byte by byte from the bottom.
+@operation
+TEMP := imm8;
+IF TEMP > 15 THEN TEMP := 16; FI;
+FOR b := 0 TO 15
+    IF b + TEMP <= 15
+        THEN DEST[8 * b + 7:8 * b] := DEST[8 * (b + TEMP) + 7:8 * (b + TEMP)];
+        ELSE DEST[8 * b + 7:8 * b] := 0;
+    FI;
+ENDFOR

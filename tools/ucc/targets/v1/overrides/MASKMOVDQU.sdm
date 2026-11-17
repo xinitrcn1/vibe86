@@ -1,0 +1,10 @@
+# MASKMOVDQU -- override: 'IF (MASK[7] = 1) THEN DEST[DI/EDI] := SRC[7:0] ...'
+# with MASK the second operand, SRC the first, DEST the byte at DS:rDI + j (a
+# segment override applies). Byte by byte; the manual's non-temporal hint has
+# no effect without caches.
+@operation
+FOR j := 0 TO 15
+    IF SRC2[8 * j + 7] = 1
+        THEN Memory8[rDI + j] := SRC1[8 * j + 7:8 * j];
+    FI;
+ENDFOR

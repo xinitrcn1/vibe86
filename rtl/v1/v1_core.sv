@@ -470,8 +470,10 @@ module v1_core
                               u.x[1:0]);
       fp_res = r.v[63:0];
       fp_x = r.x;
-    end else if (u.op == U_FCMP && u.x == 4'd0) begin
-      c = v1_fp_pkg::fp_cmp({16'b0, va}, {16'b0, vb}, u.et, u.imm[4:0], daz, cx);
+    end else if (u.op == U_FCMP && (u.x == 4'd0 || u.x == 4'd4)) begin
+      // x = 4: the predicate is c's value (CMPPS imm8 at run time)
+      c = v1_fp_pkg::fp_cmp({16'b0, va}, {16'b0, vb}, u.et, u.x == 4'd4 ? vc[4:0] : u.imm[4:0],
+                            daz, cx);
       fp_res = {63'b0, c};
       fp_x = cx;
     end else if (u.op == U_FCMP) begin
@@ -1653,10 +1655,13 @@ module v1_core
               U_FADD, U_FSUB, U_FMUL, U_FDIV, U_FSQRT, U_FMA, U_FMIN, U_FMAX, U_FCVT, U_FCVTI,
               U_FCVTIT, U_ICVTF, U_FRND: begin
                 wr(u.dst, u.sz, fp_res & szmask(u.sz));
-                fpx <= fpx | fp_x;
+                // x bit 3 on an arithmetic op: no exceptions (RCPPS, RSQRTPS)
+                if (!(u.x[3] && u.op inside {U_FADD, U_FSUB, U_FMUL, U_FDIV, U_FSQRT, U_FMA,
+                                             U_FMIN, U_FMAX}))
+                  fpx <= fpx | fp_x;
               end
               U_FCMP: begin
-                if (u.x == 4'd0) wr(u.dst, u.sz, fp_res);
+                if (u.x == 4'd0 || u.x == 4'd4) wr(u.dst, u.sz, fp_res);
                 else begin
                   w_flags[6] <= comi_zpc[2];
                   w_flags[2] <= comi_zpc[1];

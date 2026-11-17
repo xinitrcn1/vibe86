@@ -25,10 +25,26 @@ MAP_NAMES = {0: "1-byte", 1: "0F", 2: "0F38", 3: "0F3A"}
 
 @dataclass
 class Operand:
-    kind: str        # rm reg opreg mem imm rel acc fixed one port cr
-    size: int = 0    # bits (0: n/a)
+    kind: str        # rm reg opreg mem imm rel acc fixed one port cr; vreg vrm (D-015)
+    size: int = 0    # bits (0: n/a); vectors: the register's width
     reg: str = ""    # for fixed operands: the register's name (AL, CL, DX, ...)
     text: str = ""
+    vsel: str = ""   # vreg: the vector selector (VREG, VVVV, ...)
+    msize: int = 0   # vrm: the memory operand's width (xmm2/m32: 32)
+    memonly: bool = False   # vrm: memory only (m128)
+    regonly: bool = False   # vrm: register only (xmm2 in a ModRM.rm role)
+
+
+class SkipRow(Exception):
+    """A row this core doesn't implement yet (MMX register operands)."""
+
+
+# a vector register operand, optionally with a memory alternative:
+# xmm1, xmm2/m128, xmm3/m64, ymm2/m256, zmm3/m512/m32bcst, k1 {k1}{z} later (EVEX)
+VECOP = re.compile(r"^(xmm|ymm|zmm)\d?(/m(\d+))?$")
+VREGW = {"xmm": 128, "ymm": 256, "zmm": 512}
+TUPLES = re.compile(r"^(N/A|Full|Half|Full Mem|Half Mem|Quarter Mem|Eighth Mem|Tuple\d.*|Mem128|"
+                    r"MOVDDUP|Scalar)$")
 
 
 @dataclass
@@ -101,7 +117,13 @@ def parse_opcode(f, col):
     s = s.replace("REX.W +", "REX.W ").replace("REX.R +", "REX.R ").replace("REX +", "REX ")
     s = re.sub(r"\+\s*(r[bwdo])\b", r"+\1", s)   # 'B8+ rd' -> 'B8+rd'
     s = re.sub(r"([0-9A-F]{2})\s*\+r", r"\1 +r", s)
+    s = re.sub(r"/r\d\b", "/r", s)             # '/r1': a footnote mark
+    s = re.sub(r"\b(ib|iw|id|io)\d\b", r"\1", s)  # 'ib1': a footnote mark
+    s = re.sub(r"\b([0-9A-F]{2}),(?=\s)", r"\1", s)  # '66 0F E0, /r' (PAVGB)
     s = re.sub(r"/(\d|r)", r" /\1", s)
+    if re.match(r"^\s*(VEX|EVEX|MAP|XOP)\.", s):
+        if not getattr(f, "_allow_vex", False):
+            raise SkipRow("VEX/EVEX encoding (the decoder doesn't have it yet)")
     s = re.sub(r"(VEX\.\S*)\.\s+(\S)", r"\1.\2", s)   # 'VEX.LZ. 0F38.W1': a stray space
     toks = s.split()
     bytes_ = []
@@ -226,20 +248,56 @@ def parse_operands(f, enc):
         f.hints["regform"] = True
     # 'LAR r16, r16/m16', 'SMSW r32/m16': a register or a 16-bit memory operand
     ins = re.sub(r"\br(16|32|64)/m16\d?\b", "r/m16", ins)
+    ins = re.sub(r"\br(32|64)/m(32|64)\b", lambda m: "r/m" + m.group(1), ins)   # CVTSI2SD xmm1, r32/m32
+    ins = re.sub(r"\breg/m(8|16|32)\b", r"r/m\1", ins)      # PEXTRW reg/m16, xmm, imm8
     # 'MOVDIR64B r16/r32/r64, m512': a register of the address size
     ins = ins.replace("r16/r32/r64", "rasz")
     # 'PDEP r32a, r32b, r/m32': two registers of one size, told apart by letter
     ins = re.sub(r"\br(32|64)[ab]\b", r"r\1", ins)
     # 'FNSTSW1 AX', 'FNSAVE1 m94/108byte': footnote marks on x87 mnemonics
     ins = re.sub(r"^(FN[A-Z]+)\d\b", r"\1", ins)
+    # a VEX row pdftotext ran into the instruction ('PINSRW xmm, r32/m16, imm8
+    # VEX.128.66.0F.W0 C4 /r ib VPINSRW ...'): the row's own text ends there
+    ins = re.split(r"\s+(VEX|EVEX)\.\d", ins)[0]
     parts = ins.split(None, 1)
     f.mnem = parts[0]
     ops = [o.strip() for o in parts[1].split(",")] if len(parts) > 1 else []
     # description text pdftotext ran into the column ('JB rel32, -bit mode.')
-    ops = [o for o in ops if not re.search(r"[a-z]{3,}", o.replace("imm", "").replace("rel", "").replace("ptr", "").replace("Sreg", "").replace("moffs", ""))]
+    ops = [o for o in ops if not re.search(r"[a-z]{3,}", re.sub(r"xmm|ymm|zmm|bcst|imm|rel|ptr|Sreg|moffs|reg", "", o))]
     roles = enc.get(f.open, [])
+    if roles and (len(roles) >= 5 or TUPLES.match(roles[0].strip())) and \
+            not roles[0].strip().startswith(("ModRM", "Imm", "imm", "VEX", "EVEX", "opcode", "NA")):
+        # the stacked tables' 'Tuple Type' column (EVEX disp8*N; N/A otherwise)
+        f.hints["tuple"] = roles[0].strip()
+        roles = roles[1:]
     for i, o in enumerate(ops):
         role = roles[i] if i < len(roles) else ""
+        if re.match(r"^mm\d?(/m\d+)?$", o):
+            raise SkipRow("MMX register operand")
+        vm = VECOP.match(o)
+        if vm:
+            w = VREGW[vm.group(1)]
+            if "vvvv" in role:
+                f.operands.append(Operand("vreg", w, text=o, vsel="VVVV"))
+            elif "r/m" in role or vm.group(2):
+                f.operands.append(Operand("vrm", w, text=o, msize=int(vm.group(3)) if vm.group(3) else w,
+                                          regonly=not vm.group(2)))
+            elif "is4" in role.lower() or "imm8[7:4]" in role:
+                f.operands.append(Operand("vreg", w, text=o, vsel="VIS4"))
+            else:
+                f.operands.append(Operand("vreg", w, text=o, vsel="VREG"))
+            continue
+        mv = re.match(r"^m(128|256|512)$", o)
+        if mv and any(VECOP.match(x) for x in ops):
+            # a vector in memory (MOVNTPS m128, xmm1); m128 elsewhere
+            # (CMPXCHG16B, INVPCID, MOVDIR64B's m512) stays a memory operand
+            f.operands.append(Operand("vrm", int(mv.group(1)), text=o, msize=int(mv.group(1)),
+                                      memonly=True))
+            continue
+        if o == "reg":
+            # PEXTRW reg, xmm, imm8: a general register of the operand size
+            f.operands.append(Operand("reg", 0, text=o))
+            continue
         m = SIZED.match(o)
         if m:
             k, sz = m.group(1), int(m.group(2))
@@ -319,6 +377,7 @@ def operand_size(f):
         if rm and rm[-1].size != 8:
             return rm[-1].size
     for o in f.operands:
+            continue
         if o.kind in ("rm", "reg", "opreg", "mem", "fixed") and o.size and o.size <= 64:
             return o.size
     for o in f.operands:
@@ -371,6 +430,8 @@ def make_forms(page, cfg):
         try:
             parse_opcode(f, opcol)
             parse_operands(f, page.encoding)
+        except SkipRow:
+            continue
         except FormError as e:
             errors.append(f"{page.name}: '{opcol} | {ins}': {e}")
             continue
@@ -424,7 +485,7 @@ def make_forms(page, cfg):
             f.cc = f.opc & 0xF
         # an r/m operand means a ModRM byte, even where the opcode column
         # doesn't say /r (SETcc: '0F 94 | SETE r/m8')
-        if any(o.kind == "rm" or (o.kind == "mem" and not f.hints.get("moffs"))
+        if any(o.kind in ("rm", "vrm") or (o.kind == "mem" and not f.hints.get("moffs"))
                for o in f.operands):
             f.modrm = True
         f.hints["sized"] = operand_size(f) is not None
@@ -494,7 +555,8 @@ def assign_classes(forms, cfg_of):
             # a far JMP/CALL (m16:16/32/64) has the default operand size 32 in
             # 64-bit mode, whatever the page's near forms do (Vol. 2A JMP/CALL)
             f.vclass = "d32" if cls == "f64" and is_far(f) else cls
-            if f.osz == 8 or "crnum" in f.hints or "sreg" in f.hints or cfg_of(f).get("anyosz"):
+            if f.osz == 8 or "crnum" in f.hints or "sreg" in f.hints or cfg_of(f).get("anyosz") or \
+                    (any(o.kind in ("vreg", "vrm") for o in f.operands) and not f.hints.get("sized")):
                 f.okey = "any"          # MOV CRn ignores the operand size
             elif f.vclass == "f64" and f.mode == 3:
                 f.okey = "any"
@@ -512,7 +574,8 @@ def specialize(forms, cfg_of):
             # the r/m operand is a register whatever ModRM.mod says (MOV CRn)
             f.mem = False
             f.hints["anymod"] = True
-        elif any(o.kind == "rm" for o in f.operands):
+        elif any(o.kind == "rm" or (o.kind == "vrm" and not o.memonly and not o.regonly)
+                 for o in f.operands):
             variants = []
             for mem in (False, True):
                 g = Form(**{**f.__dict__, "operands": list(f.operands), "imm": list(f.imm),
@@ -521,8 +584,11 @@ def specialize(forms, cfg_of):
                 if mem and len(g.operands) > 1 and g.operands[1].kind == "sreg":
                     g.okey = "any"      # MOV m16, Sreg: a 16-bit store at any operand size
                 variants.append(g)
-        elif any(o.kind == "mem" for o in f.operands) or cfg_of(f).get("memonly"):
+        elif any(o.kind == "mem" or (o.kind == "vrm" and o.memonly) for o in f.operands) or \
+                cfg_of(f).get("memonly"):
             f.mem = True
+        elif any(o.kind == "vrm" and o.regonly for o in f.operands):
+            f.mem = False
         elif f.hints.get("regform"):
             f.mem = False
         reps = cfg_of(f).get("rep")

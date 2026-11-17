@@ -7,7 +7,7 @@ find_program(CLANG clang REQUIRED)
 find_program(LLD ld.lld REQUIRED)
 
 file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*/*.S)
-list(FILTER TEST_SOURCES EXCLUDE REGEX "/diff/")
+list(FILTER TEST_SOURCES EXCLUDE REGEX "/v?diff/")
 foreach(src IN LISTS TEST_SOURCES)
   file(RELATIVE_PATH rel ${CMAKE_CURRENT_SOURCE_DIR} ${src})
   string(REGEX REPLACE "\\.S$" "" name ${rel})
@@ -55,6 +55,7 @@ foreach(t IN LISTS UEFI_TESTS)
 endforeach()
 
 add_subdirectory(diff)
+add_subdirectory(vdiff)
 
 # tools: unit tests of the SDM extractor and the microcode compiler (parser,
 # inlining, forms and the generated decode tables of the latest version)

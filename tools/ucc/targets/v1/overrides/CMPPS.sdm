@@ -1,0 +1,12 @@
+# CMPPS -- override: the manual writes the comparison as 'SRC1 OP3 SRC2' with
+# OP3 chosen by a table of predicates (Intel SDM Vol. 2A Table 3-1); here
+# FPCompare(a, b, predicate) evaluates the imm8 predicate (legacy SSE: imm8[2:0];
+# the VEX/EVEX forms take imm8[4:0]). Each element: all ones if true, else 0.
+@operation
+FOR j := 0 TO 3
+    i := j * 32
+    IF FPCompare(SRC1[i+31:i], SRC2[i+31:i], imm8[2:0]) = 1
+        THEN DEST[i+31:i] := FFFFFFFFH;
+        ELSE DEST[i+31:i] := 0;
+    FI;
+ENDFOR

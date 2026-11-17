@@ -59,6 +59,7 @@ import lower as L       # noqa: E402
 import oracle           # noqa: E402
 import sdm              # noqa: E402
 import uop as U         # noqa: E402
+import vector           # noqa: E402
 
 
 def read_isa(path):
@@ -340,6 +341,7 @@ def main():
     pages = read_isa(os.path.join(TDIR, "isa"))
     all_forms, errors, report = [], [], []
     asts, pageobj = {}, {}
+    page_libs = {}      # vector pages' own helper definitions (D-015)
     for stem, cfg in pages:
         path = os.path.join(args.sdm, stem + ".sdm")
         ovp = os.path.join(TDIR, "overrides", stem + ".sdm")
@@ -352,18 +354,34 @@ def main():
         page = sdm.read_sdm(path)
         if os.path.exists(ovp) and path != ovp:
             sdm.apply_override(page, sdm.read_sdm(ovp))
-        try:
-            ast = sdm.parse(page.operation)
-        except sdm.ParseError as e:
-            errors.append(f"{stem}: Operation doesn't parse: {e}")
-            continue
         fs, errs = F.make_forms(page, cfg)
+        vecpage = any(o.kind in ("vreg", "vrm") for f in fs for o in f.operands)
+        optext = page.operation
+        if vecpage:
+            # the page's own helper definitions (Select4, LOGICAL_LEFT_SHIFT_WORDS...)
+            optext, funcs = vector.extract_functions(optext, vector.page_mnemonics(stem, fs))
+            plib = {}
+            for fn, (params, body) in funcs.items():
+                try:
+                    plib[fn] = (params, sdm.parse(vector.repair(body)))
+                except sdm.ParseError as e:
+                    errors.append(f"{stem}: helper {fn} doesn't parse: {e}")
+            page_libs[stem] = plib
+        sections = vector.split_sections(optext, vector.page_mnemonics(stem, fs)) if vecpage \
+            else [(None, optext)]
+        ast = None
+        if len(sections) == 1 and sections[0][0] is None:
+            try:
+                ast = sdm.parse(vector.repair(optext))
+            except sdm.ParseError as e:
+                errors.append(f"{stem}: Operation doesn't parse: {e}")
+                continue
         errors += errs
         if not fs:
             errors.append(f"{stem}: no opcode-table rows selected (layout? options?)")
         for f in fs:
             f.page = stem          # pages are keyed by file: two pages can share a mnemonic (MOV)
-        asts[stem] = ast
+        asts[stem] = ast if ast is not None else sections
         pageobj[stem] = (page, stem)
         all_forms += fs
     cfg_of = lambda f: f.cfg   # noqa: E731
@@ -404,11 +422,30 @@ def main():
     compiled = []
     per_page = {}
     content = {}        # micro-op listing -> routine name (identical routines are shared)
+    parsed = {}         # section text -> AST
     work = list(spec)
     while work:
         f = work.pop(0)
         page, stem = pageobj[f.page]
-        lw = L.Lowerer(f, page, asts[f.page], oracle.flags_spec(page.flags), lib)
+        ast = asts[f.page]
+        if isinstance(ast, list) and ast and isinstance(ast[0], tuple):
+            # a page with one Operation section per encoding (D-015)
+            text = vector.pick_section(ast, f)
+            if text is None:
+                msg = f"{f.name}: no Operation section for this encoding"
+                errors.append(msg)
+                per_page.setdefault(f.page, []).append(("fail", f, msg))
+                continue
+            try:
+                ast = parsed.get(text) or sdm.parse(vector.repair(text))
+            except sdm.ParseError as e:
+                msg = f"{f.name}: Operation doesn't parse: {e}"
+                errors.append(msg)
+                per_page.setdefault(f.page, []).append(("fail", f, msg))
+                continue
+            parsed[text] = ast
+        flib = {**lib, **page_libs[f.page]} if page_libs.get(f.page) else lib
+        lw = L.Lowerer(f, page, ast, oracle.flags_spec(page.flags), flib)
         try:
             r = lw.lower()
         except L.NeedSpec as n:

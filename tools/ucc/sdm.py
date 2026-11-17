@@ -107,7 +107,7 @@ class Tok:
     col: int = 0
 
 
-KEYWORDS = {"IF", "THEN", "ELSE", "FI", "WHILE", "DO", "OD", "FOR", "TO", "DOWNTO", "ROF",
+KEYWORDS = {"IF", "THEN", "ELSE", "FI", "WHILE", "DO", "OD", "FOR", "TO", "DOWNTO", "ROF", "ENDFOR",
             "CASE", "OF", "ESAC", "REPEAT", "UNTIL", "BREAK", "RETURN"}
 WORD_OPS = {"AND", "OR", "XOR", "NOT", "MOD", "and", "or", "SignedModulus"}
 REGS8H = {"AH", "BH", "CH", "DH"}
@@ -506,7 +506,7 @@ class Parser:
                 return self.for_stmt()
             if tok.text == "CASE":
                 return self.case_stmt()
-            if tok.text in ("ELSE", "FI", "OD", "ROF", "ESAC", "DO", "THEN"):
+            if tok.text in ("ELSE", "FI", "OD", "ROF", "ENDFOR", "ESAC", "DO", "THEN"):
                 # a stray keyword where the enclosing construct doesn't want it
                 raise ParseError(f"line {tok.line}: unexpected {tok.text}")
             if tok.text in ("BREAK", "RETURN"):
@@ -673,8 +673,8 @@ class Parser:
         k = next((n for n, t in enumerate(toks) if t.text in ("TO", "DOWNTO")), None)
         if k is None or len(toks) < 3 or toks[1].text != ":=":
             raise ParseError(f"line {line}: FOR")
-        body = self.block(("ROF", "OD"))
-        if self.at_kw("ROF", "OD"):
+        body = self.block(("ROF", "OD", "ENDFOR"))     # the vector pages close FOR with ENDFOR
+        if self.at_kw("ROF", "OD", "ENDFOR"):
             self.take()
             self.end_stmt()
         return For(toks[0].text, parse_expr(toks[2:k]), parse_expr(toks[k + 1:]),

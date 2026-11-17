@@ -1,0 +1,6 @@
+# PEXTRW -- override: the manual's 'FOR (PEXTRW instruction with 128-bit source
+# operand) { SEL := COUNT[2:0]; TEMP := (SRC >> (SEL * 16)) AND FFFFH; ... }'
+# as one statement: the word imm8[2:0] of the XMM source, zero-extended into
+# the general register (or stored to m16 by the SSE4.1 form).
+@operation
+DEST := ZeroExtend(SRC[16 * imm8[2:0] + 15:16 * imm8[2:0]]);
