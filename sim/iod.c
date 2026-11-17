@@ -13,7 +13,8 @@
 #include "board.h"
 #include "iod.h"
 
-enum { OP_MRD = 1, OP_MWR = 2, OP_IORD = 3, OP_IOWR = 4, OP_CPL = 8, OP_CPLE = 9 };
+enum { OP_MRD = 1, OP_MWR = 2, OP_IORD = 3, OP_IOWR = 4, OP_VW = 5, OP_INTA = 6, OP_MCE = 7,
+       OP_CPL = 8, OP_CPLE = 9 };
 
 #define TXQ	4096		/* flits waiting for the die */
 
@@ -46,8 +47,11 @@ struct iod {
 	uint8_t tag;		/* the waiting read's tag */
 	uint8_t data[64];
 	int err;
+	/* the INTR virtual wire as last sent; resend after an INTA */
+	int intr_sent, intr_resend;
+	uint8_t intr_vec_sent;
 	/* statistics */
-	uint64_t requests, dma_reads, dma_writes, dma_errors, bad_packets;
+	uint64_t intas, requests, dma_reads, dma_writes, dma_errors, bad_packets;
 };
 
 static uint64_t
@@ -100,6 +104,13 @@ serve(struct iod *d)
 	case OP_IOWR:
 		r = board_io(d->b, op == OP_IOWR, (uint16_t)addr, size, buf);
 		break;
+	case OP_INTA:
+		/* a core took the ExtINT: the 8259's interrupt acknowledge; the
+		   die dropped INTR, so its state goes out again */
+		d->intas++;
+		board_pic_ack(d->b);
+		d->intr_resend = 1;
+		return;
 	default:
 		d->bad_packets++;
 		return;
@@ -171,6 +182,36 @@ iod_cycle(struct iod *d, int die_tx_valid, uint64_t die_tx_flit, int die_rx_read
 	d->offered = d->qn != 0;
 	*die_rx_valid = d->offered;
 	*die_rx_flit = d->offered ? d->q[d->qh] : 0;
+}
+
+/* ---------------------------------------------------------------- interrupts */
+
+void
+iod_vw(struct iod *d, unsigned wire, int asserted, uint8_t vector)
+{
+	push(d, hdr(OP_VW, 0, 0, 0));
+	push(d, vector | (uint64_t)(wire & 7) << 8 | (uint64_t)(asserted != 0) << 11);
+}
+
+void
+iod_intr(struct iod *d, int pending, uint8_t vector)
+{
+	pending = pending != 0;
+	if (!pending)
+		vector = 0;
+	if (pending == d->intr_sent && vector == d->intr_vec_sent && !d->intr_resend)
+		return;
+	d->intr_sent = pending;
+	d->intr_vec_sent = vector;
+	d->intr_resend = 0;
+	iod_vw(d, VW_INTR, pending, vector);
+}
+
+void
+iod_mce(struct iod *d, unsigned type, uint64_t addr)
+{
+	push(d, hdr(OP_MCE, 0, 0, 0) | (uint64_t)(type & 3) << 32);
+	push(d, addr);
 }
 
 /* ---------------------------------------------------------------- DMA */
@@ -299,6 +340,8 @@ iod_reset(struct iod *d)
 	d->pkn = 0;
 	d->qh = d->qn = 0;
 	d->offered = 0;
+	d->intr_sent = d->intr_resend = 0;	/* the die resets with INTR low */
+	d->intr_vec_sent = 0;
 	/* a device waiting on a read gets an error; the coroutine keeps its
 	   stack (the board resets its devices itself) */
 	if (d->wait) {
@@ -310,8 +353,9 @@ iod_reset(struct iod *d)
 void
 iod_stats(const struct iod *d, char *buf, unsigned len)
 {
-	snprintf(buf, len, "I/O link: %llu requests, DMA %llu reads %llu writes %llu errors, %llu bad packets",
-	    (unsigned long long)d->requests, (unsigned long long)d->dma_reads,
+	snprintf(buf, len, "I/O link: %llu requests, %llu INTAs, DMA %llu reads %llu writes %llu errors, %llu bad packets",
+	    (unsigned long long)d->requests, (unsigned long long)d->intas,
+	    (unsigned long long)d->dma_reads,
 	    (unsigned long long)d->dma_writes, (unsigned long long)d->dma_errors,
 	    (unsigned long long)d->bad_packets);
 }

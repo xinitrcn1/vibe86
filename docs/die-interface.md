@@ -85,6 +85,9 @@ for ≤ 4-byte… (reserved; sizes are naturally aligned).
 | 02h MWR | either | memory write (address + data flits); posted, no completion |
 | 03h IORD | die → I/O | port read |
 | 04h IOWR | die → I/O | port write; answered by CPL (no data) — I/O writes are non-posted |
+| 05h VW | I/O → die | a virtual wire (D-019): address flit [7:0] vector, [10:8] wire (0 INTR, 1 NMI, 2 SMI, 3 INIT), [11] asserted. INTR is a level with the 8259's vector (the local APICs' LINT0); NMI (LINT1), SMI and INIT are edges (asserted only) |
+| 06h INTA | die → I/O | a core took the ExtINT (the 8259's interrupt acknowledge); posted. The die counts INTR as dropped until the next VW INTR, which the I/O die sends after every INTA |
+| 07h MCE | I/O → die | a machine check the chipset reports: header [33:32] type (1 corrected, 2 uncorrected), the address flit its address |
 | 08h CPL | either | completion for `tag`, with data flits for reads |
 | 09h CPLE | either | completion with error (unsupported request / bus error) |
 
@@ -93,8 +96,11 @@ Requests from the die carry tags 00h–7Fh, inbound requests (device DMA)
 
 ## Interrupt sideband, debug and trace
 
-`intr_valid`/`intr_vector`/`intr_ack` (the 8259's INTR/INTA, MSIs), `nmi`,
-`smi`, `mce_*`: unchanged (pins.toml). JTAG: `tck`, `tms`, `tdi`, `trst_n`
+No interrupt or machine-check pins (D-019): the chipset's INTR, NMI, SMI,
+INIT and machine checks are the VW and MCE messages above, INTA goes back
+as a message, MSIs are memory writes to FEEx_xxxxh (HyperTransport I/O
+Link Specification 3.10, 8.5, carried interrupts the same way). JTAG: `tck`, `tms`, `tdi`, `trst_n`
 in, `tdo` out (IEEE 1149.1 TAP; IDCODE, BYPASS, and the debug module's
-instructions: docs/jtag.md). The trace port (`rt_*`, `ev_*`, `shutdown`,
-`halted`, `shutdown_rip`) is unchanged.
+instructions: docs/jtag.md). The retirement and event ports (`rt_*`, `ev_*`,
+`shutdown`, `halted`, `shutdown_rip`) are simulation observation, not
+balls; the package's trace port is docs/package.md.

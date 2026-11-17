@@ -414,10 +414,6 @@ struct machine {
 		top->clk = 0;
 		top->iol_tx_ready = 0;
 		top->iol_rx_valid = 0;
-		top->intr_valid = 0;
-		top->nmi = 0;
-		top->smi = 0;
-		top->mce_valid = 0;
 		top->eval();
 		top->clk = 1;
 		top->eval();
@@ -456,57 +452,37 @@ struct machine {
 		ddr5_eval_pins(brd.ddr5, *top, cycles);
 	}
 
-	// Board events: NMI, SMI and machine checks are one-cycle pulses on the
-	// die's pins; the 8259's INTR is a level into the die's local APIC
-	// (LINT0), which answers with intr_ack (INTA) when its core takes the
-	// ExtINT. MSIs are link writes (D-017).
+	// Board events: the chipset's NMI, SMI and machine checks are
+	// messages on the I/O link, and so is the 8259's INTR (a virtual wire
+	// with its vector, resent after each INTA the die sends back: iod.c).
+	// MSIs are link writes (D-017, D-019).
 
 	void events()
 	{
-		top->nmi = 0;
-		top->smi = 0;
-		top->mce_valid = 0;
 		struct board_event e;
 		if (board_event(&brd, &e)) {
 			switch (e.kind) {
 			case EV_SMI:
-				top->smi = 1;
-				top->smi_core = 0;
+				iod_vw(io, VW_SMI, 1, 0);
 				halted_for[0] = 0;
 				break;
 			case EV_NMI:
-				top->nmi = 1;
-				top->nmi_core = 0;
+				iod_vw(io, VW_NMI, 1, 0);
 				halted_for[0] = 0;
 				break;
 			case EV_MCE:
-				top->mce_valid = 1;
-				top->mce_core = 0;
-				top->mce_type = e.type & 3;
-				top->mce_addr = e.addr;
+				iod_mce(io, e.type & 3, e.addr);
 				break;
 			default:
 				break;
 			}
 		}
-		// the 8259's INTR (level) and its vector: the die's LINT0 input;
-		// MSIs go into the die over the I/O link (D-017)
-		uint8_t v;
-		top->intr_core = 0;
-		if (board_pic_pending(&brd, &v)) {
-			top->intr_valid = 1;
-			top->intr_vector = v;
+		uint8_t v = 0;
+		int p = board_pic_pending(&brd, &v);
+		if (p)
 			halted_for[0] = 0;
-		} else
-			top->intr_valid = 0;
+		iod_intr(io, p, v);
 	}
-
-	void acked()
-	{
-		if (top->intr_ack[0])		// INTA for an ExtINT the core took
-			board_pic_ack(&brd);
-	}
-
 
 	void step()
 	{
@@ -524,7 +500,6 @@ struct machine {
 		events();
 		top->clk = 1;
 		top->eval();
-		acked();
 		pins_post_edge();
 		iod_board_tick(io);
 		cycles++;

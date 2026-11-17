@@ -46,6 +46,11 @@ module v1_die
   logic [51:6]  c_ic_inv_line;
   logic         f_mce_ue;
   logic [63:0]  f_mce_addr;
+  // the chipset's virtual wires and machine checks, as link messages (D-019)
+  logic         vw_intr, vw_nmi, vw_smi, ext_mce, inta;
+  logic [7:0]   vw_vec;
+  logic [1:0]   ext_mce_type;
+  logic [63:0]  ext_mce_addr;
 
   // ------------------------------------------------------------ JTAG
   // the TAP (TCK domain) and the debug module (core clock): docs/jtag.md
@@ -89,16 +94,16 @@ module v1_die
     .bus_wdata(c_wdata), .bus_smm(c_smm), .bus_ack(c_ack), .bus_err(c_err), .bus_rdata(c_rdata),
     .ic_inv(c_ic_inv), .ic_inv_line(c_ic_inv_line), .ic_inv_core(c_ic_inv_core),
     .intr_valid(c_intr[0]), .intr_vector(c_vec[0]), .intr_ack(c_iack[0]),
-    // with the APIC globally disabled (IA32_APIC_BASE.EN = 0) the NMI pin
+    // with the APIC globally disabled (IA32_APIC_BASE.EN = 0) the NMI
     // reaches the core directly (Intel SDM Vol. 3A 12.4.3)
-    .nmi(c_nmi[0] || (nmi && !c_apic_base[0][11])), .smi(smi || c_smi[0]),
+    .nmi(c_nmi[0] || (vw_nmi && !c_apic_base[0][11])), .smi(vw_smi || c_smi[0]),
     .is_bsp(1'b1), .apic_id(32'd0), .init(c_init[0]), .sipi(c_sipi[0]), .sipi_vec(c_sipi_vec[0]),
     .apic_base(c_apic_base[0]), .tsc(c_tsc[0]),
     .lapic_msr_addr(c_msr_addr[0]), .lapic_msr_wr(c_msr_wr[0]), .lapic_msr_wdata(c_msr_wdata[0]),
     .lapic_msr_rdata(c_msr_rdata[0]), .lapic_msr_rok(c_msr_rok[0]), .lapic_msr_wok(c_msr_wok[0]),
     .cr8_wr(c_cr8_wr[0]), .cr8_wdata(c_cr8_wdata[0]), .cr8_rdata(c_cr8_rdata[0]),
-    .mce_valid(mce_valid || f_mce_ue), .mce_type(f_mce_ue ? 2'd2 : mce_type),
-    .mce_addr(f_mce_ue ? f_mce_addr : mce_addr),
+    .mce_valid(ext_mce || f_mce_ue), .mce_type(f_mce_ue ? 2'd2 : ext_mce_type),
+    .mce_addr(f_mce_ue ? f_mce_addr : ext_mce_addr),
     .dbg_req, .dbg_step, .dbg_halted, .dbg_reg_sel, .dbg_reg_we, .dbg_reg_wdata, .dbg_reg_rdata,
     .rt_valid, .rt_rip, .rt_len, .rt_bytes, .rt_uops,
     .ev_valid, .ev_vector, .ev_has_error, .ev_error, .ev_rip,
@@ -106,9 +111,9 @@ module v1_die
 
   // ------------------------------------------------------------ local APICs
   // one per core (APIC ID = core index) on the die's APIC bus, which also
-  // carries the MSIs the fabric receives over the I/O link; the 8259's INTR
-  // is every APIC's LINT0 (virtual wire through ExtINT, MP spec 1.4 3.6.2.2)
-  // and the NMI pin their LINT1
+  // carries the MSIs the fabric receives over the I/O link; the chipset's
+  // INTR virtual wire is every APIC's LINT0 (virtual wire mode through
+  // ExtINT, MP spec 1.4 3.6.2.2) and its NMI wire their LINT1 (D-019)
   logic         c_intr [NCORE], c_iack [NCORE], c_nmi [NCORE], c_smi [NCORE];
   logic         c_init [NCORE], c_sipi [NCORE];
   logic [7:0]   c_vec [NCORE], c_sipi_vec [NCORE];
@@ -139,7 +144,7 @@ module v1_die
       .msr_addr(c_msr_addr[k]), .msr_rdata(c_msr_rdata[k]), .msr_rok(c_msr_rok[k]),
       .msr_wr(c_msr_wr[k]), .msr_wdata(c_msr_wdata[k]), .msr_wok(c_msr_wok[k]),
       .cr8_wr(c_cr8_wr[k]), .cr8_wdata(c_cr8_wdata[k]), .cr8_rdata(c_cr8_rdata[k]),
-      .lint0(intr_valid), .lint0_vec(intr_vector), .lint0_ack(lint0_ack[k]), .lint1(nmi),
+      .lint0(vw_intr), .lint0_vec(vw_vec), .lint0_ack(lint0_ack[k]), .lint1(vw_nmi),
       .core_intr(c_intr[k]), .core_vec(c_vec[k]), .core_ack(c_iack[k]),
       .core_nmi(c_nmi[k]), .core_smi(c_smi[k]), .core_init(c_init[k]),
       .core_sipi(c_sipi[k]), .sipi_vec(c_sipi_vec[k]),
@@ -155,10 +160,10 @@ module v1_die
     .msi_valid, .msi_msg, .msi_ready,
     .bus_valid(ab_valid), .bus_msg(ab_msg), .match(ab_match), .apr(ab_apr), .accept(ab_accept));
 
-  // INTA to the 8259: the core that took an ExtINT
+  // INTA to the chipset's 8259 (a link message): the core that took an ExtINT
   always_comb begin
-    intr_ack = 1'b0;
-    for (int k = 0; k < NCORE; k++) intr_ack |= lint0_ack[k];
+    inta = 1'b0;
+    for (int k = 0; k < NCORE; k++) inta |= lint0_ack[k];
   end
 
   // ------------------------------------------------------------ DRAM
@@ -218,6 +223,7 @@ module v1_die
     .p_req(post_valid), .p_code(post_code), .p_ack(post_ack),
     .apic_base(c_apic_base[0][51:10]), .la_off, .la_rdata(la_rdata[0]), .la_wr, .la_wdata,
     .msi_valid, .msi_msg, .msi_ready, .eoi_valid(eoi_valid[0]), .eoi_vec(eoi_vec[0]), .eoi_ack,
+    .vw_intr, .vw_vec, .vw_nmi, .vw_smi, .inta, .ext_mce, .ext_mce_type, .ext_mce_addr,
     .m_valid, .m_ready, .m_we, .m_off, .m_wdata, .m_be, .m_rsp, .m_rdata, .m_ue,
     .tx_valid(iol_tx_valid), .tx_flit(iol_tx_flit), .tx_ready(iol_tx_ready),
     .rx_valid(iol_rx_valid), .rx_flit(iol_rx_flit), .rx_ready(iol_rx_ready),

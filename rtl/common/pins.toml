@@ -337,59 +337,9 @@ dir = "out"
 width = 1
 desc = "JTAG test data out"
 
-# --- interrupts and machine checks from the I/O die (sideband)
-[[pin]]
-name = "intr_valid"
-dir = "in"
-width = 1
-route = "intr_core"
-desc = "the 8259's INTR (level) with its vector: the local APICs' LINT0 (ExtINT, virtual wire; D-017)"
-
-[[pin]]
-name = "intr_vector"
-dir = "in"
-width = 8
-desc = "the interrupt's vector"
-
-[[pin]]
-name = "intr_ack"
-dir = "out"
-width = 1
-c = "intr_ack[]"
-desc = "INTA: a core took the 8259's interrupt through LINT0 (one pulse)"
-
-[[pin]]
-name = "nmi"
-dir = "in"
-width = 1
-route = "nmi_core"
-desc = "the NMI pin (one-cycle pulse): the local APICs' LINT1"
-
-[[pin]]
-name = "smi"
-dir = "in"
-width = 1
-route = "smi_core"
-desc = "SMI# (one-cycle pulse): enter system management mode"
-
-[[pin]]
-name = "mce_valid"
-dir = "in"
-width = 1
-route = "mce_core"
-desc = "a machine check (one-cycle pulse)"
-
-[[pin]]
-name = "mce_type"
-dir = "in"
-width = 2
-desc = "1 corrected, 2 uncorrected"
-
-[[pin]]
-name = "mce_addr"
-dir = "in"
-width = 64
-desc = "the machine check's physical address"
+# (no interrupt or machine-check pins: the chipset's INTR, NMI, SMI and INIT
+#  are virtual-wire messages on the system link, INTA goes back as one, and
+#  its machine checks are MCE messages: D-019, docs/die-interface.md)
 
 # --- simulation observation (no balls, D-019): retirement and events, per core
 [[pin]]

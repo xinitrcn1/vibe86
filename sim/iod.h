@@ -52,6 +52,17 @@ int iod_dma(void *ctx, int we, uint64_t pa, unsigned n, uint8_t *data);
    from any context */
 void iod_msi(struct iod *d, uint64_t addr, uint32_t data);
 
+/* the chipset's interrupt wires and machine checks as link messages
+   (D-019, docs/die-interface.md): iod_intr every cycle with the 8259's
+   INTR level and vector (a VW message goes out when it changes, and after
+   each INTA the die sends back, which also acks the 8259); NMI, SMI and
+   INIT are edges; iod_mce reports a machine check (type 1 corrected,
+   2 uncorrected) */
+enum { VW_INTR = 0, VW_NMI = 1, VW_SMI = 2, VW_INIT = 3 };
+void iod_intr(struct iod *d, int pending, uint8_t vector);
+void iod_vw(struct iod *d, unsigned wire, int asserted, uint8_t vector);
+void iod_mce(struct iod *d, unsigned type, uint64_t addr);
+
 /* statistics: requests served, DMA packets, errors */
 void iod_stats(const struct iod *d, char *buf, unsigned len);
 

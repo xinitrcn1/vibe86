@@ -31,9 +31,9 @@ board are C models.
 | PECI / thermal (THERMTRIP#, PROCHOT#) | package temperature to the BMC, thermal shutdown | `pmc.c`: die and board temperatures, hot and critical trips (critical: power off, vsim exits 5) |
 | SMBus / I2C (board management) | TPM, fan controller, temperature sensors | `i2c.c`: I2C controller at `0xFE00_8000`; TPM (`tpm.c`, libtpms), fan monitor, LM75 |
 | RESET#, PWRGOOD | cold and warm reset | `vsim` holds the core's `rst_n` low for one clock at power-on and on SYSCON/`0xCF9` resets; the PMC records the reset cause |
-| NMI | the board's NMI pin | `nmi` core pin, raised by SYSCON `0xAAAA` |
-| MCERR#, CATERR# | machine-check signalling | `mce_*` core pins: the DDR5 controller's corrected/uncorrected ECC errors, or SYSCON `0xBBxx` |
-| MSIs (inbound memory writes to `0xFEEx_xxxx`) | interrupt messages from PCIe devices and the IOMMU, delivered to a local APIC | `board.c` `msi_write`: the destination APIC id and vector go to the core's `intr_*` pins |
+| NMI, SMI | the chipset's NMI and SMI | virtual-wire messages on the I/O link (D-019), raised by SYSCON `0xAAAA` (NMI) and the chipset's SMI sources |
+| machine checks | errors the chipset reports | MCE messages on the I/O link (D-019), raised by SYSCON `0xBBxx`; the die's own DDR5 ECC errors are on the die |
+| MSIs (inbound memory writes to `0xFEEx_xxxx`) | interrupt messages from PCIe devices and the IOMMU, delivered to a local APIC | link writes to `0xFEEx_xxxx` the die's fabric turns into APIC-bus messages (D-017) |
 
 ### The die's pins
 
@@ -41,10 +41,11 @@ The die (`rtl/<version>/<version>_die.sv`: the core and `rtl/uncore/`)
 reaches the system only through pins (docs/die-interface.md, D-014): the
 DDR5 channels, the SPD SMBus, an I/O link to the I/O die (split
 transactions over 64-bit flits: everything that isn't DRAM — MMIO, ports,
-the flash, other PCI configuration — and device DMA into DRAM), JTAG, the
-interrupt sideband (INTR/INTA, NMI, SMI, MCERR) and a trace port (an
-instruction retired, an exception or interrupt delivered, shutdown,
-halted). `sim/iod.c` is the I/O die; the board's devices behind it run in a
+the flash, other PCI configuration — and device DMA into DRAM, plus the
+chipset's interrupt virtual wires, INTA and machine-check messages: D-019)
+and JTAG; the package's other balls are docs/package.md. The harness
+observes retirement, exceptions, shutdown and halts on simulation-only
+ports. `sim/iod.c` is the I/O die; the board's devices behind it run in a
 coroutine that a DMA read suspends until the die's completion returns.
 
 Inside the die the core reaches the fabric over one request/acknowledge
@@ -237,8 +238,11 @@ interrupt message in the x86 MSI format (Intel SDM Vol. 3A §11.11,
 APIC id, data bits 7:0 the vector. Only fixed delivery to one physical
 destination is modelled; redirection hint, destination mode, delivery mode
 and trigger mode bits are ignored. Vectors 0–15 are reserved and dropped.
-The core with that APIC id (vibe86 v1 has one, id 0) gets the vector on its
-`intr_*` pins; a message to an id with no core is dropped. Reads of the
+The die's fabric delivers it on the APIC bus to the local APIC with that
+id (vibe86 v1 has one, id 0); a message to an id with no core is dropped.
+The 8259's INTR, NMI and SMI reach the die as virtual-wire messages on the
+I/O link, and a core taking the ExtINT sends INTA back (D-019,
+docs/die-interface.md). Reads of the
 window return 0; other sizes are bus errors.
 
 SYSCON + 8 is an 8-byte read/write register holding the address for

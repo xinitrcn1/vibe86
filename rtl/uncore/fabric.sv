@@ -73,6 +73,19 @@ module fabric
   input  logic         eoi_valid,
   input  logic [7:0]   eoi_vec,
   output logic         eoi_ack,
+  // the chipset's virtual wires over the link (D-019; HyperTransport I/O
+  // Link Specification 3.10, 8.5): INTR as a level with the 8259's vector
+  // (the local APICs' LINT0), NMI (LINT1) and SMI as one-clock pulses; INTA
+  // goes back when a core took the ExtINT
+  output logic         vw_intr,
+  output logic [7:0]   vw_vec,
+  output logic         vw_nmi,
+  output logic         vw_smi,
+  input  logic         inta,
+  // a machine check the chipset reports (MCE message): one-clock pulse
+  output logic         ext_mce,
+  output logic [1:0]   ext_mce_type,
+  output logic [63:0]  ext_mce_addr,
   // DRAM: four subchannel controllers
   output logic [3:0]   m_valid,
   input  logic [3:0]   m_ready,
@@ -96,7 +109,10 @@ module fabric
 );
 
   localparam logic [7:0] OP_MRD = 8'h01, OP_MWR = 8'h02, OP_IORD = 8'h03, OP_IOWR = 8'h04,
+                         OP_VW = 8'h05, OP_INTA = 8'h06, OP_MCE = 8'h07,
                          OP_CPL = 8'h08, OP_CPLE = 8'h09;
+  // VW payload (the address flit): [7:0] vector, [10:8] the wire, [11] asserted
+  localparam logic [2:0] VW_INTR = 3'd0, VW_NMI = 3'd1, VW_SMI = 3'd2, VW_INIT = 3'd3;
 
   // ------------------------------------------------------------ host bridge
   logic [7:0]  pam [7];              // 59h-5Fh
@@ -145,9 +161,10 @@ module fabric
   ost_e ost;
   ist_e ist;
 
-  typedef enum logic [1:0] {MS_CORE, MS_DBG, MS_POST, MS_EOI} msel_e;
+  typedef enum logic [2:0] {MS_CORE, MS_DBG, MS_POST, MS_EOI, MS_INTA} msel_e;
   msel_e who;
-  logic [1:0] rr;                    // round-robin pointer over the outbound masters
+  logic [2:0] rr;                    // round-robin pointer over the outbound masters
+  logic       inta_pend;             // INTA to send to the chipset
   // the xAPIC page: the core's accesses while the APIC is enabled, not x2APIC
   wire apic_page = who == MS_CORE && !t_io && apic_base[11] && !apic_base[10] &&
                    t_addr[51:12] == apic_base[51:12] && t_addr[63:52] == 12'h0;
@@ -172,6 +189,7 @@ module fabric
   // link receive: inbound requests are assembled here (header, address,
   // data flits); completions go to the outbound engine
   logic [22:0] in_hdr;                // opcode, tag, size, data flits
+  logic [1:0]  in_aux;                // header [33:32]: an MCE message's type
   logic [63:0] in_addr;
   logic [3:0]  in_n;
   logic        in_pending;            // a complete inbound request is held
@@ -265,6 +283,15 @@ module fabric
       la_wr <= 1'b0;
       msi_valid <= 1'b0;
       msi_msg <= '0;
+      vw_intr <= 1'b0;
+      vw_vec <= '0;
+      vw_nmi <= 1'b0;
+      vw_smi <= 1'b0;
+      inta_pend <= 1'b0;
+      in_aux <= '0;
+      ext_mce <= 1'b0;
+      ext_mce_type <= '0;
+      ext_mce_addr <= '0;
       m_valid <= '0;
       m_we <= 1'b0;
       m_off <= '0;
@@ -310,6 +337,15 @@ module fabric
       eoi_ack <= 1'b0;
       la_wr <= 1'b0;
       mce_ue <= 1'b0;
+      vw_nmi <= 1'b0;
+      vw_smi <= 1'b0;
+      ext_mce <= 1'b0;
+      if (inta) begin
+        // the core took the ExtINT: INTR counts as dropped until the
+        // chipset's next VW says what its 8259 has now
+        inta_pend <= 1'b1;
+        vw_intr <= 1'b0;
+      end
       if (m_valid != 0 && (m_valid & m_ready) != 0) m_valid <= '0;
 
       // ---------------------------------------------------- link receive
@@ -331,6 +367,7 @@ module fabric
           end
         end else if (in_n == 0) begin
           in_hdr <= rx_flit[22:0];
+          in_aux <= rx_flit[33:32];
           in_n <= 4'd1;
         end else if (in_n == 1) begin
           in_addr <= rx_flit;
@@ -349,7 +386,30 @@ module fabric
 
       // ---------------------------------------------------- the inbound engine
       case (ist)
-        I_IDLE: if (in_pending) begin
+        I_IDLE: if (in_pending && (in_hdr[7:0] == OP_VW || in_hdr[7:0] == OP_MCE)) begin
+          // messages: handled at once, nothing goes back
+          in_pending <= 1'b0;
+          if (in_hdr[7:0] == OP_MCE) begin
+            ext_mce <= 1'b1;
+            ext_mce_type <= in_aux;
+            ext_mce_addr <= in_addr;
+          end else case (in_addr[10:8])
+            VW_INTR: begin
+              vw_intr <= in_addr[11];
+              vw_vec <= in_addr[7:0];
+            end
+            VW_NMI: vw_nmi <= in_addr[11];
+            VW_SMI: vw_smi <= in_addr[11];
+            VW_INIT: if (in_addr[11]) begin
+              // INIT to every local APIC (as an INIT IPI to all including self)
+              msi_valid <= 1'b1;
+              msi_msg <= '{dest: 32'd0, x2: 1'b0, dm: 1'b0, sh: 2'd2, dlv: DLV_INIT,
+                           level: 1'b1, trig: 1'b0, vec: 8'd0, src: 32'hFFFF_FFFF};
+              ist <= I_MSI;
+            end
+            default: ;
+          endcase
+        end else if (in_pending) begin
           i_we <= in_hdr[7:0] == OP_MWR;
           i_addr <= in_addr;
           i_size <= in_hdr[18:16];
@@ -435,36 +495,41 @@ module fabric
       // ---------------------------------------------------- the outbound engine
       case (ost)
         O_IDLE: begin
-          logic [3:0] want;
-          logic [1:0] pick;
+          logic [4:0] want;
+          logic [2:0] pick;
           logic found;
-          want = {eoi_valid && !eoi_ack, p_req && !p_ack, d_req && !d_ack, c_req && !c_ack};
+          want = {inta_pend, eoi_valid && !eoi_ack, p_req && !p_ack, d_req && !d_ack,
+                  c_req && !c_ack};
           found = 1'b0;
           pick = rr;
-          for (int k = 0; k < 4; k++) begin
-            logic [1:0] m;
-            m = 2'(rr + 2'(k));
+          for (int k = 0; k < 5; k++) begin
+            logic [2:0] m;
+            m = 3'((32'(rr) + k) % 5);
             if (!found && want[m]) begin
               found = 1'b1;
               pick = m;
             end
           end
           if (found) begin
-            rr <= pick + 2'd1;
+            rr <= pick == 3'd4 ? 3'd0 : pick + 3'd1;
             who <= msel_e'(pick);
             t_err <= 1'b0;
             case (pick)
-              2'd0: begin
+              3'd0: begin
                 t_we <= c_we; t_io <= c_io; t_addr <= c_addr; t_size <= c_size;
                 t_data <= {384'b0, c_wdata};
               end
-              2'd1: begin
+              3'd1: begin
                 t_we <= d_we; t_io <= 1'b0; t_addr <= d_addr; t_size <= d_size;
                 t_data <= {448'b0, d_wdata};
               end
-              2'd2: begin
+              3'd2: begin
                 t_we <= 1'b1; t_io <= 1'b1; t_addr <= 64'h80; t_size <= 3'd0;
                 t_data <= {504'b0, p_code};
+              end
+              3'd4: begin
+                // INTA: the address flit carries nothing
+                t_we <= 1'b0; t_io <= 1'b0; t_addr <= '0; t_size <= 3'd0; t_data <= '0;
               end
               default: begin
                 // the EOI message for a level-triggered vector: the I/O APIC's
@@ -478,7 +543,10 @@ module fabric
         end
         O_ROUTE: begin
           // the host bridge, DRAM, or the link
-          if (t_io && t_addr[15:0] == 16'hCF8 && t_size == 3'd2) begin
+          if (who == MS_INTA) begin
+            t_nflits <= 4'd0;
+            ost <= O_TXWAIT;
+          end else if (t_io && t_addr[15:0] == 16'hCF8 && t_size == 3'd2) begin
             if (t_we) begin
               cf8 <= t_data[31:0];
               t_nflits <= 4'd1;
@@ -552,6 +620,7 @@ module fabric
         O_TXHDR: begin
           tx_valid <= 1'b1;
           tx_flit <= {32'b0, 9'b0, t_nflits, t_size, 8'h00,
+                      who == MS_INTA ? OP_INTA :
                       t_io ? (t_we ? OP_IOWR : OP_IORD) : (t_we ? OP_MWR : OP_MRD)};
           if (tx_valid && tx_ready) begin
             tx_flit <= t_addr;
@@ -566,7 +635,7 @@ module fabric
           end else begin
             tx_valid <= 1'b0;
             tx_busy <= 1'b0;
-            ost <= O_RXWAIT;
+            ost <= who == MS_INTA ? O_DONE : O_RXWAIT;   // INTA is posted
           end
         end
         O_TXDATA: if (tx_ready) begin
@@ -594,6 +663,7 @@ module fabric
               d_rdata <= t_data[63:0];
             end
             MS_POST: p_ack <= 1'b1;
+            MS_INTA: if (!inta) inta_pend <= 1'b0;
             default: eoi_ack <= 1'b1;
           endcase
           ost <= O_IDLE;
