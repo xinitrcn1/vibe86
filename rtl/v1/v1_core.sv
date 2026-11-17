@@ -22,6 +22,7 @@ module v1_core
   import v1_ucode_pkg::*;
   import vibe86_reset_pkg::*;
   import vibe86_cpuid_pkg::*;
+  import vibe86_platform_pkg::*;
 (
   // the core's side of the on-die fabric (rtl/uncore/fabric.sv): one
   // transaction at a time, held until acknowledged; physical addresses
@@ -31,12 +32,17 @@ module v1_core
   output logic         bus_we,
   output logic         bus_io,          // I/O space (IN/OUT): bus_addr is the port
   output logic [63:0]  bus_addr,
-  output logic [2:0]   bus_size,        // log2 bytes: 0..4
+  output logic [2:0]   bus_size,        // log2 bytes: 0..4, 6 (an instruction cache line fill)
   output logic [127:0] bus_wdata,
   output logic         bus_smm,         // SMIACT#: the fabric decodes SMRAM for the core
   input  logic         bus_ack,
   input  logic         bus_err,
-  input  logic [127:0] bus_rdata,
+  input  logic [511:0] bus_rdata,       // a line fill uses all 64 bytes, else [127:0]
+  // the fabric's write snoop: a DRAM line some master wrote (the core, the
+  // debug module, device DMA), for the instruction cache's coherence
+  input  logic         ic_inv,
+  input  logic [51:6]  ic_inv_line,
+  input  logic         ic_inv_core,     // the write was the core's own (the data cache has it)
   // interrupts (the die's sideband pins)
   input  logic         intr_valid,
   input  logic [7:0]   intr_vector,
@@ -91,7 +97,7 @@ module v1_core
 
   typedef enum logic [2:0] {S_FETCH, S_EXEC, S_HALT, S_SHUTDOWN, S_DEBUG, S_WFS} state_e;
   typedef enum logic [3:0] {D_PFX, D_ESC, D_OPC3, D_OPC2, D_MODRM, D_SIB, D_DISP, D_IMM, D_FINISH,
-                            D_BUS, D_VEX1, D_VEX2} dstate_e;
+                            D_BUS, D_VEX1, D_VEX2, D_IC} dstate_e;
 
   state_e  st;
   dstate_e ds;
@@ -147,6 +153,49 @@ module v1_core
   logic [59:0] lb_tag;
   logic [127:0] lb_data;
 
+  // the instruction cache (D-018): 64 KiB, direct-mapped, 1024 lines of 64
+  // bytes, physically indexed and tagged, behind the line buffer. The data
+  // and tag arrays are synchronous RAMs (one-cycle registered read); the
+  // valid bits are flops. Coherent with every DRAM write through the
+  // fabric's snoop (ic_inv), as x86 requires for self-modifying code and
+  // DMA (Intel SDM Vol. 3A 11.6).
+  localparam int IC_LINES = 1024;
+  logic [511:0] ic_data [IC_LINES];
+  logic [51:16] ic_tag  [IC_LINES];
+  logic         ic_v    [IC_LINES];
+  logic [511:0] ic_rdata;             // the line at ic_raddr, one cycle later
+  logic [51:16] ic_rtag;
+  logic         ic_rbypass;           // that read raced a write of the same line
+  logic [9:0]   ic_raddr;
+  logic         ic_we;                // write the filled line (and set its valid bit)
+  logic [9:0]   ic_widx;
+  logic [51:16] ic_wtag;
+  logic [511:0] ic_wdata;
+  logic [63:4]  ic_pa;                // the 16 bytes being looked up or filled
+  logic         ic_fill;              // a line fill is outstanding
+  logic         ic_poison;            // ... and its line was written meanwhile
+
+  // the data cache (D-018): 256 KiB, direct-mapped, 4096 lines of 64 bytes,
+  // physically indexed and tagged; write-through (memory is always current,
+  // so device DMA reads need no snoop), updated on a write hit, allocated
+  // on a read miss only. Device and debug-module writes invalidate through
+  // the fabric's snoop; the core's own writes update the line instead.
+  localparam int DC_LINES = 4096;
+  logic [511:0] dc_data [DC_LINES];
+  logic [51:18] dc_tag  [DC_LINES];
+  logic         dc_v    [DC_LINES];
+  logic [511:0] dc_rdata;
+  logic [51:18] dc_rtag;
+  logic         dc_rbypass;
+  logic [11:0]  dc_raddr;
+  logic         dc_we, dc_wtag_en;     // write bytes (a fill also writes the tag, sets valid)
+  logic [11:0]  dc_widx;
+  logic [51:18] dc_wtag;
+  logic [511:0] dc_wdata;
+  logic [63:0]  dc_wbe;
+  logic [63:0]  dc_pa;                 // the access being looked up or filled
+  logic         dc_fill, dc_poison;
+
   // execute
   logic [UADDR_W-1:0] upc, upc_trap;
   logic [UADDR_W-1:0] ustack [4];
@@ -171,7 +220,7 @@ module v1_core
   logic        int_shadow;      // no interrupts at this boundary (MOV SS, POP SS, STI)
 
   // memory micro-op state
-  typedef enum logic [2:0] {M_IDLE, M_BUS, M_BYTES} mstate_e;
+  typedef enum logic [2:0] {M_IDLE, M_BUS, M_BYTES, M_DC} mstate_e;
   mstate_e     ms;
   logic [4:0]  mb_i;            // byte index for split accesses
   logic [127:0] mdata;
@@ -572,6 +621,35 @@ module v1_core
   wire        fetch_hit = lb_v && lb_tag == fetch_la[63:4];
   wire [7:0]  fbyte = lb_data[{fetch_la[3:0], 3'b0} +: 8];
   wire        fetch_limit_bad = (mode != 2'd3) && (fetch_off > sp[segi(1, 2)]);
+  wire [63:0] fetch_pa = cr0_pg ? {ftlb.pa[63:4], 4'b0} : {fetch_la[63:4], 4'b0};
+  // what the instruction cache keeps: DRAM below TOLM except the legacy
+  // region (SMRAM and the PAM shadow change meaning under the core), DRAM
+  // hoisted above 4 GiB up to the 64-bit PCI window, and the flash
+  function automatic logic ic_cacheable(input logic [63:0] pa);
+    return (pa < PLAT_MAP_TOLM && !(pa >= 64'hA0000 && pa < 64'h100000)) ||
+           (pa >= PLAT_MAP_FLASH_BASE && pa < 64'h1_0000_0000) ||
+           (pa >= PLAT_MAP_HOIST_BASE && pa < PLAT_MAP_PCI_MEM64_BASE);
+  endfunction
+  assign ic_raddr = fetch_pa[15:6];
+  always_ff @(posedge clk) begin
+    if (ic_we) begin
+      ic_data[ic_widx] <= ic_wdata;
+      ic_tag[ic_widx] <= ic_wtag;
+    end
+    ic_rdata <= ic_data[ic_raddr];
+    ic_rtag <= ic_tag[ic_raddr];
+    ic_rbypass <= ic_we && ic_widx == ic_raddr;
+  end
+  always_ff @(posedge clk) begin
+    if (dc_we) begin
+      for (int b = 0; b < 64; b++)
+        if (dc_wbe[b]) dc_data[dc_widx][8 * b +: 8] <= dc_wdata[8 * b +: 8];
+      if (dc_wtag_en) dc_tag[dc_widx] <= dc_wtag;
+    end
+    dc_rdata <= dc_data[dc_raddr];
+    dc_rtag <= dc_tag[dc_raddr];
+    dc_rbypass <= dc_we && dc_widx == dc_raddr;
+  end
 
   wire        m64 = (mode == 2'd3);
   // instruction breakpoints matching this instruction's first byte
@@ -693,6 +771,12 @@ module v1_core
   wire [63:0] mla_cur = ms == M_BYTES ? mchk.la + 64'(mb_i) : mchk.la;
   tlbres_t mtlb;
   assign mtlb = tlb_look(mla_cur, u.op == U_ST, 1'b0, cpl == 2'd3);
+  // the data cache: looked up with this access's physical address, answered
+  // in M_DC; a load's data from a hit, a line fill, or the bus
+  assign dc_raddr = paging ? mtlb.pa[17:6] : mla_cur[17:6];
+  wire        dc_hit = dc_v[dc_pa[17:6]] && !dc_rbypass && dc_rtag == dc_pa[51:18];
+  wire [511:0] mem_line = (ms == M_DC) ? dc_rdata : bus_rdata;
+  wire [63:0] mem_rd = (ms == M_DC || dc_fill) ? 64'(mem_line >> {dc_pa[5:0], 3'b0}) : bus_rdata[63:0];
   tlbres_t ftlb;
   assign ftlb = tlb_look({fetch_la[63:4], 4'b0}, 1'b0, 1'b1, cpl == 2'd3);
 
@@ -860,6 +944,14 @@ module v1_core
     for (int i = 0; i < NTLB; i++) tlb_v[i] <= 1'b0;
     tlb_next <= '0;
     lb_v <= 1'b0;
+    for (int i = 0; i < IC_LINES; i++) ic_v[i] <= 1'b0;
+    ic_we <= 1'b0;
+    ic_fill <= 1'b0;
+    ic_poison <= 1'b0;
+    for (int i = 0; i < DC_LINES; i++) dc_v[i] <= 1'b0;
+    dc_we <= 1'b0;
+    dc_fill <= 1'b0;
+    dc_poison <= 1'b0;
     st <= S_FETCH;
     ds <= D_PFX;
     ms <= M_IDLE;
@@ -944,12 +1036,38 @@ module v1_core
           if (ds == D_BUS) begin
             if (bus_ack) begin
               bus_req <= 1'b0;
+              ic_fill <= 1'b0;
               if (bus_err) raise(8'd13, 1'b1, 32'd0, 1'b0, 1'b0, 1'b0);
               else begin
                 lb_v <= 1'b1;
-                lb_data <= bus_rdata[127:0];
+                if (ic_fill) begin
+                  // a line fill: keep it unless a write hit it meanwhile
+                  lb_data <= bus_rdata[{ic_pa[5:4], 7'b0} +: 128];
+                  if (!ic_poison) begin
+                    ic_we <= 1'b1;
+                    ic_widx <= ic_pa[15:6];
+                    ic_wtag <= ic_pa[51:16];
+                    ic_wdata <= bus_rdata;
+                  end
+                end else lb_data <= bus_rdata[127:0];
                 ds <= dstate_e'(mdata[3:0]);   // resume
               end
+            end
+          end else if (ds == D_IC) begin
+            // the cache's answer for ic_pa (read in the cycle before)
+            if (ic_v[ic_pa[15:6]] && !ic_rbypass && ic_rtag == ic_pa[51:16]) begin
+              lb_v <= 1'b1;
+              lb_data <= ic_rdata[{ic_pa[5:4], 7'b0} +: 128];
+              ds <= dstate_e'(mdata[3:0]);
+            end else begin
+              bus_req <= 1'b1;
+              bus_we <= 1'b0;
+              bus_io <= 1'b0;
+              bus_size <= 3'd6;
+              bus_addr <= {ic_pa[63:6], 6'b0};
+              ic_fill <= 1'b1;
+              ic_poison <= 1'b0;
+              ds <= D_BUS;
             end
           end else if (ds == D_PFX && idx == 0 && !in_delivery && !w_flags[16] && ibp_hit != 0) begin
             sp[SP_DR6[7:0]] <= (sp[SP_DR6[7:0]] & ~64'hF) | {60'b0, ibp_hit};
@@ -959,12 +1077,18 @@ module v1_core
             // fetch the 16-byte line holding the next byte
             if (idx == 4'd15 || fetch_limit_bad) raise(8'd13, 1'b1, 32'd0, 1'b0, 1'b0, 1'b0);
             else if (cr0_pg && !ftlb.hit) utrap({fetch_la[63:4], 4'b0}, 4'b0100 | {2'b0, cpl == 2'd3, 1'b0}, 1'b1);
-            else begin
+            else if (ic_cacheable(fetch_pa)) begin
+              // look the line up in the instruction cache (ic_raddr = fetch_pa)
+              ic_pa <= fetch_pa[63:4];
+              lb_tag <= fetch_la[63:4];
+              mdata[3:0] <= 4'(ds);
+              ds <= D_IC;
+            end else begin
               bus_req <= 1'b1;
               bus_we <= 1'b0;
               bus_io <= 1'b0;
               bus_size <= 3'd4;
-              bus_addr <= cr0_pg ? {ftlb.pa[63:4], 4'b0} : {fetch_la[63:4], 4'b0};
+              bus_addr <= fetch_pa;
               lb_tag <= fetch_la[63:4];
               mdata[3:0] <= 4'(ds);
               ds <= D_BUS;
@@ -1160,6 +1284,14 @@ module v1_core
                 nrip <= nr;
                 `ifdef V1_DEBUG $display("finish map=%0d opc=%h mode=%0d osz=%0d idx=%0d ds=%0d", dmap, dopc, mode, dosz, idx, ds); `endif
                 e = calc_ea(nr, dseg);
+                // INVD, WBINVD (and WBNOINVD), CLFLUSH(OPT): the instruction
+                // cache is flushed as they are decoded (invisible if they fault)
+                if (dmap == 3'd1 && (dopc == 8'h08 || dopc == 8'h09 ||
+                    (dopc == 8'hAE && modrm[5:3] == 3'd7 && modrm[7:6] != 2'd3)))
+                  begin
+                    for (int i = 0; i < IC_LINES; i++) ic_v[i] <= 1'b0;
+                    for (int i = 0; i < DC_LINES; i++) dc_v[i] <= 1'b0;
+                  end
                 // without a memory ModRM operand the default segment is DS
                 // (string sources, XLAT: Intel SDM Vol. 1 3.7.5); modrm
                 // still holds the previous instruction's byte, whose
@@ -1220,22 +1352,56 @@ module v1_core
                   mb_i <= '0;
                   mdata <= {64'b0, vb};
                 end else begin
-                  bus_req <= 1'b1;
+                  // the request; a cacheable one asks the data cache first
+                  // (dc_raddr is this access's index now, the answer in M_DC)
+                  bus_req <= !ic_cacheable(pa);
                   bus_we <= (u.op == U_ST);
                   bus_io <= 1'b0;
                   bus_addr <= pa;
                   bus_size <= (ms == M_BYTES) ? 3'd0 : 3'(u.sz);
                   bus_wdata <= (ms == M_BYTES) ? {120'b0, mdata[7'({mb_i, 3'b0}) +: 8]} : {64'b0, vb};
-                  if (ms == M_IDLE) mdata <= '0;
-                  ms <= M_BUS;
+                  if (ms == M_IDLE && u.op == U_LD) mdata <= '0;
+                  dc_pa <= pa;
+                  ms <= ic_cacheable(pa) ? M_DC : M_BUS;
                   if (u.op == U_ST) lb_v <= 1'b0;   // self-modifying code: refetch
                 end
               end
-            end else if (ms == M_BUS && bus_ack) begin
+            end else if (ms == M_DC && !(u.op == U_LD && dc_hit)) begin
+              if (u.op == U_ST) begin
+                // write through; a hit updates the line's bytes too
+                if (dc_hit) begin
+                  dc_we <= 1'b1;
+                  dc_wtag_en <= 1'b0;
+                  dc_widx <= dc_pa[17:6];
+                  dc_wdata <= 512'(bus_wdata[63:0]) << {dc_pa[5:0], 3'b0};
+                  dc_wbe <= (maligned ? (64'(1) << mn) - 64'd1 : 64'd1) << dc_pa[5:0];
+                end
+                bus_req <= 1'b1;
+              end else begin
+                // a read miss: fill the line
+                bus_req <= 1'b1;
+                bus_size <= 3'd6;
+                bus_addr <= {dc_pa[63:6], 6'b0};
+                dc_fill <= 1'b1;
+                dc_poison <= 1'b0;
+              end
+              ms <= M_BUS;
+            end else if ((ms == M_BUS && bus_ack) || ms == M_DC) begin
               bus_req <= 1'b0;
-              if (bus_err) raise(8'd13, 1'b1, 32'd0, 1'b0, 1'b0, 1'b0);
+              if (dc_fill) begin
+                dc_fill <= 1'b0;
+                if (!bus_err && !dc_poison) begin
+                  dc_we <= 1'b1;
+                  dc_wtag_en <= 1'b1;
+                  dc_widx <= dc_pa[17:6];
+                  dc_wtag <= dc_pa[51:18];
+                  dc_wdata <= bus_rdata;
+                  dc_wbe <= '1;
+                end
+              end
+              if (ms == M_BUS && bus_err) raise(8'd13, 1'b1, 32'd0, 1'b0, 1'b0, 1'b0);
               else if (maligned) begin
-                if (u.op == U_LD) wr(u.dst, u.sz, bus_rdata[63:0] & szmask(u.sz));
+                if (u.op == U_LD) wr(u.dst, u.sz, mem_rd & szmask(u.sz));
                 `ifdef V1_DEBUG if (in_trap) $display("  trap mem op=%0d addr=%h data=%h", u.op, bus_addr, bus_rdata[63:0]); `endif
                 ms <= M_IDLE;
                 upc <= upc + 1;
@@ -1243,7 +1409,7 @@ module v1_core
               end else begin
                 logic [63:0] acc;
                 acc = mdata[63:0];
-                if (u.op == U_LD) acc[6'({mb_i, 3'b0}) +: 8] = bus_rdata[7:0];
+                if (u.op == U_LD) acc[6'({mb_i, 3'b0}) +: 8] = mem_rd[7:0];
                 mdata[63:0] <= acc;
                 if (mb_i + 1 == mn) begin
                   if (u.op == U_LD) wr(u.dst, u.sz, acc);
@@ -1650,6 +1816,26 @@ module v1_core
           intr_ack <= 1'b1;
           raise(intr_vector, 1'b0, 32'd0, 1'b1, 1'b0, 1'b1);
         end
+      end
+      // the instruction cache: a filled line becomes valid as the data
+      // array writes it; a snooped write invalidates its line (and the
+      // line buffer, and an outstanding fill of it) -- last, so it wins
+      if (ic_we) begin
+        ic_we <= 1'b0;
+        ic_v[ic_widx] <= 1'b1;
+      end
+      if (ic_inv) begin
+        ic_v[ic_inv_line[15:6]] <= 1'b0;
+        if (ic_fill && ic_pa[51:6] == ic_inv_line) ic_poison <= 1'b1;
+        lb_v <= 1'b0;
+      end
+      if (dc_we) begin
+        dc_we <= 1'b0;
+        if (dc_wtag_en) dc_v[dc_widx] <= 1'b1;
+      end
+      if (ic_inv && !ic_inv_core) begin
+        dc_v[ic_inv_line[17:6]] <= 1'b0;
+        if (dc_fill && dc_pa[51:6] == ic_inv_line) dc_poison <= 1'b1;
       end
     end
   end

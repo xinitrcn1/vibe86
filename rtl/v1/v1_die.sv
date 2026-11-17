@@ -35,7 +35,10 @@ module v1_die
   logic         c_req, c_we, c_io, c_smm, c_ack, c_err;
   logic [63:0]  c_addr;
   logic [2:0]   c_size;
-  logic [127:0] c_wdata, c_rdata;
+  logic [127:0] c_wdata;
+  logic [511:0] c_rdata;
+  logic         c_ic_inv, c_ic_inv_core;   // the fabric's write snoop (D-018)
+  logic [51:6]  c_ic_inv_line;
   logic         f_mce_ue;
   logic [63:0]  f_mce_addr;
 
@@ -79,6 +82,7 @@ module v1_die
     .clk, .rst_n(core_rst_n),
     .bus_req(c_req), .bus_we(c_we), .bus_io(c_io), .bus_addr(c_addr), .bus_size(c_size),
     .bus_wdata(c_wdata), .bus_smm(c_smm), .bus_ack(c_ack), .bus_err(c_err), .bus_rdata(c_rdata),
+    .ic_inv(c_ic_inv), .ic_inv_line(c_ic_inv_line), .ic_inv_core(c_ic_inv_core),
     .intr_valid(c_intr[0]), .intr_vector(c_vec[0]), .intr_ack(c_iack[0]),
     // with the APIC globally disabled (IA32_APIC_BASE.EN = 0) the NMI pin
     // reaches the core directly (Intel SDM Vol. 3A 12.4.3)
@@ -204,6 +208,7 @@ module v1_die
   fabric u_fabric (
     .clk, .rst_n, .dram_ready, .dram_size, .two_ch,
     .c_req, .c_we, .c_io, .c_addr, .c_size, .c_wdata, .c_smm, .c_ack, .c_err, .c_rdata,
+    .ic_inv(c_ic_inv), .ic_inv_line(c_ic_inv_line), .ic_inv_core(c_ic_inv_core),
     .d_req, .d_we, .d_addr, .d_size, .d_wdata, .d_ack, .d_err, .d_rdata,
     .p_req(post_valid), .p_code(post_code), .p_ack(post_ack),
     .apic_base(c_apic_base[0][51:10]), .la_off, .la_rdata(la_rdata[0]), .la_wr, .la_wdata,

@@ -41,7 +41,12 @@ module fabric
   input  logic         c_smm,
   output logic         c_ack,
   output logic         c_err,
-  output logic [127:0] c_rdata,
+  output logic [511:0] c_rdata,        // a 64-byte read (size 6) fills all of it
+  // the write snoop for the core's caches (D-018): every DRAM
+  // write, by any master, names its line (writes never cross a line)
+  output logic         ic_inv,
+  output logic [51:6]  ic_inv_line,
+  output logic         ic_inv_core,    // the core's own write (its data cache already has it)
   // the debug module (physical, 1-8 bytes)
   input  logic         d_req,
   input  logic         d_we,
@@ -249,6 +254,9 @@ module fabric
       c_ack <= 1'b0;
       c_err <= 1'b0;
       c_rdata <= '0;
+      ic_inv <= 1'b0;
+      ic_inv_line <= '0;
+      ic_inv_core <= 1'b0;
       d_ack <= 1'b0;
       d_err <= 1'b0;
       d_rdata <= '0;
@@ -296,6 +304,7 @@ module fabric
       mce_addr <= '0;
     end else begin
       c_ack <= 1'b0;
+      ic_inv <= 1'b0;
       d_ack <= 1'b0;
       p_ack <= 1'b0;
       eoi_ack <= 1'b0;
@@ -371,6 +380,9 @@ module fabric
             dram_busy <= 1'b1;
             m_off <= lineoff(di[36:7]);
             m_we <= i_we;
+            ic_inv <= i_we;
+            ic_inv_line <= i_addr[51:6];
+            ic_inv_core <= 1'b0;
             m_wdata <= i_data << (8 * di[5:0]);
             m_be <= ((64'(1) << n) - 64'd1) << di[5:0];
             m_valid <= 4'(1) << subch(di[7:6]);
@@ -515,6 +527,9 @@ module fabric
           dram_busy <= 1'b1;
           m_off <= lineoff(dd[36:7]);
           m_we <= t_we;
+          ic_inv <= t_we;
+          ic_inv_line <= t_addr[51:6];
+          ic_inv_core <= who == MS_CORE;
           m_wdata <= t_data << (8 * dd[5:0]);
           m_be <= ((64'(1) << (7'(1) << t_size)) - 64'd1) << dd[5:0];
           m_valid <= 4'(1) << subch(dd[7:6]);
@@ -571,7 +586,7 @@ module fabric
             MS_CORE: begin
               c_ack <= 1'b1;
               c_err <= t_err;
-              c_rdata <= t_data[127:0];
+              c_rdata <= t_data;
             end
             MS_DBG: begin
               d_ack <= 1'b1;

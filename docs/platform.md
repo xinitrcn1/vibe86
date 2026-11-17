@@ -47,6 +47,15 @@ instruction retired, an exception or interrupt delivered, shutdown,
 halted). `sim/iod.c` is the I/O die; the board's devices behind it run in a
 coroutine that a DMA read suspends until the die's completion returns.
 
+Inside the die the core reaches the fabric over one request/acknowledge
+bus (`bus_*`: 1-16 bytes, or a 64-byte line read of 512 bits for the
+caches' fills) and keeps two caches in front of it (D-018): a 64 KiB
+instruction cache and a 256 KiB write-through data cache, both 64-byte
+lines, physically tagged, for DRAM (outside A_0000h-F_FFFFh) and the flash.
+The fabric reports every DRAM write (any master: the core, the JTAG debug
+module, device DMA) to the core on a snoop port, which keeps both caches
+coherent; software never needs to flush them.
+
 Memory is ready before the core runs: the die's init engine (the stand-in
 for AMD's PSP) reads the SPDs, initializes the DRAMs (JEDEC power-up
 sequence) and posts D0h–D3h on port 80h, then releases the core; errors

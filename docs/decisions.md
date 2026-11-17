@@ -210,3 +210,39 @@ The test board's SRAM and the C memory controller (`sim/dram.c`) are gone:
 every board runs from DIMMs. The cost is simulation speed — every DRAM
 access is a DDR5 transaction (ACT/RD at CL40) instead of a one-cycle
 board access.
+
+## D-018: v1's caches: 64 KiB I-cache, 256 KiB write-through D-cache, coherent by a write snoop
+
+With DRAM behind pin-level DDR5 controllers (D-014) every uncached access
+costs a full DDR5 transaction, and the firmware took ~7x more cycles to
+boot than on the old SRAM board. v1 gets two L1 caches, the smallest
+change that removes most of that:
+
+- **Instruction cache**: 64 KiB, direct-mapped, 1024 lines of 64 bytes,
+  physically indexed and tagged, behind the existing 16-byte fetch line
+  buffer. A miss reads the whole line (bus size 6, 512 bits).
+- **Data cache**: 256 KiB, direct-mapped, 4096 lines of 64 bytes,
+  physically indexed and tagged; **write-through**, updated on a write
+  hit, allocated on a read miss only. A load costs one lookup cycle on a
+  hit, a store one lookup cycle before its (still synchronous) write.
+- **What is cached**: DRAM below TOLM except A_0000h-F_FFFFh (SMRAM and
+  the PAM-steered shadow region change meaning under the core), DRAM
+  hoisted above 4 GiB below the 64-bit PCI window, and the flash
+  (read-only). Everything else (MMIO, the APIC page, VRAM, port I/O) is
+  uncached, as the MTRRs/PAT of a PC would make it — v1 has no MTRRs, so
+  the ranges are fixed (rtl/common/platform.toml).
+- **Coherence**: x86 keeps instruction fetches coherent with stores
+  (self-modifying code, Intel SDM Vol. 3A 11.6) and caches coherent with
+  DMA. The fabric already sees every DRAM write, so it reports each one's
+  line to the core (`ic_inv`, `ic_inv_line`, with `ic_inv_core` for the
+  core's own); the I-cache invalidates on every write, the D-cache on
+  writes that weren't its own (those it updated). Because the D-cache is
+  write-through, DRAM is always current and device reads need no snoop.
+  A fill that a write overtakes is not kept. INVD, WBINVD (WBNOINVD),
+  CLFLUSH(OPT), INIT and reset flush both caches.
+- **Arrays** are synchronous RAMs with a one-cycle registered read (the
+  data cache's with byte write enables); only the valid bits are flops.
+
+Not yet: write-back (it needs the fabric to snoop device reads), MTRR/PAT
+memory types and CR0.CD, set associativity, an L2. The CPUID cache
+description (Fn8000_001Dh) comes with TOPOEXT.
