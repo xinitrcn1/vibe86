@@ -108,6 +108,23 @@ cpu_init(void)
 	}
 	struct dtr i = { sizeof idt - 1, (uint64_t)(uintptr_t)idt };
 	__asm__ volatile("lidt %0" :: "m"(i));
+	/*
+	 * The local APIC in virtual-wire mode (MP Specification 1.4 3.6.2.2;
+	 * Intel SDM Vol. 3A 12.5.1): software-enabled (SVR bit 8, spurious
+	 * vector FFh), LINT0 ExtINT so the 8259's INTR reaches the core, LINT1
+	 * NMI. The APIC leaves reset enabled with its LVTs masked, which would
+	 * keep legacy interrupts (the CSM's timer) out.
+	 */
+	uint32_t id[4];
+	cpuid(1, 0, id);
+	uint64_t apic = rdmsr(MSR_IA32_APIC_BASE_ADDR);
+	if ((id[3] & (1u << 9)) && (apic & (1u << 11)) && !(apic & (1u << 10))) {
+		uint64_t a = apic & ~0xFFFull;
+		mmio_w32(a + 0xF0, 0x1FF);	/* SVR */
+		mmio_w32(a + 0x350, 0x700);	/* LVT LINT0: ExtINT */
+		mmio_w32(a + 0x360, 0x400);	/* LVT LINT1: NMI */
+		DEBUG("DXE: local APIC at %lx, virtual-wire mode\n", a);
+	}
 	/* CR0.NE, WP; CR4: OSFXSR stays clear (no SSE on v1) */
 	uint64_t cr0;
 	__asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
