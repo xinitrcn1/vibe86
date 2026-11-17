@@ -41,6 +41,7 @@ class Form:
     map: int = 0
     opc: int = 0
     digit: int = None
+    rm: int = None           # a fixed ModRM.rm (register-form rows such as 'D9 E8' FLD1)
     modrm: bool = False
     plus_r: bool = False
     imm: list = field(default_factory=list)   # immediate byte counts, in order
@@ -75,7 +76,7 @@ class Form:
 
     def key(self):
         return (self.mode, self.map, self.opc, self.digit, self.prefix_key(), self.okey, self.mem,
-                tuple(sorted(self.spec.items())), self.hints.get("sub90"))
+                tuple(sorted(self.spec.items())), self.hints.get("sub90"), self.rm)
 
     def prefix_key(self):
         if self.mprefix in ("F3", "F2", "66"):
@@ -112,6 +113,13 @@ def parse_opcode(f, col):
             pass
         elif t.startswith("+r"):
             f.plus_r = True
+        elif re.match(r"^[0-9A-F]{2}\+i$", t):
+            # x87 'D8 C0+i': a register-form ModRM byte whose rm is ST(i)
+            b = int(t[:2], 16)
+            f.modrm = True
+            f.digit = (b >> 3) & 7
+            f.hints["regform"] = True
+            f.hints["sti"] = True
         elif t == "/r":
             f.modrm = True
         elif re.match(r"^/\d$", t):
@@ -157,6 +165,7 @@ def parse_opcode(f, col):
         # a fixed register-form ModRM byte: 'NP 0F AE F8' (SFENCE) is 0F AE /7, mod = 11
         f.modrm = True
         f.digit = (rest[1] >> 3) & 7
+        f.rm = rest[1] & 7          # the row names the whole byte: rm is part of the key
         f.hints["regform"] = True
         rest = rest[:1]
     if len(rest) != 1:
@@ -184,6 +193,8 @@ def parse_operands(f, enc):
     ins = re.sub(r"\br(16|32|64)/m16\d?\b", "r/m16", ins)
     # 'MOVDIR64B r16/r32/r64, m512': a register of the address size
     ins = ins.replace("r16/r32/r64", "rasz")
+    # 'FNSTSW1 AX', 'FNSAVE1 m94/108byte': footnote marks on x87 mnemonics
+    ins = re.sub(r"^(FN[A-Z]+)\d\b", r"\1", ins)
     parts = ins.split(None, 1)
     f.mnem = parts[0]
     ops = [o.strip() for o in parts[1].split(",")] if len(parts) > 1 else []
@@ -219,6 +230,17 @@ def parse_operands(f, enc):
             else:
                 raise FormError(f"operand '{o}'")
             f.operands.append(Operand(kind, sz, text=o))
+        elif re.match(r"^ST(\(0\))?$", o):
+            f.operands.append(Operand("st0", 80, text=o))
+        elif re.match(r"^ST\(i\)$", o):
+            f.operands.append(Operand("sti", 80, text=o))
+        elif re.match(r"^m(32|64|80)fp$|^m(16|32|64)int$|^m80(bcd|dec)$|^m2byte$", o):
+            # x87 memory operands: their size isn't the operand size
+            f.operands.append(Operand("mem", 0, text=o))
+            f.hints["x87mem"] = o
+        elif re.match(r"^m(14/28|94/108)byte$", o):
+            f.operands.append(Operand("mem", 0, text=o))
+            f.hints["x87env"] = o
         elif o == "rasz":
             f.operands.append(Operand("reg", 0, text=o))
         elif o in ("m",) or re.match(r"^m\d+&\d+$", o):
@@ -367,6 +389,14 @@ def make_forms(page, cfg):
             # RET far (CB, CA iw): one row for every size -- 66h 16, the
             # default 32, REX.W 64
             for sz in (16, 32, 64):
+                g = Form(**{**f.__dict__, "operands": [Operand(**o.__dict__) for o in f.operands],
+                            "imm": list(f.imm), "hints": dict(f.hints), "spec": {}})
+                g.osz = sz
+                forms.append(g)
+        elif ok64 and "x87env" in f.hints:
+            # FLDENV/FSTENV/FSAVE/FRSTOR: 14/94-byte images at operand size
+            # 16, 28/108-byte at 32 (REX.W doesn't change it)
+            for sz in (16, 32):
                 g = Form(**{**f.__dict__, "operands": [Operand(**o.__dict__) for o in f.operands],
                             "imm": list(f.imm), "hints": dict(f.hints), "spec": {}})
                 g.osz = sz

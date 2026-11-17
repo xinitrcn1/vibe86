@@ -1,0 +1,12 @@
+# MONITOR—Set Up Monitor Address -- override
+# The manual's Operation is prose ("MONITOR sets up an address range for
+# the monitor hardware using the content of EAX (RAX in 64-bit mode) as an
+# effective address"). v1 has no monitor hardware (MWAIT returns at once,
+# which the manual allows: "MWAIT ... may exit ... for any reason"), so
+# MONITOR only checks the address as a read through DS (overridable) would:
+# the faults are the manual's (#GP/#SS for the segment, #PF). ECX holds
+# extensions, none defined: #GP(0) if ECX != 0.
+@operation
+IF ECX != 0 THEN #GP(0); FI;
+IF AddressSize = 16 THEN a := AX; ELSE IF AddressSize = 32 THEN a := EAX; ELSE a := RAX; FI;
+tmp := Memory8[DS:a];

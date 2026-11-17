@@ -1,0 +1,9 @@
+# MWAIT—Monitor Wait -- override
+# The manual's Operation is prose about entering an implementation-dependent
+# optimized state until a store to the monitored range or an event; MWAIT
+# "can exit for any reason", which is what v1 does at once (it has no
+# monitor hardware). ECX bit 0 (treat masked interrupts as break events) is
+# the only extension v1 accepts; others #GP(0) (Intel SDM Vol. 2B, MWAIT,
+# Table 4-11).
+@operation
+IF (ECX AND FFFFFFFEH) != 0 THEN #GP(0); FI;

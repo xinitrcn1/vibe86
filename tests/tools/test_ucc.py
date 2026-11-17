@@ -253,7 +253,7 @@ class Table:
             self.attr.append((m.group(1).replace("_", ""), f))
         self.modrm = [m.group(1).replace("_", "") for m in re.finditer(r"11'b([01?_]+): return 1'b1;", text)]
         self.entry = [(m.group(1).replace("_", ""), m.group(2))
-                      for m in re.finditer(r"24'b([01?_]+): return \d+'d\d+;\s*// (.*)", text)]
+                      for m in re.finditer(r"27'b([01?_]+): return \d+'d\d+;\s*// (.*)", text)]
         self.uaddr_w = int(re.search(r"localparam int UADDR_W = (\d+);", text).group(1))
         self.urom_n = int(re.search(r"localparam int UROM_N = (\d+);", text).group(1))
 
@@ -326,7 +326,7 @@ class Table:
         mem = int((at["modrm"] and (modrm >> 6) != 3) or bool(at["moffs"]))
         sub90 = int(mp == 0 and opc == 0x90 and not (rex and rex & 1))
         mode2 = {0: 0, 1: 1, 2: 2, 3: 3}[mode]
-        key = f"{sub90}{mode2:02b}{mp:02b}{base:08b}{digit:03b}{pk:02b}{osz:02b}{mem}{asz:02b}{ssz}"
+        key = f"{sub90}{mode2:02b}{mp:02b}{base:08b}{digit:03b}{pk:02b}{osz:02b}{mem}{asz:02b}{ssz}{modrm & 7:03b}"
         for p, name in self.entry:
             if self.match(p, key):
                 return name
