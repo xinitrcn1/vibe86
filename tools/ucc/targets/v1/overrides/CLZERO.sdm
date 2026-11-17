@@ -1,0 +1,23 @@
+# CLZERO—Zero Cache Line (AMD; not in the Intel SDM)
+# AMD64 Architecture Programmer's Manual Vol. 3 (pub. 24594), "CLZERO":
+# 'clears the cache line specified by the logical address in rAX' (the
+# address size's rAX, in DS), aligned down to the line (64 bytes, CPUID
+# 8000_0008h:EBX[0]); it faults as a store would. v1 has no caches: eight
+# 8-byte stores (one line is one DRAM burst at the die's controller).
+@opcodes
+0F 01 FC | CLZERO | ZO | Valid | Valid
+@encoding
+ZO | N/A | N/A | N/A | N/A
+@operation
+a := RAX;
+IF AddressSize = 16 THEN a := a AND FFFFH; FI;
+IF AddressSize = 32 THEN a := a AND FFFFFFFFH; FI;
+a := a AND FFFFFFFFFFFFFFC0H;
+i := 0;
+WHILE i < 64
+DO
+    Memory64[DS:a + i] := 0;
+    i := i + 8;
+OD;
+@flags
+None.

@@ -1,7 +1,16 @@
 # RDPMC—Read Performance-Monitoring Counters -- override
-# 'EDX:EAX := PMC[ECX]' with #GP(0) at CPL > 0 unless CR4.PCE = 1, and for
-# a counter that doesn't exist. v1 implements none of the core counters
-# (PERFCORE is reported 0 in CPUID), so every index raises #GP(0).
+# 'EDX:EAX := PMC[ECX]' (Intel SDM Vol. 2; AMD64 APM Vol. 3 RDPMC): #GP(0)
+# at CPL > 0 unless CR4.PCE = 1, and for a counter that doesn't exist. v1
+# has the six AMD core counters (PERFCORE: AMD64 APM Vol. 2 13.2.1), 48 bits.
 @operation
 IF CPL > 0 AND CR4.PCE = 0 THEN #GP(0); FI;
-#GP(0);
+IF ECX = 0 THEN tmp := PERF_CTR0;
+ELSE IF ECX = 1 THEN tmp := PERF_CTR1;
+ELSE IF ECX = 2 THEN tmp := PERF_CTR2;
+ELSE IF ECX = 3 THEN tmp := PERF_CTR3;
+ELSE IF ECX = 4 THEN tmp := PERF_CTR4;
+ELSE IF ECX = 5 THEN tmp := PERF_CTR5;
+ELSE #GP(0);
+FI;
+EAX := tmp;
+EDX := SHR(tmp, 32);

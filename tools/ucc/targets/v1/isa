@@ -180,3 +180,6 @@ PDEP
 PEXT
 RORX
 SARX_SHLX_SHRX
+# AMD: CLZERO, the 3DNow! PREFETCH group (APM Vol. 3)
+CLZERO
+PREFETCH           memonly

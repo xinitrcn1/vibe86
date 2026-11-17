@@ -1,17 +1,41 @@
 # WRMSR—Write to Model Specific Register -- override
-# 'MSR[ECX] := EDX:EAX;' for the MSRs v1 has; others raise #GP(0).
+# 'MSR[ECX] := EDX:EAX;' for the MSRs v1 has (the list of RDMSR.sdm); #GP(0)
+# at CPL > 0, for other MSRs, read-only ones (MTRRCAP, MCG_CAP), reserved
+# bits, invalid memory types (PAT, MTRRs: Vol. 3A 12.11, 12.12), non-
+# canonical addresses (FS/GS bases, LSTAR, CSTAR, SYSENTER_ESP/EIP), EFER.LME
+# changing with paging on, and a nonzero write to MC0_STATUS.
 @operation
+IF CPL > 0 THEN #GP(0); FI;
 tmp := SHL(ZeroExtend(EDX), 32) OR ZeroExtend(EAX);
-IF ECX = C0000080H THEN WriteSpecial(EFER, tmp);
-ELSE IF ECX = C0000100H THEN WriteSpecial(FS_BASE, tmp);
-ELSE IF ECX = C0000101H THEN WriteSpecial(GS_BASE, tmp);
-ELSE IF ECX = C0000102H THEN WriteSpecial(KERNEL_GS_BASE, tmp);
-ELSE IF ECX = C0000081H THEN WriteSpecial(STAR, tmp);
-ELSE IF ECX = C0000082H THEN WriteSpecial(LSTAR, tmp);
-ELSE IF ECX = C0000083H THEN WriteSpecial(CSTAR, tmp);
-ELSE IF ECX = C0000084H THEN WriteSpecial(FMASK, tmp);
-ELSE IF ECX = C0000103H THEN WriteSpecial(TSC_AUX, tmp);
-ELSE IF ECX = 10H THEN WriteSpecial(TSC, tmp);
+IF ECX = C0000080H THEN
+(* SCE, LME, NXE (LMA is read-only); LME can't change while paging is on *)
+    IF (tmp AND FFFFFFFFFFFFF2FEH) != 0 THEN #GP(0); FI;
+    IF CR0.PG = 1 AND ((tmp XOR EFER) AND 100H) != 0 THEN #GP(0); FI;
+    WriteSpecial(EFER, tmp);
+ELSE IF ECX = 0C0000100H THEN
+    IF NOT Canonical(tmp) THEN #GP(0); FI;
+    WriteSpecial(FS_BASE, tmp);
+ELSE IF ECX = 0C0000101H THEN
+    IF NOT Canonical(tmp) THEN #GP(0); FI;
+    WriteSpecial(GS_BASE, tmp);
+ELSE IF ECX = 0C0000102H THEN
+    IF NOT Canonical(tmp) THEN #GP(0); FI;
+    WriteSpecial(KERNEL_GS_BASE, tmp);
+ELSE IF ECX = 0C0000082H THEN
+    IF NOT Canonical(tmp) THEN #GP(0); FI;
+    WriteSpecial(LSTAR, tmp);
+ELSE IF ECX = 0C0000083H THEN
+    IF NOT Canonical(tmp) THEN #GP(0); FI;
+    WriteSpecial(CSTAR, tmp);
+ELSE IF ECX = 175H THEN
+    IF NOT Canonical(tmp) THEN #GP(0); FI;
+    WriteSpecial(SYSENTER_ESP, tmp);
+ELSE IF ECX = 176H THEN
+    IF NOT Canonical(tmp) THEN #GP(0); FI;
+    WriteSpecial(SYSENTER_EIP, tmp);
+ELSE IF ECX = 0C0000081H THEN WriteSpecial(STAR, tmp);
+ELSE IF ECX = 0C0000084H THEN WriteSpecial(FMASK, tmp);
+ELSE IF ECX = 0C0000103H THEN WriteSpecial(TSC_AUX, tmp);
 ELSE IF ECX = 1BH THEN
     (* IA32_APIC_BASE (Intel SDM Vol. 3A 12.4.4, 12.12.5 "x2APIC State
        Transitions"): reserved bits 7:0, 9 and 63:52 (MAXPHYADDR 52) #GP; BSP
@@ -26,8 +50,154 @@ ELSE IF ECX = 1BH THEN
     IF was = 3 AND now = 2 THEN #GP(0); FI;
     IF was = 0 AND now = 3 THEN #GP(0); FI;
     WriteSpecial(APIC_BASE, new);
-ELSE IF ECX = 277H THEN WriteSpecial(PAT, tmp);
 ELSE IF ECX = 1A0H THEN WriteSpecial(MISC_ENABLE, tmp);
+ELSE IF ECX = 174H THEN WriteSpecial(SYSENTER_CS, tmp);
+ELSE IF ECX = 17BH THEN WriteSpecial(MCG_CTL, tmp);
+ELSE IF ECX = 400H THEN WriteSpecial(MC0_CTL, tmp);
+ELSE IF ECX = 402H THEN WriteSpecial(MC0_ADDR, tmp);
+ELSE IF ECX = 403H THEN WriteSpecial(MC0_MISC, tmp);
+ELSE IF ECX = 0C0010140H THEN WriteSpecial(OSVW_ID_LENGTH, tmp);
+ELSE IF ECX = 0C0010141H THEN WriteSpecial(OSVW_STATUS, tmp);
+ELSE IF ECX = 10H THEN
+(* the TSC: IA32_TSC_ADJUST follows the change (Vol. 3B 18.17.3) *)
+    WriteSpecial(TSC_ADJUST, TSC_ADJUST + (tmp - TSC));
+    WriteSpecial(TSC, tmp);
+ELSE IF ECX = 3BH THEN
+(* IA32_TSC_ADJUST: the TSC moves by the change *)
+    WriteSpecial(TSC, TSC + (tmp - TSC_ADJUST));
+    WriteSpecial(TSC_ADJUST, tmp);
+ELSE IF ECX = 277H THEN
+    IF ValidMemType8(tmp, 1) = 0 THEN #GP(0); FI;
+    WriteSpecial(PAT, tmp);
+ELSE IF ECX = 2FFH THEN
+(* MTRRdefType: type, FE (10), E (11) *)
+    IF (tmp AND FFFFFFFFFFFFF300H) != 0 OR ValidMemType(tmp AND FFH) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_DEF_TYPE, tmp);
+ELSE IF ECX = 250H THEN
+    IF ValidMemType8(tmp, 0) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_FIX64K_00000, tmp);
+ELSE IF ECX = 258H THEN
+    IF ValidMemType8(tmp, 0) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_FIX16K_80000, tmp);
+ELSE IF ECX = 259H THEN
+    IF ValidMemType8(tmp, 0) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_FIX16K_A0000, tmp);
+ELSE IF ECX = 268H THEN
+    IF ValidMemType8(tmp, 0) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_FIX4K_C0000, tmp);
+ELSE IF ECX = 269H THEN
+    IF ValidMemType8(tmp, 0) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_FIX4K_C8000, tmp);
+ELSE IF ECX = 26AH THEN
+    IF ValidMemType8(tmp, 0) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_FIX4K_D0000, tmp);
+ELSE IF ECX = 26BH THEN
+    IF ValidMemType8(tmp, 0) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_FIX4K_D8000, tmp);
+ELSE IF ECX = 26CH THEN
+    IF ValidMemType8(tmp, 0) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_FIX4K_E0000, tmp);
+ELSE IF ECX = 26DH THEN
+    IF ValidMemType8(tmp, 0) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_FIX4K_E8000, tmp);
+ELSE IF ECX = 26EH THEN
+    IF ValidMemType8(tmp, 0) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_FIX4K_F0000, tmp);
+ELSE IF ECX = 26FH THEN
+    IF ValidMemType8(tmp, 0) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_FIX4K_F8000, tmp);
+ELSE IF ECX = 200H THEN
+(* PHYSBASE: type, base[51:12] *)
+    IF (tmp AND FFF0000000000F00H) != 0 OR ValidMemType(tmp AND FFH) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_PHYSBASE0, tmp);
+ELSE IF ECX = 201H THEN
+(* PHYSMASK: V (11), mask[51:12] *)
+    IF (tmp AND FFF00000000007FFH) != 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_PHYSMASK0, tmp);
+ELSE IF ECX = 202H THEN
+(* PHYSBASE: type, base[51:12] *)
+    IF (tmp AND FFF0000000000F00H) != 0 OR ValidMemType(tmp AND FFH) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_PHYSBASE1, tmp);
+ELSE IF ECX = 203H THEN
+(* PHYSMASK: V (11), mask[51:12] *)
+    IF (tmp AND FFF00000000007FFH) != 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_PHYSMASK1, tmp);
+ELSE IF ECX = 204H THEN
+(* PHYSBASE: type, base[51:12] *)
+    IF (tmp AND FFF0000000000F00H) != 0 OR ValidMemType(tmp AND FFH) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_PHYSBASE2, tmp);
+ELSE IF ECX = 205H THEN
+(* PHYSMASK: V (11), mask[51:12] *)
+    IF (tmp AND FFF00000000007FFH) != 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_PHYSMASK2, tmp);
+ELSE IF ECX = 206H THEN
+(* PHYSBASE: type, base[51:12] *)
+    IF (tmp AND FFF0000000000F00H) != 0 OR ValidMemType(tmp AND FFH) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_PHYSBASE3, tmp);
+ELSE IF ECX = 207H THEN
+(* PHYSMASK: V (11), mask[51:12] *)
+    IF (tmp AND FFF00000000007FFH) != 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_PHYSMASK3, tmp);
+ELSE IF ECX = 208H THEN
+(* PHYSBASE: type, base[51:12] *)
+    IF (tmp AND FFF0000000000F00H) != 0 OR ValidMemType(tmp AND FFH) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_PHYSBASE4, tmp);
+ELSE IF ECX = 209H THEN
+(* PHYSMASK: V (11), mask[51:12] *)
+    IF (tmp AND FFF00000000007FFH) != 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_PHYSMASK4, tmp);
+ELSE IF ECX = 20AH THEN
+(* PHYSBASE: type, base[51:12] *)
+    IF (tmp AND FFF0000000000F00H) != 0 OR ValidMemType(tmp AND FFH) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_PHYSBASE5, tmp);
+ELSE IF ECX = 20BH THEN
+(* PHYSMASK: V (11), mask[51:12] *)
+    IF (tmp AND FFF00000000007FFH) != 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_PHYSMASK5, tmp);
+ELSE IF ECX = 20CH THEN
+(* PHYSBASE: type, base[51:12] *)
+    IF (tmp AND FFF0000000000F00H) != 0 OR ValidMemType(tmp AND FFH) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_PHYSBASE6, tmp);
+ELSE IF ECX = 20DH THEN
+(* PHYSMASK: V (11), mask[51:12] *)
+    IF (tmp AND FFF00000000007FFH) != 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_PHYSMASK6, tmp);
+ELSE IF ECX = 20EH THEN
+(* PHYSBASE: type, base[51:12] *)
+    IF (tmp AND FFF0000000000F00H) != 0 OR ValidMemType(tmp AND FFH) = 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_PHYSBASE7, tmp);
+ELSE IF ECX = 20FH THEN
+(* PHYSMASK: V (11), mask[51:12] *)
+    IF (tmp AND FFF00000000007FFH) != 0 THEN #GP(0); FI;
+    WriteSpecial(MTRR_PHYSMASK7, tmp);
+ELSE IF ECX = 17AH THEN
+(* MCG_STATUS: RIPV, EIPV, MCIP *)
+    IF (tmp AND FFFFFFFFFFFFFFF8H) != 0 THEN #GP(0); FI;
+    WriteSpecial(MCG_STATUS, tmp);
+ELSE IF ECX = 401H THEN
+(* MCi_STATUS: only 0 may be written (Vol. 3B 17.3.2.2) *)
+    IF tmp != 0 THEN #GP(0); FI;
+    WriteSpecial(MC0_STATUS, 0);
+ELSE IF ECX = C0010200H THEN WriteSpecial(PERF_CTL0, tmp);
+ELSE IF ECX = C0010000H THEN WriteSpecial(PERF_CTL0, tmp);
+ELSE IF ECX = C0010201H THEN WriteSpecial(PERF_CTR0, tmp AND FFFFFFFFFFFFH);
+ELSE IF ECX = C0010004H THEN WriteSpecial(PERF_CTR0, tmp AND FFFFFFFFFFFFH);
+ELSE IF ECX = C0010202H THEN WriteSpecial(PERF_CTL1, tmp);
+ELSE IF ECX = C0010001H THEN WriteSpecial(PERF_CTL1, tmp);
+ELSE IF ECX = C0010203H THEN WriteSpecial(PERF_CTR1, tmp AND FFFFFFFFFFFFH);
+ELSE IF ECX = C0010005H THEN WriteSpecial(PERF_CTR1, tmp AND FFFFFFFFFFFFH);
+ELSE IF ECX = C0010204H THEN WriteSpecial(PERF_CTL2, tmp);
+ELSE IF ECX = C0010002H THEN WriteSpecial(PERF_CTL2, tmp);
+ELSE IF ECX = C0010205H THEN WriteSpecial(PERF_CTR2, tmp AND FFFFFFFFFFFFH);
+ELSE IF ECX = C0010006H THEN WriteSpecial(PERF_CTR2, tmp AND FFFFFFFFFFFFH);
+ELSE IF ECX = C0010206H THEN WriteSpecial(PERF_CTL3, tmp);
+ELSE IF ECX = C0010003H THEN WriteSpecial(PERF_CTL3, tmp);
+ELSE IF ECX = C0010207H THEN WriteSpecial(PERF_CTR3, tmp AND FFFFFFFFFFFFH);
+ELSE IF ECX = C0010007H THEN WriteSpecial(PERF_CTR3, tmp AND FFFFFFFFFFFFH);
+ELSE IF ECX = C0010208H THEN WriteSpecial(PERF_CTL4, tmp);
+ELSE IF ECX = C0010209H THEN WriteSpecial(PERF_CTR4, tmp AND FFFFFFFFFFFFH);
+ELSE IF ECX = C001020AH THEN WriteSpecial(PERF_CTL5, tmp);
+ELSE IF ECX = C001020BH THEN WriteSpecial(PERF_CTR5, tmp AND FFFFFFFFFFFFH);
 ELSE IF (ECX >= 800H AND ECX <= 8FFH) OR ECX = 6E0H THEN
     (* x2APIC registers, IA32_TSC_DEADLINE: #GP if not legal *)
     ApicWrite(ECX, tmp);

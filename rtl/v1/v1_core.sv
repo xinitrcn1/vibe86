@@ -206,6 +206,7 @@ module v1_core
   logic        smi_pend;
   logic        init_pend;       // INIT from the local APIC, taken at an instruction boundary
   logic        mce_pend;        // a machine check from the uncore (MCERR): Intel SDM Vol. 3A 17.10
+  logic        mce_twice;       // MCG_STATUS.MCIP was already set
   // debug (JTAG debug module): halted in S_DEBUG at an instruction boundary;
   // a step runs one instruction (dbg_stepping) and halts after it retires
   logic        dbg_stepping, dbg_stepped;
@@ -962,6 +963,7 @@ module v1_core
     nmi_pend <= 1'b0;
     smi_pend <= 1'b0;
     mce_pend <= 1'b0;
+    mce_twice <= 1'b0;
     shadow_set <= 1'b0;
     int_shadow <= 1'b0;
     ucount <= '0;
@@ -1023,9 +1025,29 @@ module v1_core
       cr8_wr <= 1'b0;
       if (mce_valid && mce_type == 2'd2) begin
         // an uncorrected error (type 2); corrected ones (1) are only counted
-        // by the uncore. The address is kept for software (special MC_ADDR)
+        // by the uncore. Logged in MCA bank 0 (Intel SDM Vol. 3B 17.3.2):
+        // MC0_STATUS VAL | OVER (an earlier error unread) | UC | EN | ADDRV,
+        // MCA error code 009Fh (a memory controller error, generic: the
+        // "Compound Error Codes" of Vol. 3B 17.9, 0000 0000 1MMM CCCC); MC0_ADDR;
+        // MCG_STATUS RIPV | MCIP (the restart RIP is the next instruction)
         mce_pend <= 1'b1;
-        sp[SP_MC_ADDR[7:0]] <= mce_addr;
+        mce_twice <= sp[SP_MCG_STATUS[7:0]][2];
+        sp[SP_MC0_ADDR[7:0]] <= mce_addr;
+        sp[SP_MC0_STATUS[7:0]] <= {1'b1, sp[SP_MC0_STATUS[7:0]][63], 1'b1, 1'b1, 1'b0, 1'b1,
+                                    42'b0, 16'h009F};
+        sp[SP_MCG_STATUS[7:0]] <= 64'h5;
+      end
+      // the AMD core performance counters (AMD64 APM Vol. 2 13.2.1; PERF_CTLn
+      // = C001_0200 + 2n, PERF_CTRn = + 1): EN (22), OS (17) / USR (16) by
+      // CPL; events 76h (cycles not halted) and C0h (retired instructions);
+      // 48-bit counters
+      for (int i = 0; i < 6; i++) begin
+        logic [63:0] c;
+        logic run;
+        c = sp[8'(SP_PERF_CTL0 + i)];
+        run = c[22] && ((cpl == 2'd3) ? c[16] : c[17]) && c[35:32] == 4'h0;
+        if (run && ((c[7:0] == 8'h76 && st != S_HALT) || (c[7:0] == 8'hC0 && rt_valid)))
+          sp[8'(SP_PERF_CTR0 + i)] <= (sp[8'(SP_PERF_CTR0 + i)] + 64'd1) & 64'h0000_FFFF_FFFF_FFFF;
       end
       shutdown <= (st == S_SHUTDOWN);
       halted <= (st == S_HALT || st == S_WFS);   // an AP waiting for SIPI is idle too
@@ -1781,7 +1803,9 @@ module v1_core
           // with CR4.MCE set, else the processor shuts down (Intel SDM Vol. 3A
           // 17.10 "Machine-Check Initialization", Table 7-2 priority 1)
           mce_pend <= 1'b0;
-          if (sp[SP_CR4[7:0]][6]) raise(8'd18, 1'b0, 32'd0, 1'b0, 1'b0, 1'b1);
+          // a machine check while MCIP is set (the handler hasn't cleared it)
+          // shuts the processor down (Vol. 3B 17.3.1.2)
+          if (sp[SP_CR4[7:0]][6] && !mce_twice) raise(8'd18, 1'b0, 32'd0, 1'b0, 1'b0, 1'b1);
           else begin
             st <= S_SHUTDOWN;
             shutdown_rip <= rip;

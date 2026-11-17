@@ -1403,6 +1403,16 @@ class Lowerer:
             w = opsize(max(fixed) if fixed else 64)
             if a.kind == "pair" or b.kind == "pair":
                 raise LowerError(f"compare of a pair: {e}")
+            if a.kind == "k" and b.kind == "k":
+                # two constants (an inlined function's constant argument): fold
+                m = (1 << w) - 1
+                x, y = a.k & m, b.k & m
+                r = {"=": x == y, "!=": x != y, "<": x < y, ">": x > y, "<=": x <= y,
+                     ">=": x >= y}.get(e.op)
+                if r is not None:
+                    if r == when:
+                        self.E("JMP", imm=target)
+                    return
             (sa, sb), imm = self.srcs(a, b, w=w)
             self.E("CMP", w, a=sa, b=sb, imm=imm)
             c = self.CMPS[e.op]
@@ -1671,6 +1681,7 @@ class Lowerer:
                 v = self.eval(s.src, self.f.osz)
                 if v.kind == "mem":
                     v = self.load(v)
+                    return
                 self.vars["RESULT"] = v
                 # keep the result's temp alive past this statement
                 if v.kind == "sel" and v.sel in self.stmt_temps:

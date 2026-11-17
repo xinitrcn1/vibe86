@@ -1,0 +1,19 @@
+# PREFETCH—Prefetch L1 Data-Cache Line (AMD 3DNow! prefetch; not in the Intel SDM)
+# AMD64 Architecture Programmer's Manual Vol. 3, "PREFETCH / PREFETCHW":
+# 0F 0D /0 is PREFETCH, /1 PREFETCHW (its own page), and the other ModRM.reg
+# encodings are reserved hints that execute as PREFETCH. A prefetch never
+# faults and has no architectural effect (v1 has no caches); the register
+# form is #UD (memory operands only). CPUID 8000_0001h:ECX[8] 3DNowPrefetch.
+@opcodes
+0F 0D /0 | PREFETCH m8 | M | Valid | Valid
+0F 0D /2 | PREFETCH m8 | M | Valid | Valid
+0F 0D /3 | PREFETCH m8 | M | Valid | Valid
+0F 0D /4 | PREFETCH m8 | M | Valid | Valid
+0F 0D /5 | PREFETCH m8 | M | Valid | Valid
+0F 0D /6 | PREFETCH m8 | M | Valid | Valid
+0F 0D /7 | PREFETCH m8 | M | Valid | Valid
+@encoding
+M | ModRM:r/m (r) | N/A | N/A | N/A
+@operation
+@flags
+None.

@@ -233,7 +233,7 @@ SPECIAL = {
     "U_CET": 47, "S_CET": 48, "PL0_SSP": 49, "PL1_SSP": 50, "PL2_SSP": 51,
     "PL3_SSP": 52, "ISST_ADDR": 53, "SSP": 54,
     "SMBASE": 55,      # SMRAM state save base (AMD APM Vol. 2 10.2.3); reset 3_0000h
-    "MC_ADDR": 15,     # the physical address of the last uncorrected machine check (uncore ECC)
+    "MC0_ADDR": 15,    # MCA bank 0 (the uncore's DRAM ECC): MC0_ADDR (402h)
     "SMM": 63,         # bit 0: in SMM (SMIACT#, NMIs and SMIs held); bit 1: SMI taken in HLT
     "CPL": 56,
     "FAULT_RIP": 57,   # delivery: RIP to push (the faulting one, or the next for traps)
@@ -248,6 +248,22 @@ SPECIAL = {
     # SVM state (VMCB pointer, host save area) starts at 128
     "VM_HSAVE_PA": 128, "VMCB": 129,
 }
+# MTRRs (Intel SDM Vol. 3A 12.11; v1 has no caches: storage and #GP rules only),
+# MCA (Vol. 3B 17.3: one bank, the uncore's DRAM ECC), AMD OSVW (C001_0140/1)
+# and the AMD core performance counters (APM Vol. 2 13.2: C001_0200-020B)
+SPECIAL["MTRR_DEF_TYPE"] = 200
+for i, n in enumerate(["FIX64K_00000", "FIX16K_80000", "FIX16K_A0000"] +
+                      [f"FIX4K_{a:05X}" for a in range(0xC0000, 0x100000, 0x8000)]):
+    SPECIAL[f"MTRR_{n}"] = 201 + i                      # 201-211
+for i in range(8):
+    SPECIAL[f"MTRR_PHYSBASE{i}"] = 212 + 2 * i          # 212-227
+    SPECIAL[f"MTRR_PHYSMASK{i}"] = 213 + 2 * i
+SPECIAL.update({"MCG_STATUS": 228, "MCG_CTL": 229, "MC0_CTL": 230, "MC0_STATUS": 231,
+                "MC0_MISC": 233, "OSVW_ID_LENGTH": 234, "OSVW_STATUS": 235})
+for i in range(6):
+    SPECIAL[f"PERF_CTL{i}"] = 236 + i                   # 236-241
+    SPECIAL[f"PERF_CTR{i}"] = 242 + i                   # 242-247
+
 for i, s in enumerate(["ES", "CS", "SS", "DS", "FS", "GS", "LDTR", "TR"]):
     for j, part in enumerate(["SEL", "BASE", "LIMIT", "ATTR"]):
         SPECIAL[f"{s}_{part}"] = 64 + 4 * i + j

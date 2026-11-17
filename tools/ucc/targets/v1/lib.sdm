@@ -342,3 +342,23 @@ IF CR0.PE = 1 AND (CPL > IOPL OR RFLAGS.VM = 1) THEN
     FI;
 FI;
 RESULT := ok;
+
+@function ValidMemType(T)
+(* a memory type the MTRRs accept: UC 0, WC 1, WT 4, WP 5, WB 6 (Intel SDM *)
+(* Vol. 3A 12.3, Table 12-8); 2, 3 and 7 and above are reserved *)
+RESULT := 0;
+IF T = 0 OR T = 1 OR T = 4 OR T = 5 OR T = 6 THEN RESULT := 1; FI;
+
+@function ValidMemType8(V, UCMINUS)
+(* eight memory types, one per byte (fixed-range MTRRs; IA32_PAT with *)
+(* UCMINUS = 1 also accepts 7, UC-: Vol. 3A 12.12.2) *)
+RESULT := 1;
+i := 0;
+WHILE i < 64
+DO
+    t := SHR(V, i) AND FFH;
+    IF ValidMemType(t) = 0 AND NOT (UCMINUS = 1 AND t = 7) THEN RESULT := 0; FI;
+    i := i + 8;
+OD;
+
+

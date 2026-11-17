@@ -47,13 +47,13 @@ feature = [
   { leaf = 0x1, reg = "edx", bit = 4,  name = "TSC", since = "v1" },
   { leaf = 0x1, reg = "edx", bit = 5,  name = "MSR", since = "v1" },
   { leaf = 0x1, reg = "edx", bit = 6,  name = "PAE", since = "v1" },
-  { leaf = 0x1, reg = "edx", bit = 7,  name = "MCE" },
+  { leaf = 0x1, reg = "edx", bit = 7,  name = "MCE", since = "v1" },
   { leaf = 0x1, reg = "edx", bit = 8,  name = "CX8", since = "v1" },
   { leaf = 0x1, reg = "edx", bit = 9,  name = "APIC", since = "v1" },
   { leaf = 0x1, reg = "edx", bit = 11, name = "SEP", since = "v1" },
-  { leaf = 0x1, reg = "edx", bit = 12, name = "MTRR" },
+  { leaf = 0x1, reg = "edx", bit = 12, name = "MTRR", since = "v1" },
   { leaf = 0x1, reg = "edx", bit = 13, name = "PGE", since = "v1" },
-  { leaf = 0x1, reg = "edx", bit = 14, name = "MCA" },
+  { leaf = 0x1, reg = "edx", bit = 14, name = "MCA", since = "v1" },
   { leaf = 0x1, reg = "edx", bit = 15, name = "CMOV", since = "v1" },
   { leaf = 0x1, reg = "edx", bit = 16, name = "PAT", since = "v1" },
   { leaf = 0x1, reg = "edx", bit = 17, name = "PSE36" },
@@ -64,12 +64,12 @@ feature = [
   { leaf = 0x1, reg = "edx", bit = 26, name = "SSE2" },
   { leaf = 0x6, reg = "eax", bit = 2,  name = "ARAT", since = "v1" },
   { leaf = 0x7, reg = "ebx", bit = 0,  name = "FSGSBASE", since = "v1" },
-  { leaf = 0x7, reg = "ebx", bit = 1,  name = "TSC_ADJUST" },
+  { leaf = 0x7, reg = "ebx", bit = 1,  name = "TSC_ADJUST", since = "v1" },
   { leaf = 0x7, reg = "ebx", bit = 3,  name = "BMI1", since = "v1" },
   { leaf = 0x7, reg = "ebx", bit = 5,  name = "AVX2" },
   { leaf = 0x7, reg = "ebx", bit = 7,  name = "SMEP", since = "v1" },
   { leaf = 0x7, reg = "ebx", bit = 8,  name = "BMI2", since = "v1" },
-  { leaf = 0x7, reg = "ebx", bit = 9,  name = "ERMS" },
+  { leaf = 0x7, reg = "ebx", bit = 9,  name = "ERMS", since = "v1" },
   { leaf = 0x7, reg = "ebx", bit = 10, name = "INVPCID", since = "v1" },
   { leaf = 0x7, reg = "ebx", bit = 16, name = "AVX512F" },
   { leaf = 0x7, reg = "ebx", bit = 17, name = "AVX512DQ" },
@@ -98,7 +98,7 @@ feature = [
   { leaf = 0x7, reg = "ecx", bit = 22, name = "RDPID", since = "v1" },
   { leaf = 0x7, reg = "ecx", bit = 27, name = "MOVDIRI", since = "v1" },
   { leaf = 0x7, reg = "ecx", bit = 28, name = "MOVDIR64B", since = "v1" },
-  { leaf = 0x7, reg = "edx", bit = 4,  name = "FSRM" },
+  { leaf = 0x7, reg = "edx", bit = 4,  name = "FSRM", since = "v1" },
   { leaf = 0x7, reg = "edx", bit = 8,  name = "AVX512_VP2INTERSECT" },
   { leaf = 0x7, reg = "edx", bit = 23, name = "AVX512_FP16" },
   { leaf = 0x7, sub = 1, reg = "eax", bit = 5,  name = "AVX512_BF16" },
@@ -111,10 +111,10 @@ feature = [
   { leaf = 0x8000_0001, reg = "ecx", bit = 5,  name = "ABM", since = "v1" },
   { leaf = 0x8000_0001, reg = "ecx", bit = 6,  name = "SSE4A" },
   { leaf = 0x8000_0001, reg = "ecx", bit = 7,  name = "MISALIGNSSE" },
-  { leaf = 0x8000_0001, reg = "ecx", bit = 8,  name = "3DNOWPREFETCH" },
-  { leaf = 0x8000_0001, reg = "ecx", bit = 9,  name = "OSVW" },
-  { leaf = 0x8000_0001, reg = "ecx", bit = 22, name = "TOPOEXT" },
-  { leaf = 0x8000_0001, reg = "ecx", bit = 23, name = "PERFCORE" },
+  { leaf = 0x8000_0001, reg = "ecx", bit = 8,  name = "3DNOWPREFETCH", since = "v1" },
+  { leaf = 0x8000_0001, reg = "ecx", bit = 9,  name = "OSVW", since = "v1" },
+  { leaf = 0x8000_0001, reg = "ecx", bit = 22, name = "TOPOEXT", since = "v1" },
+  { leaf = 0x8000_0001, reg = "ecx", bit = 23, name = "PERFCORE", since = "v1" },
   { leaf = 0x8000_0001, reg = "edx", bit = 11, name = "SYSCALL", since = "v1" },
   { leaf = 0x8000_0001, reg = "edx", bit = 20, name = "NX", since = "v1" },
   { leaf = 0x8000_0001, reg = "edx", bit = 22, name = "MMXEXT" },
@@ -122,7 +122,7 @@ feature = [
   { leaf = 0x8000_0001, reg = "edx", bit = 26, name = "PDPE1GB", since = "v1" },
   { leaf = 0x8000_0001, reg = "edx", bit = 27, name = "RDTSCP", since = "v1" },
   { leaf = 0x8000_0001, reg = "edx", bit = 29, name = "LM", since = "v1" },
-  { leaf = 0x8000_0008, reg = "ebx", bit = 0,  name = "CLZERO" },
+  { leaf = 0x8000_0008, reg = "ebx", bit = 0,  name = "CLZERO", since = "v1" },
   { leaf = 0x8000_0021, reg = "eax", bit = 23, name = "AVX512_BMM", verify = true },
   { leaf = 0x8000_0021, reg = "eax", bit = 24, name = "ERAPS", verify = true },
 ]
@@ -179,6 +179,18 @@ leaf = 0xD                               # XSAVE enumeration: zeros until XSAVE 
 sub = 0
 
 [[leaf]]
+
+[[leaf]]
+
+[[leaf]]
+
+[[leaf]]
+leaf = 0x8000_001E                       # TOPOEXT ids: extended APIC id 0, core 0, one thread
+                                         # per core (EBX[15:8] = 0), node 0, one node
+
+[[leaf]]
+leaf = 0x8000_001D                       # TOPOEXT cache properties: subleaf 0 cache type 0,
+sub = 0                                  # i.e. no caches (v1 has none)
 leaf = 0x8000_0021
 
 # Not yet positioned (AMD-defined; check the APM): 8000_0007 EBX
