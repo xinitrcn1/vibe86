@@ -12,8 +12,24 @@ ELSE IF ECX = C0000083H THEN WriteSpecial(CSTAR, tmp);
 ELSE IF ECX = C0000084H THEN WriteSpecial(FMASK, tmp);
 ELSE IF ECX = C0000103H THEN WriteSpecial(TSC_AUX, tmp);
 ELSE IF ECX = 10H THEN WriteSpecial(TSC, tmp);
-ELSE IF ECX = 1BH THEN WriteSpecial(APIC_BASE, tmp);
+ELSE IF ECX = 1BH THEN
+    (* IA32_APIC_BASE (Intel SDM Vol. 3A 12.4.4, 12.12.5 "x2APIC State
+       Transitions"): reserved bits 7:0, 9 and 63:52 (MAXPHYADDR 52) #GP; BSP
+       is read-only; EN:EXTD = 01b is invalid, x2APIC to xAPIC and disabled to
+       x2APIC are not allowed transitions (#GP) *)
+    cur := APIC_BASE;
+    IF (tmp AND FFF00000000002FFH) != 0 THEN #GP(0); FI;
+    new := (tmp AND FFFFFFFFFFFFFEFFH) OR (cur AND 100H);
+    was := SHR(cur, 10) AND 3;
+    now := SHR(new, 10) AND 3;
+    IF now = 1 THEN #GP(0); FI;
+    IF was = 3 AND now = 2 THEN #GP(0); FI;
+    IF was = 0 AND now = 3 THEN #GP(0); FI;
+    WriteSpecial(APIC_BASE, new);
 ELSE IF ECX = 277H THEN WriteSpecial(PAT, tmp);
 ELSE IF ECX = 1A0H THEN WriteSpecial(MISC_ENABLE, tmp);
+ELSE IF (ECX >= 800H AND ECX <= 8FFH) OR ECX = 6E0H THEN
+    (* x2APIC registers, IA32_TSC_DEADLINE: #GP if not legal *)
+    ApicWrite(ECX, tmp);
 ELSE #GP(0);
 FI;

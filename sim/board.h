@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "ddr5.h"
+#include "ioapic.h"
 #include "pcie.h"
 #include "i2c.h"
 #include "pmc.h"
@@ -80,11 +81,11 @@ struct qport {
 };
 
 /* events the board sends to the core, one per cycle (vsim drains them) */
-enum { EV_MSI = 1, EV_NMI, EV_MCE, EV_SMI };
+enum { EV_NMI = 2, EV_MCE, EV_SMI };	/* MSIs go over the I/O link (D-017) */
 struct board_event {
 	int kind;
-	unsigned core;		/* EV_MSI: destination APIC id */
-	unsigned vector;	/* EV_MSI */
+	unsigned core;		/* unused */
+	unsigned vector;	/* unused */
 	unsigned type;		/* EV_MCE: 1 corrected, 2 uncorrected */
 	uint64_t addr;		/* EV_MCE */
 };
@@ -96,6 +97,7 @@ struct board {
 	struct ddr5_mem *ddr5;	/* the DIMMs (the die's DDR5 pins) */
 	uint64_t ram_size;	/* the DRAM's size */
 	struct iod *iod;	/* the I/O die: device DMA goes through it */
+	struct ioapic ioapic;	/* the I/O APIC (D-017) */
 	struct pc pc;		/* the legacy PC devices (pc.h) */
 	uint32_t cf8;		/* PCI configuration address (CF8h) */
 	void (*debugcon)(void *ctx, uint8_t c);

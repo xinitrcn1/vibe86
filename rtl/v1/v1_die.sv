@@ -2,9 +2,15 @@
 // fabric, the memory init engine, four DDR5 subchannel controllers and the
 // I/O link endpoint. Its ports are the die interface (rtl/common/pins.toml,
 // docs/die-interface.md, D-014). The core leaves reset when DRAM is ready.
-module v1_die (
+module v1_die
+  import apic_pkg::*;
+(
 `include "vibe86_die_ports.svh"
 );
+  // the die's cores (D-017: every interface below is per core; the second
+  // core needs the fabric's N-master arbitration and LOCKed accesses, see
+  // docs/decisions.md D-017)
+  localparam int NCORE = 1;
 
   // ------------------------------------------------------------ memory init
   logic        dram_ready, two_ch;
@@ -73,13 +79,78 @@ module v1_die (
     .clk, .rst_n(core_rst_n),
     .bus_req(c_req), .bus_we(c_we), .bus_io(c_io), .bus_addr(c_addr), .bus_size(c_size),
     .bus_wdata(c_wdata), .bus_smm(c_smm), .bus_ack(c_ack), .bus_err(c_err), .bus_rdata(c_rdata),
-    .intr_valid, .intr_vector, .intr_ack, .nmi, .smi,
+    .intr_valid(c_intr[0]), .intr_vector(c_vec[0]), .intr_ack(c_iack[0]),
+    // with the APIC globally disabled (IA32_APIC_BASE.EN = 0) the NMI pin
+    // reaches the core directly (Intel SDM Vol. 3A 12.4.3)
+    .nmi(c_nmi[0] || (nmi && !c_apic_base[0][11])), .smi(smi || c_smi[0]),
+    .is_bsp(1'b1), .apic_id(32'd0), .init(c_init[0]), .sipi(c_sipi[0]), .sipi_vec(c_sipi_vec[0]),
+    .apic_base(c_apic_base[0]), .tsc(c_tsc[0]),
+    .lapic_msr_addr(c_msr_addr[0]), .lapic_msr_wr(c_msr_wr[0]), .lapic_msr_wdata(c_msr_wdata[0]),
+    .lapic_msr_rdata(c_msr_rdata[0]), .lapic_msr_rok(c_msr_rok[0]), .lapic_msr_wok(c_msr_wok[0]),
+    .cr8_wr(c_cr8_wr[0]), .cr8_wdata(c_cr8_wdata[0]), .cr8_rdata(c_cr8_rdata[0]),
     .mce_valid(mce_valid || f_mce_ue), .mce_type(f_mce_ue ? 2'd2 : mce_type),
     .mce_addr(f_mce_ue ? f_mce_addr : mce_addr),
     .dbg_req, .dbg_step, .dbg_halted, .dbg_reg_sel, .dbg_reg_we, .dbg_reg_wdata, .dbg_reg_rdata,
     .rt_valid, .rt_rip, .rt_len, .rt_bytes, .rt_uops,
     .ev_valid, .ev_vector, .ev_has_error, .ev_error, .ev_rip,
     .shutdown, .halted, .shutdown_rip);
+
+  // ------------------------------------------------------------ local APICs
+  // one per core (APIC ID = core index) on the die's APIC bus, which also
+  // carries the MSIs the fabric receives over the I/O link; the 8259's INTR
+  // is every APIC's LINT0 (virtual wire through ExtINT, MP spec 1.4 3.6.2.2)
+  // and the NMI pin their LINT1
+  logic         c_intr [NCORE], c_iack [NCORE], c_nmi [NCORE], c_smi [NCORE];
+  logic         c_init [NCORE], c_sipi [NCORE];
+  logic [7:0]   c_vec [NCORE], c_sipi_vec [NCORE];
+  logic [63:0]  c_apic_base [NCORE], c_tsc [NCORE];
+  logic [31:0]  c_msr_addr [NCORE];
+  logic         c_msr_wr [NCORE], c_msr_rok [NCORE], c_msr_wok [NCORE];
+  logic [63:0]  c_msr_wdata [NCORE], c_msr_rdata [NCORE];
+  logic         c_cr8_wr [NCORE];
+  logic [3:0]   c_cr8_wdata [NCORE], c_cr8_rdata [NCORE];
+  logic         lint0_ack [NCORE];
+  logic [11:4]  la_off;
+  logic [31:0]  la_rdata [NCORE];
+  logic         la_wr;
+  logic [31:0]  la_wdata;
+  logic         ab_src_valid [NCORE], ab_src_ready [NCORE], ab_match [NCORE], ab_accept [NCORE];
+  apic_msg_t    ab_src_msg [NCORE];
+  logic [7:0]   ab_apr [NCORE];
+  logic         ab_valid, msi_valid, msi_ready;
+  apic_msg_t    ab_msg, msi_msg;
+  logic         eoi_valid [NCORE], eoi_ack;
+  logic [7:0]   eoi_vec [NCORE];
+
+  for (genvar k = 0; k < NCORE; k++) begin : g_apic
+    lapic #(.APIC_ID(32'(k))) u_lapic (
+      .clk, .rst_n(core_rst_n),
+      .apic_en(c_apic_base[k][11]), .apic_extd(c_apic_base[k][10]), .tsc(c_tsc[k]),
+      .mmio_off(la_off), .mmio_rdata(la_rdata[k]), .mmio_wr(la_wr && k == 0), .mmio_wdata(la_wdata),
+      .msr_addr(c_msr_addr[k]), .msr_rdata(c_msr_rdata[k]), .msr_rok(c_msr_rok[k]),
+      .msr_wr(c_msr_wr[k]), .msr_wdata(c_msr_wdata[k]), .msr_wok(c_msr_wok[k]),
+      .cr8_wr(c_cr8_wr[k]), .cr8_wdata(c_cr8_wdata[k]), .cr8_rdata(c_cr8_rdata[k]),
+      .lint0(intr_valid), .lint0_vec(intr_vector), .lint0_ack(lint0_ack[k]), .lint1(nmi),
+      .core_intr(c_intr[k]), .core_vec(c_vec[k]), .core_ack(c_iack[k]),
+      .core_nmi(c_nmi[k]), .core_smi(c_smi[k]), .core_init(c_init[k]),
+      .core_sipi(c_sipi[k]), .sipi_vec(c_sipi_vec[k]),
+      .out_valid(ab_src_valid[k]), .out_msg(ab_src_msg[k]), .out_ready(ab_src_ready[k]),
+      .in_valid(ab_valid), .in_msg(ab_msg), .in_match(ab_match[k]), .arb_pri(ab_apr[k]),
+      .in_accept(ab_accept[k]),
+      .eoi_valid(eoi_valid[k]), .eoi_vec(eoi_vec[k]), .eoi_ack(eoi_ack && k == 0));
+  end
+
+  apic_bus #(.N(NCORE)) u_apic_bus (
+    .clk, .rst_n(core_rst_n),
+    .src_valid(ab_src_valid), .src_msg(ab_src_msg), .src_ready(ab_src_ready),
+    .msi_valid, .msi_msg, .msi_ready,
+    .bus_valid(ab_valid), .bus_msg(ab_msg), .match(ab_match), .apr(ab_apr), .accept(ab_accept));
+
+  // INTA to the 8259: the core that took an ExtINT
+  always_comb begin
+    intr_ack = 1'b0;
+    for (int k = 0; k < NCORE; k++) intr_ack |= lint0_ack[k];
+  end
 
   // ------------------------------------------------------------ DRAM
   logic [3:0]   m_valid, m_ready, m_rsp, m_ue, m_ce;
@@ -135,6 +206,8 @@ module v1_die (
     .c_req, .c_we, .c_io, .c_addr, .c_size, .c_wdata, .c_smm, .c_ack, .c_err, .c_rdata,
     .d_req, .d_we, .d_addr, .d_size, .d_wdata, .d_ack, .d_err, .d_rdata,
     .p_req(post_valid), .p_code(post_code), .p_ack(post_ack),
+    .apic_base(c_apic_base[0][51:10]), .la_off, .la_rdata(la_rdata[0]), .la_wr, .la_wdata,
+    .msi_valid, .msi_msg, .msi_ready, .eoi_valid(eoi_valid[0]), .eoi_vec(eoi_vec[0]), .eoi_ack,
     .m_valid, .m_ready, .m_we, .m_off, .m_wdata, .m_be, .m_rsp, .m_rdata, .m_ue,
     .tx_valid(iol_tx_valid), .tx_flit(iol_tx_flit), .tx_ready(iol_tx_ready),
     .rx_valid(iol_rx_valid), .rx_flit(iol_rx_flit), .rx_ready(iol_rx_ready),

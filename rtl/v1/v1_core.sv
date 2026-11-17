@@ -43,6 +43,23 @@ module v1_core
   output logic         intr_ack,
   input  logic         nmi,
   input  logic         smi,
+  // the local APIC (rtl/uncore/lapic.sv, D-017) and the multiprocessor straps
+  input  logic         is_bsp,          // strap: the bootstrap processor (IA32_APIC_BASE.BSP)
+  input  logic [31:0]  apic_id,         // strap: this core's APIC ID (CPUID 1, 0Bh)
+  input  logic         init,            // INIT: reset; wait for SIPI unless the BSP
+  input  logic         sipi,            // start-up IPI (in wait-for-SIPI) and its vector
+  input  logic [7:0]   sipi_vec,
+  output logic [63:0]  apic_base,       // IA32_APIC_BASE (the fabric and the APIC decode it)
+  output logic [63:0]  tsc,
+  output logic [31:0]  lapic_msr_addr,  // RDMSR/WRMSR of 800h-8FFh and 6E0h (the APIC micro-op)
+  output logic         lapic_msr_wr,
+  output logic [63:0]  lapic_msr_wdata,
+  input  logic [63:0]  lapic_msr_rdata,
+  input  logic         lapic_msr_rok,
+  input  logic         lapic_msr_wok,
+  output logic         cr8_wr,          // CR8 is the APIC's TPR[7:4] (SDM Vol. 3A 12.8.6.5)
+  output logic [3:0]   cr8_wdata,
+  input  logic [3:0]   cr8_rdata,
   input  logic         mce_valid,
   input  logic [1:0]   mce_type,
   input  logic [63:0]  mce_addr,
@@ -72,7 +89,7 @@ module v1_core
 
   // ------------------------------------------------------------------ state
 
-  typedef enum logic [2:0] {S_FETCH, S_EXEC, S_HALT, S_SHUTDOWN, S_DEBUG} state_e;
+  typedef enum logic [2:0] {S_FETCH, S_EXEC, S_HALT, S_SHUTDOWN, S_DEBUG, S_WFS} state_e;
   typedef enum logic [3:0] {D_PFX, D_ESC, D_OPC3, D_OPC2, D_MODRM, D_SIB, D_DISP, D_IMM, D_FINISH,
                             D_BUS} dstate_e;
 
@@ -130,6 +147,7 @@ module v1_core
   logic        halt_req;
   logic        nmi_pend;
   logic        smi_pend;
+  logic        init_pend;       // INIT from the local APIC, taken at an instruction boundary
   logic        mce_pend;        // a machine check from the uncore (MCERR): Intel SDM Vol. 3A 17.10
   // debug (JTAG debug module): halted in S_DEBUG at an instruction boundary;
   // a step runs one instruction (dbg_stepping) and halts after it retires
@@ -188,6 +206,13 @@ module v1_core
   wire ssz = (mode != 0) && sp[segi(2, 3)][10];
   assign bus_smm = sp[SP_SMM[7:0]][0];   // SMIACT#
   assign dbg_halted = (st == S_DEBUG);
+  assign apic_base = sp[SP_APIC_BASE[7:0]];
+  assign tsc = sp[SP_TSC[7:0]];
+  // the APIC micro-op: the MSR number in a, the value in b (lapic.sv applies
+  // the write at the clock edge of the cycle that executes it)
+  assign lapic_msr_addr = va[31:0];
+  assign lapic_msr_wdata = vb;
+  assign lapic_msr_wr = st == S_EXEC && u.op == U_APIC && u.x == 4'd1 && lapic_msr_wok;
   // debug register reads: the architectural (committed) state
   always_comb begin
     if (dbg_reg_sel < 8'd16) dbg_reg_rdata = a_gpr[dbg_reg_sel[3:0]];
@@ -640,6 +665,10 @@ module v1_core
       return;
     end
     sp[n] <= v;
+    if (n == SP_CR8[7:0]) begin
+      cr8_wr <= 1'b1;
+      cr8_wdata <= v[3:0];
+    end
     if (n == SP_CR0[7:0]) begin
       // IA-32e mode becomes active when paging is enabled with EFER.LME set
       // (Intel SDM Vol. 3A, 10.8.5 "Initializing IA-32e Mode")
@@ -718,6 +747,15 @@ module v1_core
       shutdown <= 1'b0;
       halted <= 1'b0;
       shutdown_rip <= '0;
+      cr8_wr <= 1'b0;
+      cr8_wdata <= '0;
+      init_pend <= 1'b0;
+      if (!is_bsp) begin
+        // an application processor: not the BSP, and it waits for SIPI (SDM
+        // Vol. 3A 10.4 "Multiple-Processor (MP) Initialization")
+        sp[SP_APIC_BASE[7:0]][8] <= 1'b0;
+        st <= S_WFS;
+      end
       dbg_stepping <= 1'b0;
       dbg_stepped <= 1'b0;
       dbg_resume_halt <= 1'b0;
@@ -729,6 +767,8 @@ module v1_core
       sp[SP_TSC[7:0]] <= sp[SP_TSC[7:0]] + 1;
       if (nmi) nmi_pend <= 1'b1;
       if (smi) smi_pend <= 1'b1;
+      if (init) init_pend <= 1'b1;
+      cr8_wr <= 1'b0;
       if (mce_valid && mce_type == 2'd2) begin
         // an uncorrected error (type 2); corrected ones (1) are only counted
         // by the uncore. The address is kept for software (special MC_ADDR)
@@ -736,7 +776,7 @@ module v1_core
         sp[SP_MC_ADDR[7:0]] <= mce_addr;
       end
       shutdown <= (st == S_SHUTDOWN);
-      halted <= (st == S_HALT);
+      halted <= (st == S_HALT || st == S_WFS);   // an AP waiting for SIPI is idle too
 
       case (st)
         // ------------------------------------------------------------ decode
@@ -1129,7 +1169,17 @@ module v1_core
               U_COMMIT: commit();
               U_RDS: wr(u.dst, 2'd3, (u.imm[7:0] == SP_MODE[7:0]) ?
                          {58'b0, cr0_pg, rf_vm, cs_d, cs_l, efer_lma, cr0_pe} :
-                         (u.imm[7:0] == SP_CPL[7:0]) ? {62'b0, cpl} : sp[u.imm[7:0]]);
+                         (u.imm[7:0] == SP_CPL[7:0]) ? {62'b0, cpl} :
+                         (u.imm[7:0] == SP_CR8[7:0]) ? {60'b0, cr8_rdata} : sp[u.imm[7:0]]);
+              U_APIC: begin
+                // the local APIC's MSRs (x2APIC 800h-8FFh, IA32_TSC_DEADLINE):
+                // read (x = 0) into dst, or write b (x = 1, lapic_msr_wr);
+                // an illegal access is #GP(0) (SDM Vol. 3A 12.12.1.2)
+                if (u.x == 4'd0 ? !lapic_msr_rok : !lapic_msr_wok) begin
+                  raise(8'd13, 1'b1, 32'd0, 1'b0, 1'b0, 1'b0);
+                  hold = 1'b1;
+                end else if (u.x == 4'd0) wr(u.dst, 2'd3, lapic_msr_rdata);
+              end
               U_WRS: begin
                 `ifdef V1_DEBUG $display("  wrs %0d <= %h", u.imm[7:0], va); `endif
                 wr_special(u.x == 4'd1 ? vb[7:0] : u.imm[7:0], va);
@@ -1187,9 +1237,10 @@ module v1_core
                 logic [127:0] r;
                 r = cpuid_v1(w_gpr[0][31:0], w_gpr[1][31:0]);
                 if (w_gpr[0][31:0] == 32'd1) begin
-                  r[63:56] = 8'd0;                          // EBX[31:24]: initial APIC ID
+                  r[63:56] = apic_id[7:0];                  // EBX[31:24]: initial APIC ID
                   r[64 + 27] = sp[SP_CR4[7:0]][18];         // ECX[27]: OSXSAVE
                 end
+                if (w_gpr[0][31:0] == 32'h0B) r[127:96] = apic_id;   // EDX: x2APIC ID
                 w_gpr[0] <= {32'b0, r[31:0]};
                 w_gpr[3] <= {32'b0, r[63:32]};
                 w_gpr[1] <= {32'b0, r[95:64]};
@@ -1246,6 +1297,19 @@ module v1_core
             st <= S_FETCH;
         end
 
+        // ------------------------------------------------------------ wait for SIPI
+        // an AP after reset or INIT: only INIT and SIPI matter; SIPI starts it
+        // in real mode at vector * 4 KiB (CS = vector << 8, IP = 0; SDM Vol. 3A
+        // 10.4.4.1 "Typical BSP Initialization Sequence", 12.6.1)
+        S_WFS: if (sipi) begin
+          sp[segi(1, 0)] <= {48'b0, sipi_vec, 8'h00};
+          sp[segi(1, 1)] <= {44'b0, sipi_vec, 12'h000};
+          rip <= '0;
+          nrip <= '0;
+          start_decode();
+          st <= S_FETCH;
+        end
+
         // ------------------------------------------------------------ debug
         // halted for the debug module (docs/jtag.md): registers are read and
         // written through dbg_reg_*; dbg_step runs one instruction, dropping
@@ -1283,9 +1347,12 @@ module v1_core
 
       // interrupts at an instruction boundary (Intel SDM Vol. 3A, 7.9 "Priority
       // Among Concurrent Exceptions and Interrupts")
-      if (((st == S_FETCH && ds == D_PFX && idx == 0 && !in_delivery && !bus_req) || st == S_HALT)
-          && !int_shadow) begin
-        if (mce_pend) begin
+      if (((st == S_FETCH && ds == D_PFX && idx == 0 && !in_delivery && !bus_req) ||
+           st == S_HALT || st == S_WFS) && !int_shadow) begin
+        if (st == S_WFS) begin
+          // waiting for SIPI: another INIT starts the wait over; nothing else
+          if (init_pend) init_pend <= 1'b0;
+        end else if (mce_pend) begin
           // machine check: an abort, above every other event. #MC (vector 18)
           // with CR4.MCE set, else the processor shuts down (Intel SDM Vol. 3A
           // 17.10 "Machine-Check Initialization", Table 7-2 priority 1)
@@ -1322,6 +1389,18 @@ module v1_core
           shadow_set <= 1'b0;
           ms <= M_IDLE;
           st <= S_EXEC;
+        end else if (init_pend && !in_smm) begin
+          // INIT (SDM Vol. 3A Table 10-1, INIT column): the reset state, but
+          // IA32_APIC_BASE, the TSC and SMBASE are kept; the BSP restarts at
+          // the reset vector, an AP waits for SIPI. INIT is held in SMM.
+          init_pend <= 1'b0;
+          reset_state();
+          sp[SP_APIC_BASE[7:0]] <= sp[SP_APIC_BASE[7:0]];
+          sp[SP_TSC[7:0]] <= sp[SP_TSC[7:0]];
+          sp[SP_SMBASE[7:0]] <= sp[SP_SMBASE[7:0]];
+          bus_req <= 1'b0;
+          start_decode();
+          st <= sp[SP_APIC_BASE[7:0]][8] ? S_FETCH : S_WFS;
         end else if (nmi_pend && !in_smm) begin   // NMIs are held in SMM until RSM
           nmi_pend <= 1'b0;
           raise(8'd2, 1'b0, 32'd0, 1'b1, 1'b0, 1'b1);

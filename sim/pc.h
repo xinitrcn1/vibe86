@@ -55,6 +55,10 @@ struct fwcfg_file {
 struct pc {
 	struct pit_ch pit[3];
 	uint64_t ram_high;		/* DRAM above 4 GiB (CMOS 5Bh-5Dh) */
+	/* every ISA IRQ line also goes here (the board wires them to the I/O
+	   APIC, as a PC wires them to both interrupt controllers) */
+	void (*irq_hook)(void *ctx, unsigned irq, int level);
+	void *irq_ctx;
 	int fw_dma_pending;		/* a fw_cfg DMA request to run at the next tick */
 	uint64_t pit_acc;		/* fractional PIT clocks (CORE_HZ units) */
 	struct pic8259 pic[2];

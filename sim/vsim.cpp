@@ -456,12 +456,10 @@ struct machine {
 		ddr5_eval_pins(brd.ddr5, *top, cycles);
 	}
 
-	// Uncore events: NMIs and machine checks are one-cycle pulses on the
-	// core's pins; maskable interrupts (an MSI, else the PIC's request) are
-	// a level the core acknowledges with intr_ack (INTA), which takes the
-	// MSI or the PIC's vector.
-	bool msi_pend = false, from_pic = false;
-	unsigned msi_vec = 0;
+	// Board events: NMI, SMI and machine checks are one-cycle pulses on the
+	// die's pins; the 8259's INTR is a level into the die's local APIC
+	// (LINT0), which answers with intr_ack (INTA) when its core takes the
+	// ExtINT. MSIs are link writes (D-017).
 
 	void events()
 	{
@@ -469,14 +467,8 @@ struct machine {
 		top->smi = 0;
 		top->mce_valid = 0;
 		struct board_event e;
-		if (!msi_pend && board_event(&brd, &e)) {
+		if (board_event(&brd, &e)) {
 			switch (e.kind) {
-			case EV_MSI:
-				if (e.core < top->ncores()) {	// else no such APIC id: dropped
-					msi_pend = true;
-					msi_vec = e.vector & 0xFF;
-				}
-				break;
 			case EV_SMI:
 				top->smi = 1;
 				top->smi_core = 0;
@@ -497,31 +489,24 @@ struct machine {
 				break;
 			}
 		}
+		// the 8259's INTR (level) and its vector: the die's LINT0 input;
+		// MSIs go into the die over the I/O link (D-017)
 		uint8_t v;
 		top->intr_core = 0;
-		if (msi_pend) {
-			top->intr_valid = 1;
-			top->intr_vector = msi_vec;
-			from_pic = false;
-		} else if (board_pic_pending(&brd, &v)) {
+		if (board_pic_pending(&brd, &v)) {
 			top->intr_valid = 1;
 			top->intr_vector = v;
-			from_pic = true;
+			halted_for[0] = 0;
 		} else
 			top->intr_valid = 0;
-		if (top->intr_valid)
-			halted_for[0] = 0;
 	}
 
 	void acked()
 	{
-		if (!top->intr_ack[0])
-			return;
-		if (from_pic)
+		if (top->intr_ack[0])		// INTA for an ExtINT the core took
 			board_pic_ack(&brd);
-		else
-			msi_pend = false;
 	}
+
 
 	void step()
 	{

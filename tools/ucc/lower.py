@@ -1007,6 +1007,17 @@ class Lowerer:
             t = self.tmp()
             self.E("CRC32", w, dst=t, a=sa, b=sd)
             return V("sel", 32, sel=t)
+        if f == "ApicRead":
+            # ApicRead(msr): an x2APIC register or IA32_TSC_DEADLINE (#GP if illegal)
+            a = self.widen(self.eval(e.args[0], 64), 64)
+            sa = self.to_sel(a, 64)
+            if isinstance(sa, tuple):
+                k = self.tmp()
+                self.E("MOV", 64, dst=k, a="K", imm=sa[1])
+                sa = k
+            t = self.tmp()
+            self.E("APIC", 64, dst=t, a=sa, x=0)
+            return V("sel", 64, sel=t)
         if f == "Random":
             # Random(): the random number source (RDRAND, RDSEED); CF := valid
             t = self.tmp()
@@ -1764,6 +1775,7 @@ class Lowerer:
         "SetFlag": "s_setflag", "StoreFlags": "s_storeflags", "Jump": "s_jump",
         "RaiseVector": "s_raise_vec", "TlbWrite": "s_tlbw", "TlbInvalidate": "s_tlbinv",
         "SetSegment": "s_setseg", "SetSegmentReal": "s_setseg_real",
+        "ApicWrite": "s_apicwr",
     }
 
     SEGNAMES = ["ES", "CS", "SS", "DS", "FS", "GS", "LDTR", "TR"]
@@ -1907,6 +1919,19 @@ class Lowerer:
         reg = e.args[1].n
         loc = self.eval(e.args[0])
         self.E("RDS", 64, dst=loc.sel, imm=SPECIAL[reg])
+
+    def s_apicwr(self, e):
+        # ApicWrite(msr, value): write the local APIC's MSR (#GP if illegal)
+        ops = []
+        for x in e.args[:2]:
+            v = self.widen(self.eval(x, 64), 64)
+            sv = self.to_sel(v, 64)
+            if isinstance(sv, tuple):
+                k = self.tmp()
+                self.E("MOV", 64, dst=k, a="K", imm=sv[1])
+                sv = k
+            ops.append(sv)
+        self.E("APIC", 64, a=ops[0], b=ops[1], x=1)
 
     def s_jump(self, e):
         v = self.eval(e.args[0], 64)

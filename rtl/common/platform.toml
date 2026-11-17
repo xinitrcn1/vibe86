@@ -54,7 +54,7 @@ x2apic = true
 timer_hz = 100_000_000                   # bus clock of the timer (divide config applies)
 
 [ioapic]
-id = 0
+id = 8                                   # above every local APIC ID (max_cores): the MADT says so too
 version = 0x0017_0020                    # 24 redirection entries (max 17h), version 20h
 pins = 24
 gsi_base = 0

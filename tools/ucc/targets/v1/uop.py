@@ -127,6 +127,7 @@ OPS = [
     "HLT", "SHUTDOWN",
     "RDRAND",              # dst := random; CF := valid
     "CPUID",               # EAX, EBX, ECX, EDX := CPUID(EAX, ECX) (rtl/common/cpuid.toml)
+    "APIC",                # the local APIC's MSR a: x = 0 dst := read, x = 1 write b; #GP if illegal
     "SERIALIZE",
 ]
 OP = {n: i for i, n in enumerate(OPS)}

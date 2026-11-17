@@ -175,6 +175,17 @@ iod_cycle(struct iod *d, int die_tx_valid, uint64_t die_tx_flit, int die_rx_read
 
 /* ---------------------------------------------------------------- DMA */
 
+void
+iod_msi(struct iod *d, uint64_t addr, uint32_t data)
+{
+	uint8_t tag = (uint8_t)(0x80 | (d->tag + 1) % 0x80);
+	d->tag = tag;
+	push(d, hdr(OP_MWR, tag, 2, 1));
+	push(d, addr);
+	push(d, data);
+	d->dma_writes++;
+}
+
 int
 iod_dma(void *ctx, int we, uint64_t pa, unsigned n, uint8_t *data)
 {

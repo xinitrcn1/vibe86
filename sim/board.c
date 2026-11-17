@@ -12,6 +12,8 @@
 static void board_debugcon(void *ctx, uint8_t c);
 static int dma_mem(void *ctx, int we, uint64_t pa, unsigned n, uint8_t *data);
 static int dma_msi(void *ctx, uint64_t pa, uint64_t v);
+static void ioapic_msi(void *ctx, uint64_t addr, uint32_t data);
+static void isa_irq(void *ctx, unsigned irq, int level);
 
 int
 board_init(struct board *b, int kind, const char *path, const struct ddr5_slot_cfg *dimms,
@@ -44,6 +46,11 @@ board_init(struct board *b, int kind, const char *path, const struct ddr5_slot_c
 	b->pc.memctx = b;
 	b->pc.debugcon = board_debugcon;
 	b->pc.dbgctx = b;
+	b->pc.irq_hook = isa_irq;
+	b->pc.irq_ctx = b;
+	b->ioapic.msi = ioapic_msi;
+	b->ioapic.ctx = b;
+	ioapic_reset(&b->ioapic, PLAT_IOAPIC_ID);
 	{
 		/* fw_cfg "etc/e820" (QEMU's format: u64 address, u64 length, u32
 		   type): the DRAM below TOLM and above 4 GiB */
@@ -166,6 +173,7 @@ board_reset(struct board *b)
 {
 	b->power = PWR_ON;
 	pc_reset(&b->pc);
+	ioapic_reset(&b->ioapic, PLAT_IOAPIC_ID);
 	b->cf8 = 0;
 	memset(&b->qport, 0, sizeof b->qport);
 	b->evh = b->evn = 0;
@@ -348,11 +356,28 @@ msi_write(struct board *b, uint64_t addr, uint64_t v)
 {
 	if (addr < MSI_BASE || addr >= MSI_BASE + MSI_SIZE)
 		return -1;
-	struct board_event e = { .kind = EV_MSI, .core = (unsigned)((addr >> 12) & 0xFF),
-	    .vector = (unsigned)(v & 0xFF) };
-	if (e.vector >= 16)
-		ev_push(b, &e);
+	/* an MSI is a memory write into the die, whose local APICs take it
+	   (D-017; Intel SDM Vol. 3A 12.11) */
+	if (b->iod)
+		iod_msi(b->iod, addr, (uint32_t)v);
 	return 0;
+}
+
+/* the I/O APIC's messages and the ISA IRQ lines (ISA IRQ 0 is GSI 2, the
+   others GSI = IRQ: the MADT's interrupt source override, fw/acpi) */
+static void
+ioapic_msi(void *ctx, uint64_t addr, uint32_t data)
+{
+	msi_write(ctx, addr, data);
+}
+
+static void
+isa_irq(void *ctx, unsigned irq, int level)
+{
+	struct board *b = ctx;
+	if (irq == 2)
+		return;				/* the 8259 cascade: no ISA device */
+	ioapic_set(&b->ioapic, irq == 0 ? 2 : irq, level);
 }
 
 int
@@ -367,6 +392,8 @@ board_access(struct board *b, int we, uint64_t addr, unsigned size, uint8_t *dat
 	b->accesses++;
 	if (addr >= 0xA0000 && addr + n <= 0x100000)
 		return legacy_access(b, we, addr, (unsigned)n, data);
+	if (addr >= PLAT_MAP_IOAPIC_BASE && addr + n <= PLAT_MAP_IOAPIC_BASE + 0x1000)
+		return ioapic_mmio(&b->ioapic, we, (unsigned)(addr - PLAT_MAP_IOAPIC_BASE), (unsigned)n, data);
 	if (addr >= VGA_VRAM && addr + n <= VGA_VRAM + VGA_VRAM_SIZE)
 		return vga_mem(&b->vga, we, addr - VGA_VRAM, (unsigned)n, data);
 	if (addr >= VGA_REGS && addr + n <= VGA_REGS + 0x1000)

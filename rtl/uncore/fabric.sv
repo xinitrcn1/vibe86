@@ -24,6 +24,7 @@
 // shift down by one then (sim/ddr5.h implements the same map).
 module fabric
   import vibe86_platform_pkg::*;
+  import apic_pkg::*;
 (
   input  logic         clk,
   input  logic         rst_n,
@@ -54,6 +55,19 @@ module fabric
   input  logic         p_req,
   input  logic [7:0]   p_code,
   output logic         p_ack,
+  // the core's local APIC (D-017): its xAPIC page at IA32_APIC_BASE, the
+  // MSIs arriving over the link, the EOI messages for the I/O APIC
+  input  logic [51:10] apic_base,      // IA32_APIC_BASE: base [51:12], EN [11], EXTD [10]
+  output logic [11:4]  la_off,
+  input  logic [31:0]  la_rdata,
+  output logic         la_wr,
+  output logic [31:0]  la_wdata,
+  output logic         msi_valid,
+  output apic_msg_t    msi_msg,
+  input  logic         msi_ready,
+  input  logic         eoi_valid,
+  input  logic [7:0]   eoi_vec,
+  output logic         eoi_ack,
   // DRAM: four subchannel controllers
   output logic [3:0]   m_valid,
   input  logic [3:0]   m_ready,
@@ -122,13 +136,18 @@ module fabric
   typedef enum logic [3:0] {
     O_IDLE, O_ROUTE, O_DRAM, O_DRAMWAIT, O_TXWAIT, O_TXHDR, O_TXADDR, O_TXDATA, O_RXWAIT, O_DONE
   } ost_e;
-  typedef enum logic [2:0] {I_IDLE, I_DRAM, I_DRAMWAIT, I_TXWAIT, I_CPLHDR, I_CPLDATA} ist_e;
+  typedef enum logic [2:0] {I_IDLE, I_DRAM, I_DRAMWAIT, I_TXWAIT, I_CPLHDR, I_CPLDATA, I_MSI} ist_e;
   ost_e ost;
   ist_e ist;
 
-  typedef enum logic [1:0] {MS_CORE, MS_DBG, MS_POST} msel_e;
+  typedef enum logic [1:0] {MS_CORE, MS_DBG, MS_POST, MS_EOI} msel_e;
   msel_e who;
   logic [1:0] rr;                    // round-robin pointer over the outbound masters
+  // the xAPIC page: the core's accesses while the APIC is enabled, not x2APIC
+  wire apic_page = who == MS_CORE && !t_io && apic_base[11] && !apic_base[10] &&
+                   t_addr[51:12] == apic_base[51:12] && t_addr[63:52] == 12'h0;
+  assign la_off = t_addr[11:4];
+  assign la_wdata = t_data[31:0];
 
   // the outbound transaction
   logic        t_we, t_io, t_err;
@@ -234,6 +253,10 @@ module fabric
       d_err <= 1'b0;
       d_rdata <= '0;
       p_ack <= 1'b0;
+      eoi_ack <= 1'b0;
+      la_wr <= 1'b0;
+      msi_valid <= 1'b0;
+      msi_msg <= '0;
       m_valid <= '0;
       m_we <= 1'b0;
       m_off <= '0;
@@ -275,6 +298,8 @@ module fabric
       c_ack <= 1'b0;
       d_ack <= 1'b0;
       p_ack <= 1'b0;
+      eoi_ack <= 1'b0;
+      la_wr <= 1'b0;
       mce_ue <= 1'b0;
       if (m_valid != 0 && (m_valid & m_ready) != 0) m_valid <= '0;
 
@@ -328,7 +353,16 @@ module fabric
         I_DRAM: begin
           logic [6:0] n;
           n = 7'(1) << i_size;
-          if (!di[41] || 7'(di[5:0]) + n > 7'd64) begin
+          if (i_we && i_addr[63:20] == 44'h0_0000_0FEE) begin
+            // an MSI (Intel SDM Vol. 3A 12.11.1-2): address FEEx_xxxxh with the
+            // destination in [19:12], RH [3], DM [2]; data: vector [7:0],
+            // delivery mode [10:8], level [14], trigger [15]
+            msi_valid <= 1'b1;
+            msi_msg <= '{dest: {24'b0, i_addr[19:12]}, x2: 1'b0, dm: i_addr[2], sh: 2'd0,
+                         dlv: i_data[10:8], level: i_data[14], trig: i_data[15],
+                         vec: i_data[7:0], src: 32'hFFFF_FFFF};
+            ist <= I_MSI;
+          end else if (!di[41] || 7'(di[5:0]) + n > 7'd64) begin
             // outside DRAM or across a line: an unsupported request (a read
             // completes with an error; a posted write is dropped)
             i_err <= 1'b1;
@@ -379,28 +413,32 @@ module fabric
             i_flit <= i_flit + 4'd1;
           end
         end
+        I_MSI: if (msi_ready) begin
+          msi_valid <= 1'b0;
+          ist <= I_IDLE;
+        end
         default: ist <= I_IDLE;
       endcase
 
       // ---------------------------------------------------- the outbound engine
       case (ost)
         O_IDLE: begin
-          logic [2:0] want;
+          logic [3:0] want;
           logic [1:0] pick;
           logic found;
-          want = {p_req && !p_ack, d_req && !d_ack, c_req && !c_ack};
+          want = {eoi_valid && !eoi_ack, p_req && !p_ack, d_req && !d_ack, c_req && !c_ack};
           found = 1'b0;
           pick = rr;
-          for (int k = 0; k < 3; k++) begin
+          for (int k = 0; k < 4; k++) begin
             logic [1:0] m;
-            m = (rr + 2'(k) > 2'd2) ? 2'(rr + 2'(k) - 2'd3) : 2'(rr + 2'(k));
+            m = 2'(rr + 2'(k));
             if (!found && want[m]) begin
               found = 1'b1;
               pick = m;
             end
           end
           if (found) begin
-            rr <= (pick == 2'd2) ? 2'd0 : pick + 2'd1;
+            rr <= pick + 2'd1;
             who <= msel_e'(pick);
             t_err <= 1'b0;
             case (pick)
@@ -412,9 +450,15 @@ module fabric
                 t_we <= d_we; t_io <= 1'b0; t_addr <= d_addr; t_size <= d_size;
                 t_data <= {448'b0, d_wdata};
               end
-              default: begin
+              2'd2: begin
                 t_we <= 1'b1; t_io <= 1'b1; t_addr <= 64'h80; t_size <= 3'd0;
                 t_data <= {504'b0, p_code};
+              end
+              default: begin
+                // the EOI message for a level-triggered vector: the I/O APIC's
+                // EOI register (offset 40h, as the ICH I/O APICs of version 20h)
+                t_we <= 1'b1; t_io <= 1'b0; t_addr <= 64'(PLAT_MAP_IOAPIC_BASE) + 64'h40;
+                t_size <= 3'd2; t_data <= {504'b0, eoi_vec};
               end
             endcase
             ost <= O_ROUTE;
@@ -431,6 +475,11 @@ module fabric
               t_data <= {480'b0, cf8};
               ost <= O_DONE;
             end
+          end else if (apic_page) begin
+            // the local APIC's registers (32 bits at 16-byte offsets)
+            if (t_we) la_wr <= 1'b1;
+            else t_data <= {480'b0, la_rdata};
+            ost <= O_DONE;
           end else if (cfg_local) begin
             if (t_we)
               for (int i = 0; i < 4; i++)
@@ -529,7 +578,8 @@ module fabric
               d_err <= t_err;
               d_rdata <= t_data[63:0];
             end
-            default: p_ack <= 1'b1;
+            MS_POST: p_ack <= 1'b1;
+            default: eoi_ack <= 1'b1;
           endcase
           ost <= O_IDLE;
         end

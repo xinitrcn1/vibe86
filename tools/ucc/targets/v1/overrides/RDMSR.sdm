@@ -17,6 +17,9 @@ ELSE IF ECX = 10H THEN tmp := TSC;
 ELSE IF ECX = 1BH THEN tmp := APIC_BASE;
 ELSE IF ECX = 277H THEN tmp := PAT;
 ELSE IF ECX = 1A0H THEN tmp := MISC_ENABLE;
+ELSE IF (ECX >= 800H AND ECX <= 8FFH) OR ECX = 6E0H THEN
+    (* x2APIC registers, IA32_TSC_DEADLINE: #GP if not legal *)
+    tmp := ApicRead(ECX);
 ELSE #GP(0);
 FI;
 EAX := tmp;

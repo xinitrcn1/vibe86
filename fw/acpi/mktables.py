@@ -37,6 +37,7 @@ PM1A_CNT = 0x604
 PM_TMR = 0x608
 SCI_IRQ = 9
 IOAPIC_BASE = 0xFEC00000
+IOAPIC_ID = 8
 LAPIC_BASE = 0xFEE00000
 ECAM_BASE = 0xE0000000
 
@@ -102,7 +103,7 @@ def madt(ncpus):
     body = struct.pack("<II", LAPIC_BASE, 1)            # PCAT_COMPAT: there are 8259s
     for i in range(ncpus):
         body += struct.pack("<BBBBI", 0, 8, i, i, 1)     # processor local APIC, enabled
-    body += struct.pack("<BBBBII", 1, 12, ncpus, 0, IOAPIC_BASE, 0)   # IOAPIC, GSI base 0
+    body += struct.pack("<BBBBII", 1, 12, IOAPIC_ID, 0, IOAPIC_BASE, 0)   # IOAPIC, GSI base 0
     # ISA IRQ 0 is GSI 2 (the 8254 on the IOAPIC's pin 2); the SCI is level, active high
     body += struct.pack("<BBBBIH", 2, 10, 0, 0, 2, 0)
     body += struct.pack("<BBBBIH", 2, 10, 0, SCI_IRQ, SCI_IRQ, 0x000D)
@@ -195,13 +196,14 @@ def main(argv):
     if "--platform" in argv:
         # the platform description (rtl/common/platform.toml) the RTL and vsim share
         import tomllib
-        global PM1A_EVT, PM1A_CNT, PM_TMR, IOAPIC_BASE, LAPIC_BASE, ECAM_BASE
+        global PM1A_EVT, PM1A_CNT, PM_TMR, IOAPIC_BASE, LAPIC_BASE, ECAM_BASE, IOAPIC_ID
         with open(argv[argv.index("--platform") + 1], "rb") as f:
             plat = tomllib.load(f)
         PM1A_EVT = plat["ports"]["pm1"]
         PM1A_CNT = PM1A_EVT + 4
         PM_TMR = PM1A_EVT + 8
         IOAPIC_BASE = plat["map"]["ioapic_base"]
+        IOAPIC_ID = plat["ioapic"]["id"]
         LAPIC_BASE = plat["map"]["lapic_base"]
         ECAM_BASE = plat["map"]["ecam_base"]
     dsdt = open(argv[1], "rb").read()

@@ -168,6 +168,8 @@ pc_irq(struct pc *p, unsigned irq, int level)
 		pic_update_level(&p->pic[0], irq, level);
 	else if (irq < 16)
 		pic_update_level(&p->pic[1], irq - 8, level);
+	if (p->irq_hook)
+		p->irq_hook(p->irq_ctx, irq, level);
 }
 
 /* ---------------------------------------------------------------- 8254 */

@@ -5,6 +5,7 @@
 // copied to RAM at 1234:0000 (base 12340h), IRET restoring CS F000h.
 // expect-out: I1
 // expect-out: T0
+#include "apic.inc"
 	.code16
 	.text
 start:
@@ -43,7 +44,9 @@ start:
 	mov	%cs, %ax			// and IRET restored CS
 	cmp	$0xf000, %ax
 	jne	fail
-	// the PIC: ICW1-4, vectors 08h-0Fh, IRQ 0 unmasked
+	// the local APIC passes the 8259 through (virtual wire), then the PIC:
+	// ICW1-4, vectors 08h-0Fh, IRQ 0 unmasked
+	VIRTUAL_WIRE
 	mov	$0x11, %al
 	out	%al, $0x20
 	mov	$0x08, %al

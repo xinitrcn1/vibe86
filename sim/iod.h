@@ -48,6 +48,10 @@ void iod_board_tick(struct iod *d);
    answered with an error (no DRAM there) */
 int iod_dma(void *ctx, int we, uint64_t pa, unsigned n, uint8_t *data);
 
+/* a posted 4-byte write into the die (an MSI: Intel SDM Vol. 3A 12.11),
+   from any context */
+void iod_msi(struct iod *d, uint64_t addr, uint32_t data);
+
 /* statistics: requests served, DMA packets, errors */
 void iod_stats(const struct iod *d, char *buf, unsigned len);
 

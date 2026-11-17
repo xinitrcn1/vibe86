@@ -213,7 +213,7 @@ name = "intr_valid"
 dir = "in"
 width = 1
 route = "intr_core"
-desc = "a maskable interrupt request (level) with its vector"
+desc = "the 8259's INTR (level) with its vector: the local APICs' LINT0 (ExtINT, virtual wire; D-017)"
 
 [[pin]]
 name = "intr_vector"
@@ -226,14 +226,14 @@ name = "intr_ack"
 dir = "out"
 width = 1
 c = "intr_ack[]"
-desc = "the core took the maskable interrupt (the INTA cycle, one pulse)"
+desc = "INTA: a core took the 8259's interrupt through LINT0 (one pulse)"
 
 [[pin]]
 name = "nmi"
 dir = "in"
 width = 1
 route = "nmi_core"
-desc = "NMI (one-cycle pulse)"
+desc = "the NMI pin (one-cycle pulse): the local APICs' LINT1"
 
 [[pin]]
 name = "smi"

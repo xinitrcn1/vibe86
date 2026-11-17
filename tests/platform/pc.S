@@ -17,6 +17,7 @@
 // expect-out: PC OK
 #include "boot64.inc"
 #include "expect.inc"
+#include "apic.inc"
 	.set	BUF, 0x40000
 	.set	DMA, 0x41000
 	.set	NIRQ, 0x700
@@ -192,7 +193,9 @@ main64:
 	movl	DMA, %eax
 	EXPECT	%rax, 0, 0x33			// control cleared: done, no error
 
-	// ---- PIC + PIT: one edge, one interrupt
+	// ---- PIC + PIT: one edge, one interrupt (through the local APIC's
+	// LINT0 in ExtINT mode: virtual wire, as firmware sets it up)
+	VIRTUAL_WIRE
 	lea	h_irq0(%rip), %rax
 	mov	$0x20, %ecx
 	mov	$0x8e, %edx

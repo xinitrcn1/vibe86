@@ -31,8 +31,10 @@ feature = [
   { leaf = 0x1, reg = "ecx", bit = 17, name = "PCID" },
   { leaf = 0x1, reg = "ecx", bit = 19, name = "SSE4_1" },
   { leaf = 0x1, reg = "ecx", bit = 20, name = "SSE4_2" },
+  { leaf = 0x1, reg = "ecx", bit = 21, name = "X2APIC", since = "v1" },
   { leaf = 0x1, reg = "ecx", bit = 22, name = "MOVBE", since = "v1" },
   { leaf = 0x1, reg = "ecx", bit = 23, name = "POPCNT", since = "v1" },
+  { leaf = 0x1, reg = "ecx", bit = 24, name = "TSC_DEADLINE", since = "v1" },
   { leaf = 0x1, reg = "ecx", bit = 25, name = "AES" },
   { leaf = 0x1, reg = "ecx", bit = 26, name = "XSAVE" },
   { leaf = 0x1, reg = "ecx", bit = 28, name = "AVX" },
@@ -47,7 +49,7 @@ feature = [
   { leaf = 0x1, reg = "edx", bit = 6,  name = "PAE", since = "v1" },
   { leaf = 0x1, reg = "edx", bit = 7,  name = "MCE" },
   { leaf = 0x1, reg = "edx", bit = 8,  name = "CX8", since = "v1" },
-  { leaf = 0x1, reg = "edx", bit = 9,  name = "APIC" },
+  { leaf = 0x1, reg = "edx", bit = 9,  name = "APIC", since = "v1" },
   { leaf = 0x1, reg = "edx", bit = 11, name = "SEP", since = "v1" },
   { leaf = 0x1, reg = "edx", bit = 12, name = "MTRR" },
   { leaf = 0x1, reg = "edx", bit = 13, name = "PGE", since = "v1" },
@@ -60,7 +62,7 @@ feature = [
   { leaf = 0x1, reg = "edx", bit = 24, name = "FXSR" },
   { leaf = 0x1, reg = "edx", bit = 25, name = "SSE" },
   { leaf = 0x1, reg = "edx", bit = 26, name = "SSE2" },
-  { leaf = 0x6, reg = "eax", bit = 2,  name = "ARAT" },
+  { leaf = 0x6, reg = "eax", bit = 2,  name = "ARAT", since = "v1" },
   { leaf = 0x7, reg = "ebx", bit = 0,  name = "FSGSBASE", since = "v1" },
   { leaf = 0x7, reg = "ebx", bit = 1,  name = "TSC_ADJUST" },
   { leaf = 0x7, reg = "ebx", bit = 3,  name = "BMI1", since = "v1" },
@@ -147,6 +149,30 @@ eax = 0x4                                # ARAT is a feature bit below; nothing 
 leaf = 0x7
 sub = 0
 eax = 1                                  # subleaves 0..1
+
+# Leaf 0Bh: the x2APIC topology (Intel SDM Vol. 2A CPUID, "Extended
+# Topology Enumeration Leaf"; AMD APM Vol. 3 appendix E, Fn0000_000B):
+# level 0 SMT (1 thread per core), level 1 core (1 core on the v1 die); EDX
+# is the x2APIC ID (filled in by the core). A 2-core die makes level 1's
+# EAX 1 and EBX 2.
+[[leaf]]
+leaf = 0xB
+sub = 0
+eax = 0
+ebx = 1
+ecx = 0x100
+
+[[leaf]]
+leaf = 0xB
+sub = 1
+eax = 0
+ebx = 1
+ecx = 0x201
+
+[[leaf]]
+leaf = 0xB
+sub = 2
+ecx = 2
 
 [[leaf]]
 leaf = 0xD                               # XSAVE enumeration: zeros until XSAVE is implemented
