@@ -6,7 +6,8 @@
 //     the I/O link into the local APIC
 //   the same pin level-triggered: while the 8254's output stays high every
 //     EOI (the local APIC's EOI message to the I/O APIC's EOI register)
-//     clears Remote IRR and the interrupt comes again; masked, it stops
+//     clears Remote IRR and the interrupt comes again; masked (by the
+//     handler, at the third), it stops
 //   a device's MSI (QPORT's completion MSI, vector 31h) through the MSI
 //     window, the I/O link and the APIC bus
 // expect-out: IOAPIC OK
@@ -96,19 +97,30 @@ main64:
 	EXPECT	LOGN, 1, 0x06
 
 	// ---- level, active high: OUT is still high, so it fires at once and
-	// again after every EOI; then masked
-	IOW	0x14, 0x8030			// trigger mode level (bit 15)
+	// again after every EOI. The redelivery beats the interrupted
+	// instruction (only STI and MOV SS hold interrupts off for one
+	// instruction, IRET doesn't: Intel SDM Vol. 3A "Masking Maskable
+	// Hardware Interrupts"), so the main line can't count: vector 32h's handler masks the
+	// pin itself before its third EOI, and then nothing more comes
+	lea	h_level(%rip), %rax
+	mov	$0x32, %ecx
+	mov	$0x8e, %edx
+	call	set_gate
+	IOW	0x14, 0x8032			// vector 32h, trigger mode level (bit 15)
 	WAITLOG	3, 0x07
-	IOW	0x14, 0x18030			// masked
 	mov	$20000, %ecx
 1:	dec	%ecx
 	jnz	1b
+	EXPECT	LOGN, 3, 0x0a			// masked: no fourth
+	movzbl	LOG+2, %eax
+	EXPECT	%rax, 0x32, 0x0b
 	movq	$0, LOGN
 
 	// ---- a device's MSI: QPORT's completion MSI on a POP
 	mov	$QPORT_CTL, %edx
 	movq	$0x31, 0x38(%rdx)		// MSI data: vector 31h, fixed, edge
-	movq	$0xfee00000, 0x30(%rdx)		// MSI address: APIC ID 0, physical
+	mov	$0xfee00000, %eax		// MSI address: APIC ID 0, physical
+	mov	%rax, 0x30(%rdx)
 	movq	$0, 0x08(%rdx)			// POP
 	WAITLOG	1, 0x08
 	movzbl	LOG, %eax
@@ -120,6 +132,23 @@ main64:
 
 	HANDLER	0x30
 	HANDLER	0x31
+
+h_level:					// vector 32h: log, mask pin 2 at the third
+	push	%rax
+	push	%rdx
+	mov	LOGN, %rax
+	movb	$0x32, LOG(%rax)
+	incq	LOGN
+	cmpq	$3, LOGN
+	jb	1f
+	mov	$IOA, %edx
+	movl	$0x14, (%rdx)
+	movl	$0x18032, 0x10(%rdx)		// masked (bit 16), level, vector 32h
+1:	mov	$0xfee000b0, %eax		// EOI: Remote IRR clears; unmasked, it comes again
+	movl	$0, (%rax)
+	pop	%rdx
+	pop	%rax
+	iretq
 
 m_ok:	.asciz	"IOAPIC OK\n"
 	BOOT64_END

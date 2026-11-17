@@ -186,7 +186,8 @@ class Gen:
 
 
 HEAD = r"""	.text
-	# chk: record xmm0-7, MXCSR, RFLAGS, RAX at r13 (19 qwords)
+	# chk: record xmm0-7, MXCSR, RFLAGS, RAX at r13 (19 qwords); RFLAGS is
+	# preserved, as a step that doesn't write flags sees the previous ones
 chk:
 	pushfq
 	movdqu	%xmm0, 0(%r13)
@@ -199,12 +200,13 @@ chk:
 	movdqu	%xmm7, 112(%r13)
 	stmxcsr	128(%r13)
 	movl	$0, 132(%r13)
-	popq	%r14
+	movq	(%rsp), %r14
 	andq	$0x8d5, %r14
 	movq	%r14, 136(%r13)
 	movq	%rax, 144(%r13)
-	addq	$152, %r13
-	ret
+	leaq	152(%r13), %r13
+	popfq				# the body's RFLAGS again: chk's own ANDs
+	ret				# mustn't reach the next step's record
 
 	.globl	diff_body
 diff_body:
