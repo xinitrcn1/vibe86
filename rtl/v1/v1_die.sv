@@ -33,17 +33,41 @@ module v1_die (
   logic         f_mce_ue;
   logic [63:0]  f_mce_addr;
 
-  // debug module: JTAG (rtl/uncore/jtag_tap.sv, jtag_dm.sv) is integrated
-  // from the die-jtag branch; until then the TAP is absent (TDO low)
-  logic         dbg_halted;
-  logic [63:0]  dbg_reg_rdata;
-  logic         d_ack, d_err;
-  logic [63:0]  d_rdata;
-  assign tdo = 1'b0;
+  // ------------------------------------------------------------ JTAG
+  // the TAP (TCK domain) and the debug module (core clock): docs/jtag.md
+  logic         dbg_req, dbg_step, dbg_halted, dbg_reg_we;
+  logic [7:0]   dbg_reg_sel;
+  logic [63:0]  dbg_reg_wdata, dbg_reg_rdata;
+  logic         d_req, d_we, d_ack, d_err;
+  logic [63:0]  d_addr, d_wdata, d_rdata;
+  logic [2:0]   d_size;
+  logic         j_req_tog, j_ack_tog, j_req_we, j_halted, j_haltreq, j_sba_err, j_reg_err;
+  logic [2:0]   j_req_op, j_req_size;
+  logic [3:0]   j_req_ctl;
+  logic [7:0]   j_req_sel;
+  logic [63:0]  j_req_data, j_req_addr, j_reg_rdata, j_sba_rdata;
   /* verilator lint_off UNUSEDSIGNAL */
-  wire jtag_unused = &{tck, tms, tdi, trst_n, dbg_halted, dbg_reg_rdata, d_ack, d_err, d_rdata,
-                       ddr0_alert_n, ddr1_alert_n};
+  logic [3:0]   tap_state;          // for testbenches
+  wire alert_unused = ddr0_alert_n & ddr1_alert_n;   // CRC/parity alerts: no CRC in use
   /* verilator lint_on UNUSEDSIGNAL */
+
+  jtag_tap u_tap (
+    .tck, .tms, .tdi, .trst_n, .tdo,
+    .req_tog(j_req_tog), .req_op(j_req_op), .req_ctl(j_req_ctl), .req_we(j_req_we),
+    .req_sel(j_req_sel), .req_data(j_req_data), .req_addr(j_req_addr), .req_size(j_req_size),
+    .ack_tog(j_ack_tog), .reg_rdata(j_reg_rdata), .sba_rdata(j_sba_rdata),
+    .st_halted(j_halted), .st_haltreq(j_haltreq), .st_sba_err(j_sba_err), .st_reg_err(j_reg_err),
+    .tap_state);
+
+  jtag_dm u_dm (
+    .clk, .trst_n,
+    .req_tog(j_req_tog), .req_op(j_req_op), .req_ctl(j_req_ctl), .req_we(j_req_we),
+    .req_sel(j_req_sel), .req_data(j_req_data), .req_addr(j_req_addr), .req_size(j_req_size),
+    .ack_tog(j_ack_tog), .reg_rdata(j_reg_rdata), .sba_rdata(j_sba_rdata),
+    .st_halted(j_halted), .st_haltreq(j_haltreq), .st_sba_err(j_sba_err), .st_reg_err(j_reg_err),
+    .dbg_req, .dbg_step, .dbg_halted, .dbg_reg_sel, .dbg_reg_we, .dbg_reg_wdata, .dbg_reg_rdata,
+    .dm_req(d_req), .dm_we(d_we), .dm_addr(d_addr), .dm_size(d_size), .dm_wdata(d_wdata),
+    .dm_ack(d_ack), .dm_err(d_err), .dm_rdata(d_rdata));
 
   v1_core u_core (
     .clk, .rst_n(core_rst_n),
@@ -52,8 +76,7 @@ module v1_die (
     .intr_valid, .intr_vector, .intr_ack, .nmi, .smi,
     .mce_valid(mce_valid || f_mce_ue), .mce_type(f_mce_ue ? 2'd2 : mce_type),
     .mce_addr(f_mce_ue ? f_mce_addr : mce_addr),
-    .dbg_req(1'b0), .dbg_step(1'b0), .dbg_halted, .dbg_reg_sel(8'd0), .dbg_reg_we(1'b0),
-    .dbg_reg_wdata(64'd0), .dbg_reg_rdata,
+    .dbg_req, .dbg_step, .dbg_halted, .dbg_reg_sel, .dbg_reg_we, .dbg_reg_wdata, .dbg_reg_rdata,
     .rt_valid, .rt_rip, .rt_len, .rt_bytes, .rt_uops,
     .ev_valid, .ev_vector, .ev_has_error, .ev_error, .ev_rip,
     .shutdown, .halted, .shutdown_rip);
@@ -110,8 +133,7 @@ module v1_die (
   fabric u_fabric (
     .clk, .rst_n, .dram_ready, .dram_size,
     .c_req, .c_we, .c_io, .c_addr, .c_size, .c_wdata, .c_smm, .c_ack, .c_err, .c_rdata,
-    .d_req(1'b0), .d_we(1'b0), .d_addr(64'd0), .d_size(3'd0), .d_wdata(64'd0),
-    .d_ack, .d_err, .d_rdata,
+    .d_req, .d_we, .d_addr, .d_size, .d_wdata, .d_ack, .d_err, .d_rdata,
     .p_req(post_valid), .p_code(post_code), .p_ack(post_ack),
     .m_valid, .m_ready, .m_we, .m_off, .m_wdata, .m_be, .m_rsp, .m_rdata, .m_ue,
     .tx_valid(iol_tx_valid), .tx_flit(iol_tx_flit), .tx_ready(iol_tx_ready),

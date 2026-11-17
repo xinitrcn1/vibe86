@@ -14,6 +14,7 @@
 // 1970, https://doi.org/10.1147/rd.144.0395 — (39,32) per beat on CB[6:0].
 package ddr5_pkg;
 
+  /* verilator lint_off UNUSEDPARAM */   // a parameter table: each user takes what it needs
   // ---------------------------------------------------------------- timing
   // all in controller clocks (= nCK at DDR5-4800)
   localparam int T_CL      = 40;     // MR0 CL40 (4800B)
@@ -56,6 +57,7 @@ package ddr5_pkg;
   localparam int T_INIT5   = 3;
   localparam int T_XPR     = T_RFC1;
 
+  /* verilator lint_on UNUSEDPARAM */
   // ---------------------------------------------------------------- commands
   // {cycle 2 CA, cycle 1 CA}; 2-cycle commands use both
   function automatic logic [27:0] cmd_act(input logic [15:0] row, input logic [2:0] bg,
@@ -116,6 +118,7 @@ package ddr5_pkg;
 
   localparam logic [13:0] CA_NOP = 14'h3FFF;          // NOP: H H H H H (CS_n LOW)
 
+  /* verilator lint_off UNUSEDPARAM */
   // MPC opcodes (Table 143)
   localparam logic [7:0] MPC_DLL_RESET = 8'h02;
   localparam logic [7:0] MPC_ZQCAL_LATCH = 8'h04;
@@ -124,6 +127,7 @@ package ddr5_pkg;
   localparam logic [7:0] MPC_TDLLK_CCDL = 8'h84;      // 1000xxxx: MR13 OP[3:0] = 0100b (4400 < rate <= 4800)
   // MR0: BL16 (OP[1:0] = 00), CL40 (OP[7:2] = 001001b) (Table 21)
   localparam logic [7:0] MR0_BL16_CL40 = 8'b0010_0100;
+  /* verilator lint_on UNUSEDPARAM */
 
   // ---------------------------------------------------------------- ECC
   // Hsiao (39,32): data bit i's column is the i-th 7-bit value of odd
