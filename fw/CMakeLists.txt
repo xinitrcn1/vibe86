@@ -41,7 +41,10 @@ set(FW_CFLAGS -target x86_64-unknown-windows -std=c11 -O2 -ffreestanding -fno-bu
     -mgeneral-regs-only -mno-red-zone -mno-stack-arg-probe -fno-stack-protector
     -fshort-wchar -fno-strict-aliasing -fno-asynchronous-unwind-tables -fno-unwind-tables
     -Wall -Wextra -Wno-unused-parameter -Werror
-    -nostdinc -I${FW_SRC}/include/std -I${FW_SRC}/include -I${FW_PLATFORM_INC})
+    -nostdinc -I${FW_SRC}/include/std -I${FW_SRC}/include -I${FW_PLATFORM_INC}
+    -I${CMAKE_SOURCE_DIR}/sim)	# sim/vgafont.h, the VGA font (VideoDxe)
+
+set(FW_ASFLAGS -target x86_64-unknown-windows -nostdinc -I${FW_SRC}/include)
 
 set(FW_LIB_SOURCES lib/string.c lib/print.c lib/io.c lib/devpath.c lib/pe.c lib/fv.c)
 
@@ -53,9 +56,14 @@ function(fw_objects out name)
     get_filename_component(dir ${src} DIRECTORY)
     string(REPLACE "/" "_" dir "${dir}")
     set(obj ${FW_OUT}/obj/${name}/${dir}_${base}.obj)
+    if(src MATCHES "\\.S$")
+      set(flags ${FW_ASFLAGS})
+    else()
+      set(flags ${FW_CFLAGS})
+    endif()
     add_custom_command(OUTPUT ${obj}
       COMMAND ${CMAKE_COMMAND} -E make_directory ${FW_OUT}/obj/${name}
-      COMMAND ${FW_CLANG} ${FW_CFLAGS} -MD -MF ${obj}.d -c -o ${obj} ${FW_SRC}/${src}
+      COMMAND ${FW_CLANG} ${flags} -MD -MF ${obj}.d -c -o ${obj} ${FW_SRC}/${src}
       DEPENDS ${FW_SRC}/${src}
       DEPFILE ${obj}.d
       COMMENT "fw ${name}: ${src}"
@@ -100,18 +108,50 @@ fw_image(Pei SUBSYSTEM efi_boot_service_driver ENTRY pei_main
   SOURCES pei/pei.c)
 
 fw_image(DxeCore SUBSYSTEM efi_boot_service_driver ENTRY dxe_main
-  SOURCES dxe/core/main.c)
+  SOURCES dxe/core/main.c dxe/core/mem.c dxe/core/handle.c dxe/core/event.c dxe/core/image.c
+          dxe/core/cpu.c dxe/core/cpu_asm.S dxe/core/jump.S)
+
+set(FW_UEFILIB_SOURCES lib/uefi.c)
+
+# fw_driver(<name> [RUNTIME] SOURCES ...): a DXE driver, dispatched in the
+# order of the calls; fw_app(<name> SOURCES ...): an application
+set(FW_DRIVERS)
+function(fw_driver name)
+  cmake_parse_arguments(A "RUNTIME" "" "SOURCES" ${ARGN})
+  if(A_RUNTIME)
+    set(sub efi_runtime_driver)
+  else()
+    set(sub efi_boot_service_driver)
+  endif()
+  fw_image(${name} SUBSYSTEM ${sub} SOURCES ${A_SOURCES} ${FW_UEFILIB_SOURCES})
+  set(FW_DRIVERS ${FW_DRIVERS} ${name} PARENT_SCOPE)
+  set(FW_IMAGE_${name} ${FW_IMAGE_${name}} PARENT_SCOPE)
+endfunction()
+
+fw_driver(RuntimeDxe RUNTIME SOURCES dxe/runtime/runtime.c)
+fw_driver(SerialDxe SOURCES dxe/serial/serial.c)
+fw_driver(VideoDxe SOURCES dxe/video/video.c)
+fw_driver(ConsoleDxe SOURCES dxe/console/console.c)
+fw_driver(BdsDxe SOURCES dxe/bds/bds.c dxe/bds/boot.c dxe/bds/menu.c dxe/bds/setup.c
+          dxe/bds/settings.c dxe/bds/ui.c)
+
+set(FW_DRIVER_ARGS)
+set(FW_DRIVER_FILES)
+foreach(d IN LISTS FW_DRIVERS)
+  list(APPEND FW_DRIVER_ARGS --driver ${d}=${FW_IMAGE_${d}})
+  list(APPEND FW_DRIVER_FILES ${FW_IMAGE_${d}})
+endforeach()
 
 set(FD ${FW_OUT}/vibe86.fd)
 add_custom_command(OUTPUT ${FD}
   COMMAND ${Python3_EXECUTABLE} -B ${FW_SRC}/tools/mkfd.py -o ${FD}
           --layout ${FW_SRC}/include/layout.h --sec ${SEC_BIN} --pei ${FW_IMAGE_Pei}
-          --core ${FW_IMAGE_DxeCore}
+          --core ${FW_IMAGE_DxeCore} ${FW_DRIVER_ARGS}
           --raw d6a2cb7f-6a18-4e2f-b43c-766238360010=${ACPI_OUT}/tables
           --raw d6a2cb7f-6a18-4e2f-b43c-766238360011=${ACPI_OUT}/rsdp
           --raw d6a2cb7f-6a18-4e2f-b43c-766238360012=${ACPI_OUT}/table-loader
   DEPENDS ${FW_SRC}/tools/mkfd.py ${FW_SRC}/include/layout.h ${SEC_BIN} ${FW_IMAGE_Pei}
-          ${FW_IMAGE_DxeCore} ${ACPI_OUT}/tables
+          ${FW_IMAGE_DxeCore} ${FW_DRIVER_FILES} ${ACPI_OUT}/tables
   COMMENT "fw vibe86.fd"
   VERBATIM)
 add_custom_target(firmware ALL DEPENDS ${FD})
