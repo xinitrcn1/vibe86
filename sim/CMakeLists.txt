@@ -34,7 +34,7 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/tpm_debug_state.h
   VERBATIM)
 
 add_library(vsim_board STATIC
-  board.c dram.c vga.c pmc.c i2c.c tpm.c pcie.c iommu.c xhci.c pc.c
+  board.c dram.c spd.c ddr5.c vga.c pmc.c i2c.c tpm.c pcie.c iommu.c xhci.c pc.c
   ${CMAKE_CURRENT_BINARY_DIR}/tpm_debug_state.h)
 target_include_directories(vsim_board PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${VIBE86_COMMON_DIR}
   PRIVATE ${TPMS_INCLUDE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
@@ -61,3 +61,10 @@ set_target_properties(vsim PROPERTIES BUILD_RPATH /usr/local/lib)
 add_executable(tpmgen EXCLUDE_FROM_ALL tpmgen.c)
 target_include_directories(tpmgen PRIVATE ${TPMS_INCLUDE_DIR})
 target_link_libraries(tpmgen PRIVATE ${TPMS_LIBRARY})
+
+# the pin-level DDR5 DIMM model's own test (no Verilated core needed)
+add_executable(ddr5_test test/ddr5_test.c ddr5.c spd.c)
+target_include_directories(ddr5_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(ddr5_test PRIVATE ${VSIM_WARN})
+add_test(NAME sim/ddr5 COMMAND ddr5_test)
+set_tests_properties(sim/ddr5 PROPERTIES LABELS sim)
