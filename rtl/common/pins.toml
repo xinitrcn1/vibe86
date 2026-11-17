@@ -1,22 +1,26 @@
 # vibe86 die interface: the pins of a processor die (one or more cores) that
 # face the rest of the package and the system. Every core version
 # (rtl/<version>) has exactly these ports, so vsim and any other harness
-# drive all versions the same way (docs/platform.md, "The core-uncore bus").
+# drive all versions the same way (docs/die-interface.md, D-014).
 #
 # tools/gen/rtlgen.py generates from this (build tree, not git):
 #   vibe86_die_pkg.sv     widths as localparams (DIE_<NAME>_W)
-#   vibe86_die_ports.svh  the module port list a core includes
+#   vibe86_die_ports.svh  the module port list of each version's die top
 #   vibe86_die.h          the C++ pin struct for vsim (sim/cpu.h) and
 #                         die_in()/die_out() copying it to/from a Verilated
-#                         model for one core
+#                         die model
 #
 # Fields: dir (in/out), width, c (the C++ member: 'x' for a die-wide pin,
-# 'ev[].vector' for a per-core array of structs), route (an input that goes
-# to one core: the C++ member naming that core), desc.
+# 'ev[].vector' for a per-core array of structs, 'ddr[#].ca' for an
+# instanced group), route (an input that goes to one core: the C++ member
+# naming that core), instances (copies of the pin: '{i}' in the name takes
+# each value), desc. The pins themselves: docs/die-interface.md (D-014).
 
-[structs]                                 # C++ per-core structs: member -> type name
-ev = "event"
-rt = "retire"
+[structs]                                 # C++ structs: member -> type name
+ev = "event"                              # per core
+rt = "retire"                             # per core
+ddr = "ddr5_subchannel"                   # per DDR5 subchannel (instances)
+ddrch = "ddr5_channel"                    # per DDR5 channel (instances)
 
 [[pin]]
 name = "clk"
@@ -30,68 +34,180 @@ dir = "in"
 width = 1
 desc = "RESET# (active low): cold and warm reset"
 
-# --- the core-uncore bus: one transaction at a time, held until acknowledged
 [[pin]]
-name = "bus_req"
-dir = "out"
+name = "meminit_fast"
+dir = "in"
 width = 1
-desc = "a transaction is requested"
+desc = "strap (simulation): JEDEC init waits scaled down by 1024"
+
+# --- DDR5: 2 channels x 2 subchannels, the DRAMs' host interface
+#     (Micron DDR5 core data sheet Table 140; docs/die-interface.md)
+[[pin]]
+name = "ddr{i}_cs_n"
+instances = ["0a", "0b", "1a", "1b"]
+c = "ddr[#].cs_n"
+dir = "out"
+width = 4
+desc = "CS_n: DIMM 0 rank 0/1, DIMM 1 rank 0/1 (active low)"
 
 [[pin]]
-name = "bus_we"
+name = "ddr{i}_ca"
+instances = ["0a", "0b", "1a", "1b"]
+c = "ddr[#].ca"
 dir = "out"
-width = 1
-desc = "write (else read)"
+width = 14
+desc = "CA[13:0], sampled on the CK rising edge"
 
 [[pin]]
-name = "bus_io"
+name = "ddr{i}_dq_o"
+instances = ["0a", "0b", "1a", "1b"]
+c = "ddr[#].dq_o"
 dir = "out"
-width = 1
-desc = "I/O space (IN/OUT): bus_addr is the port"
+width = 80
+desc = "write data: beat 0 in 39:0, beat 1 in 79:40 (DQ[31:0] + CB[7:0] each)"
 
 [[pin]]
-name = "bus_addr"
+name = "ddr{i}_dq_oe"
+instances = ["0a", "0b", "1a", "1b"]
+c = "ddr[#].dq_oe"
+dir = "out"
+width = 1
+desc = "the die drives DQ (writes)"
+
+[[pin]]
+name = "ddr{i}_dqs_o"
+instances = ["0a", "0b", "1a", "1b"]
+c = "ddr[#].dqs_o"
+dir = "out"
+width = 2
+desc = "write strobe DQS_t, one bit per beat"
+
+[[pin]]
+name = "ddr{i}_dq_i"
+instances = ["0a", "0b", "1a", "1b"]
+c = "ddr[#].dq_i"
+dir = "in"
+width = 80
+desc = "read data, as dq_o"
+
+[[pin]]
+name = "ddr{i}_dqs_i"
+instances = ["0a", "0b", "1a", "1b"]
+c = "ddr[#].dqs_i"
+dir = "in"
+width = 2
+desc = "read strobe from the DRAMs, one bit per beat"
+
+[[pin]]
+name = "ddr{i}_reset_n"
+instances = ["0", "1"]
+c = "ddrch[#].reset_n"
+dir = "out"
+width = 1
+desc = "the channel's DRAM RESET_n"
+
+[[pin]]
+name = "ddr{i}_alert_n"
+instances = ["0", "1"]
+c = "ddrch[#].alert_n"
+dir = "in"
+width = 1
+desc = "ALERT_n (wired-OR across the channel)"
+
+# --- SPD sideband (SMBus, open drain)
+[[pin]]
+name = "spd_scl_o"
+dir = "out"
+width = 1
+desc = "0 pulls SCL low"
+
+[[pin]]
+name = "spd_sda_o"
+dir = "out"
+width = 1
+desc = "0 pulls SDA low"
+
+[[pin]]
+name = "spd_scl_i"
+dir = "in"
+width = 1
+desc = "the SCL level"
+
+[[pin]]
+name = "spd_sda_i"
+dir = "in"
+width = 1
+desc = "the SDA level"
+
+# --- the I/O link: 64-bit flits, valid/ready, both directions
+[[pin]]
+name = "iol_tx_valid"
+dir = "out"
+width = 1
+desc = "die -> I/O die: a flit is offered"
+
+[[pin]]
+name = "iol_tx_flit"
 dir = "out"
 width = 64
-desc = "physical address or I/O port"
+desc = "die -> I/O die flit"
 
 [[pin]]
-name = "bus_size"
-dir = "out"
-width = 3
-desc = "log2 bytes: 0..4, 6 for a 64-byte line"
-
-[[pin]]
-name = "bus_wdata"
-dir = "out"
-width = 512
-desc = "write data, byte 0 = the lowest address"
-
-[[pin]]
-name = "bus_smm"
-dir = "out"
-width = 1
-desc = "SMIACT#: the core is in SMM (the chipset decodes SMRAM for it)"
-
-[[pin]]
-name = "bus_ack"
+name = "iol_tx_ready"
 dir = "in"
 width = 1
-desc = "the transaction completed"
+desc = "the I/O die takes the flit"
 
 [[pin]]
-name = "bus_err"
+name = "iol_rx_valid"
 dir = "in"
 width = 1
-desc = "with bus_ack: nothing decoded the address"
+desc = "I/O die -> die: a flit is offered"
 
 [[pin]]
-name = "bus_rdata"
+name = "iol_rx_flit"
 dir = "in"
-width = 512
-desc = "read data, byte 0 = the lowest address"
+width = 64
+desc = "I/O die -> die flit"
 
-# --- interrupts and machine checks from the uncore
+[[pin]]
+name = "iol_rx_ready"
+dir = "out"
+width = 1
+desc = "the die takes the flit"
+
+# --- JTAG (IEEE 1149.1)
+[[pin]]
+name = "tck"
+dir = "in"
+width = 1
+desc = "JTAG test clock"
+
+[[pin]]
+name = "tms"
+dir = "in"
+width = 1
+desc = "JTAG test mode select"
+
+[[pin]]
+name = "tdi"
+dir = "in"
+width = 1
+desc = "JTAG test data in"
+
+[[pin]]
+name = "trst_n"
+dir = "in"
+width = 1
+desc = "JTAG test reset (active low)"
+
+[[pin]]
+name = "tdo"
+dir = "out"
+width = 1
+desc = "JTAG test data out"
+
+# --- interrupts and machine checks from the I/O die (sideband)
 [[pin]]
 name = "intr_valid"
 dir = "in"

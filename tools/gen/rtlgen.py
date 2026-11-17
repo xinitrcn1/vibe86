@@ -272,9 +272,33 @@ def ctype(p):
         return "uint32_t", ""
     if w <= 64:
         return "uint64_t", ""
-    if w % 32:
-        die(f"pin {p['name']}: a wide pin must be a multiple of 32 bits")
-    return "uint32_t", f"[{w // 32}]"
+    return "uint32_t", f"[{(w + 31) // 32}]"   # as Verilator's VlWide: 32-bit words
+
+
+def expand(pins):
+    """Instanced pins ('instances = [...]', '{i}' in the name, 'g[#].m' as
+    the C member) become one pin per instance: names ddr0a_ca, ..., C
+    members ddr[0].ca, .... Returns (pins, {group: count})."""
+    out, counts = [], {}
+    for p in pins:
+        inst = p.get("instances")
+        if not inst:
+            out.append(p)
+            continue
+        c = p.get("c", "")
+        if "[#]." not in c or "{i}" not in p["name"]:
+            die(f"pins.toml: instanced pin {p['name']} needs '{{i}}' in its name and 'g[#].m' as c")
+        g = c.split("[#].")[0]
+        if counts.setdefault(g, len(inst)) != len(inst):
+            die(f"pins.toml: group {g} has pins with different instance counts")
+        for k, i in enumerate(inst):
+            q = dict(p)
+            q["name"] = p["name"].replace("{i}", i)
+            q["c"] = c.replace("[#]", f"[{k}]")
+            q["_inst"] = (g, c.split("[#].")[1])
+            del q["instances"]
+            out.append(q)
+    return out, counts
 
 
 def gen_die_sv(pins):
@@ -305,13 +329,17 @@ def gen_die_h(pins, structs, maxcores):
            "#include <cstdint>", "",
            "struct die_pins {",
            f"\tstatic constexpr unsigned MAXCORES = {maxcores};", ""]
-    groups = {}
+    groups, igroups = {}, {}
     for p in pins:
         c = p.get("c", p["name"])
         if "[]." in c:
             g, m = c.split("[].")
             groups.setdefault(g, []).append((m, p))
-    for g, mem in groups.items():
+        elif "_inst" in p:
+            g, m = p["_inst"]
+            if m not in [x for x, _ in igroups.setdefault(g, [])]:
+                igroups[g].append((m, p))
+    for g, mem in list(groups.items()) + list(igroups.items()):
         if g not in structs:
             die(f"pins.toml: no [structs] entry for '{g}'")
         out.append(f"\tstruct {structs[g]} {{")
@@ -324,7 +352,7 @@ def gen_die_h(pins, structs, maxcores):
     for p in pins:
         c = p.get("c", p["name"])
         t, a = ctype(p)
-        if "[]." in c:
+        if "[]." in c or "_inst" in p:
             continue
         if c.endswith("[]"):
             out.append(f"\t{t} {c[:-2]}[MAXCORES]{a} = {{}};\t/* per core: {p['desc']} */")
@@ -334,12 +362,15 @@ def gen_die_h(pins, structs, maxcores):
             routes.append(p["route"])
     for g in groups:
         out.append(f"\t{structs[g]} {g}[MAXCORES] = {{}};")
+    for g, mem in igroups.items():
+        n = sum(1 for p in pins if p.get("_inst", (None,))[0] == g) // len(mem)
+        out.append(f"\t{structs[g]} {g}[{n}] = {{}};")
     for r in routes:
         out.append(f"\tunsigned {r} = 0;\t/* the core the routed input above goes to */")
     out += ["};", ""]
 
     def words(p):
-        return p["width"] // 32
+        return (p["width"] + 31) // 32
 
     out += ["/* inputs: pins -> one core's model */",
             "template <class M>",
@@ -421,6 +452,7 @@ def main():
         [f"    sp[SP_{k}[7:0]] <= RESET_{k};" for k in r["registers"] if k not in ("RIP", "RFLAGS")]) + "\n")
     write(o("vibe86_platform_pkg.sv"), tables(gen_platform_sv(plat)))
     write(o("vibe86_platform.h"), gen_platform_h(plat))
+    pins["pin"], _ = expand(pins["pin"])
     pkg, ports = gen_die_sv(pins["pin"])
     write(o("vibe86_die_pkg.sv"), tables(pkg))
     write(o("vibe86_die_ports.svh"), ports)

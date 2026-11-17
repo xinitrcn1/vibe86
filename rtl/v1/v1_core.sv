@@ -23,7 +23,51 @@ module v1_core
   import vibe86_reset_pkg::*;
   import vibe86_cpuid_pkg::*;
 (
-`include "vibe86_die_ports.svh"
+  // the core's side of the on-die fabric (rtl/uncore/fabric.sv): one
+  // transaction at a time, held until acknowledged; physical addresses
+  input  logic         clk,
+  input  logic         rst_n,
+  output logic         bus_req,
+  output logic         bus_we,
+  output logic         bus_io,          // I/O space (IN/OUT): bus_addr is the port
+  output logic [63:0]  bus_addr,
+  output logic [2:0]   bus_size,        // log2 bytes: 0..4
+  output logic [127:0] bus_wdata,
+  output logic         bus_smm,         // SMIACT#: the fabric decodes SMRAM for the core
+  input  logic         bus_ack,
+  input  logic         bus_err,
+  input  logic [127:0] bus_rdata,
+  // interrupts (the die's sideband pins)
+  input  logic         intr_valid,
+  input  logic [7:0]   intr_vector,
+  output logic         intr_ack,
+  input  logic         nmi,
+  input  logic         smi,
+  input  logic         mce_valid,
+  input  logic [1:0]   mce_type,
+  input  logic [63:0]  mce_addr,
+  // debug (the JTAG debug module, rtl/uncore/jtag_dm.sv; docs/jtag.md)
+  input  logic         dbg_req,         // halt at the next instruction boundary; stay halted while 1
+  input  logic         dbg_step,        // pulse while halted: run one instruction, halt again
+  output logic         dbg_halted,
+  input  logic [7:0]   dbg_reg_sel,     // 0-15 GPRs, 16 RIP, 17 RFLAGS, 80h+n special register n
+  input  logic         dbg_reg_we,      // write while halted
+  input  logic [63:0]  dbg_reg_wdata,
+  output logic [63:0]  dbg_reg_rdata,
+  // trace port (the die's pins)
+  output logic         rt_valid,
+  output logic [63:0]  rt_rip,
+  output logic [3:0]   rt_len,
+  output logic [127:0] rt_bytes,
+  output logic [7:0]   rt_uops,
+  output logic         ev_valid,
+  output logic [7:0]   ev_vector,
+  output logic         ev_has_error,
+  output logic [31:0]  ev_error,
+  output logic [63:0]  ev_rip,
+  output logic         shutdown,
+  output logic         halted,
+  output logic [63:0]  shutdown_rip
 );
 
   // ------------------------------------------------------------------ state
