@@ -1,7 +1,7 @@
 // uefi-setup: setup through the USB keyboard: DEL at the POST prompt, Right
 // to the Advanced tab, Enter on Hardware Monitor (the PMC's sensors and the
 // fan monitor on I2C).
-// vsim-args: -b test -K "47M:Delete 25M:Right 20M:Enter" -c 160000000
+// vsim-args: -b test -K "31M:Delete 15M:Right 12M:Enter" -c 100000000
 // expect-exit: 3   (the cycle limit: setup waits for keys)
 // expect-vga: Aptio-style Setup Utility - Copyright (C) 2026 The vibe86 project
 // expect-vga: Main   Advanced   Boot   Security   Save & Exit

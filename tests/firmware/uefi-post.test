@@ -2,7 +2,7 @@
 // test board: SEC, PEI and DXE run, and BDS shows the POST screen on COM1
 // (the console's VT100 terminal) and on the VGA text screen.
 // Milestone 1 of fw/README.md.
-// vsim-args: -b test -c 51000000
+// vsim-args: -b test -c 34000000
 // expect-exit: 3   (the cycle limit: the firmware waits at its setup prompt)
 // expect-out: vibe86 UEFI 0.1
 // expect-out: CPU   : vibe86 Venice-class microcoded processor

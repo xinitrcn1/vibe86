@@ -4,7 +4,7 @@
 // keyboard (port 1), mouse (2) and floppy drive (3, with MikeOS's image from
 // work/, read-only). F11 typed on the USB keyboard opens the boot menu.
 // requires: ${WORK}/mikeos.flp
-// vsim-args: -b test -U ${WORK}/mikeos.flp,ro -K 47M:F11 -c 80000000
+// vsim-args: -b test -U ${WORK}/mikeos.flp,ro -K 31M:F11 -c 55000000
 // expect-exit: 3   (the cycle limit: the boot menu waits for a choice)
 // expect-out: USB Devices total: 1 Keyboard, 1 Mouse, 1 Floppy
 // expect-vga: Please select boot device:

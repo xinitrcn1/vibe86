@@ -6,7 +6,8 @@
 //
 // It then stops: CSMWrap 2.0 and later need a second logical CPU for their
 // "BIOS proxy" helper core, started with INIT/SIPI through the local APIC
-// (CSMWrap README, FAQ), and v1 has one core and no LAPIC model. This test
+// (CSMWrap README, FAQ), and v1 has one core (the LAPIC is modelled, not a
+// second core). This test
 // pins that point; when the platform has a second core it changes to
 // expect SeaBIOS (fw/README.md "Status").
 // requires: ${WORK}/csmwrapx64.efi

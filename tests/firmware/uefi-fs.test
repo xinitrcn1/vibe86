@@ -6,7 +6,7 @@
 // carries on in pixels) and powers off through ResetSystem.
 // requires: ${WORK}/mikeos.flp
 // ctest-labels: slow
-// vsim-args: -b test -U ${WORK}/mikeos.flp,ro -f opt/vibe86/fs/startup.nsh=${DATA}/uefi-fs.nsh -H 1000000000 -c 1500000000
+// vsim-args: -b test -U ${WORK}/mikeos.flp,ro -f opt/vibe86/fs/startup.nsh=${DATA}/uefi-fs.nsh -H 1000000000 -c 1000000000
 // expect-exit: 0   (powered off by "reset -s")
 // expect-out: fs0: Alias(s): vibe86 USB Floppy
 // expect-out: fs1: Alias(s): QEMU fw_cfg volume
