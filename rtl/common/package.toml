@@ -1,0 +1,163 @@
+# The vibe86 package's ball map (D-019, docs/package.md): every ball group
+# of the LGA socket, with its ball count. Signal groups list the logic
+# signals of rtl/common/pins.toml they carry (each pin names its group
+# there); power groups their rail. tools/gen/package.py checks the budget:
+# the groups add up to `balls`, each rail carries at most `amps_per_ball`
+# at its EDC, VSS has at least as many balls as all rails together, and
+# every pin of pins.toml (but the simulation observation ports) is in a
+# group that exists here.
+
+[package]
+name = "vibe86 LGA-4096 two-die package"
+balls = 4096
+amps_per_ball = 0.5          # design rule: per LGA contact at EDC
+type = 1                     # PKG_TYPE[3:0] and CPUID Fn8000_0001_EBX[31:28]
+version = 1                  # PKG_VER[3:0]: this pinout
+
+# --- DDR5: 146 balls per channel: 2 subchannels x (DQ/CB 40, DQS_t/c 10,
+#     CA 14, CS_n 4, CK_t/c 4) + RESET_n + ALERT_n
+[[group]]
+name = "ddr5"
+kind = "signal"
+instances = ["0", "1", "2", "3", "4", "5", "6", "7"]
+implemented = ["0", "1"]
+balls = 146
+desc = "DDR5 channel: two 40-bit subchannels, two DIMMs"
+
+[[group]]
+name = "spd"
+kind = "signal"
+instances = ["0", "1"]
+implemented = ["0"]
+balls = 2
+desc = "SPD bus (I2C/I3C Basic): bus 0 channels 0-3, bus 1 channels 4-7"
+
+# --- links: x16 SerDes, modelled at the flit level (the PHY's parallel side)
+[[group]]
+name = "syslink"
+kind = "signal"
+balls = 66
+desc = "system link to the chipset: 16 TX + 16 RX pairs, REFCLK pair"
+
+[[group]]
+name = "xsl"
+kind = "signal"
+instances = ["0", "1"]
+implemented = []
+balls = 64
+desc = "inter-socket link: 16 TX + 16 RX pairs"
+
+[[group]]
+name = "xsl_refclk"
+kind = "signal"
+implemented = []
+balls = 2
+desc = "the inter-socket links' reference clock pair"
+
+# --- platform
+[[group]]
+name = "clock_reset"
+kind = "signal"
+balls = 4
+desc = "REFCLK_P/N, PWROK, RESET_L"
+
+[[group]]
+name = "vrctl"
+kind = "signal"
+balls = 4
+desc = "SVC, SVD, SVT, VR_HOT_L"
+
+[[group]]
+name = "thermal"
+kind = "signal"
+balls = 2
+desc = "THERMTRIP_L, PROCHOT_L"
+
+[[group]]
+name = "errors"
+kind = "signal"
+balls = 5
+desc = "MCERR_L, CATERR_L, ERROR_L[2:0]"
+
+[[group]]
+name = "sideband"
+kind = "signal"
+balls = 3
+desc = "SB_SCL, SB_SDA, SB_ALERT_L (SMBus 3.x / I3C)"
+
+[[group]]
+name = "ident"
+kind = "signal"
+balls = 12
+desc = "SOCKET_ID[2:0], PKG_TYPE[3:0], PKG_VER[3:0], SKT_OCC_L"
+
+[[group]]
+name = "jtag"
+kind = "signal"
+balls = 5
+desc = "TCK, TMS, TDI, TDO, TRST_L (IEEE 1149.1)"
+
+[[group]]
+name = "trace"
+kind = "signal"
+balls = 18
+desc = "TRACECLK, TRACECTL, TRACEDATA[15:0]"
+
+[[group]]
+name = "test"
+kind = "signal"
+balls = 1
+desc = "TEST_MEMINIT_FAST: JEDEC waits / 1024 (simulation); boards tie it low"
+
+# --- power: balls = EDC / amps_per_ball, checked
+[[group]]
+name = "VDDCR_CPU"
+kind = "power"
+volts = "0.60-1.20 (SVID address 0)"
+edc_amps = 450
+balls = 900
+desc = "the compute die's cores"
+
+[[group]]
+name = "VDDCR_SOC"
+kind = "power"
+volts = "0.75-1.05 (SVID address 1)"
+edc_amps = 120
+balls = 240
+desc = "the I/O die"
+
+[[group]]
+name = "VDDIO_MEM"
+kind = "power"
+volts = "1.1"
+edc_amps = 32
+balls = 64
+desc = "the DDR5 PHYs (VDDQ), 4 A per channel"
+
+[[group]]
+name = "VDD_18"
+kind = "power"
+volts = "1.8"
+edc_amps = 10
+balls = 20
+desc = "PLLs, the SerDes, I/O"
+
+[[group]]
+name = "VDD_18_S5"
+kind = "power"
+volts = "1.8 (standby)"
+edc_amps = 2
+balls = 4
+desc = "the SMU's standby logic, the sideband, identification, PWROK"
+
+[[group]]
+name = "VSS"
+kind = "ground"
+balls = 1320
+desc = "ground"
+
+[[group]]
+name = "RSVD"
+kind = "reserved"
+balls = 126
+desc = "reserved: no connection"
