@@ -23,9 +23,15 @@ setup screen's layout are ported from the vercpu firmware
 | 2 | PCI enumeration, xHCI, USB keyboard + mouse + floppy | works (keys drive the menus) | `firmware/uefi-usb` |
 | 3 | system table, boot services, Block I/O and Simple File System on the USB floppy, GOP/console | works | `firmware/uefi-fs`, `firmware/uefi-setup` |
 | 4 | CSMWrap loaded and run from the boot manager | runs until it needs a second CPU (below) | `firmware/uefi-csmwrap` (slow) |
-| 5 | MikeOS boots from the USB floppy | **blocked by the platform** | — |
+| 5 | MikeOS boots from the USB floppy | works, through the firmware's own CSM | `firmware/uefi-mikeos` (slow) |
 
-**Milestone 5 is blocked on SMP.** CSMWrap 2.0 and later (the user's
+MikeOS boots through the firmware's **own Compatibility Support Module**
+(below, "The CSM"): the boot manager offers "Legacy: vibe86 USB Floppy",
+MikeOS's boot sector and kernel load through INT 13h on the USB floppy,
+its menus draw through INT 10h and the USB keyboard drives them through
+INT 16h.
+
+**CSMWrap is blocked on SMP.** CSMWrap 2.0 and later (the user's
 binary is 3.1.2) reserve one logical CPU as a "BIOS proxy" helper core,
 started with INIT-SIPI-SIPI through the local APIC, and panic without one
 (`bios_proxy.c`: "No AP available for BIOS proxy"; CSMWrap README, FAQ:
@@ -140,6 +146,43 @@ so ConnectController/DisconnectController only validate their arguments.
 **Shell** (`apps/shell`): an application in FV_MAIN, the boot option
 "UEFI: Built-in EFI Shell".
 
+## The CSM
+
+A Compatibility Support Module in the PI sense (Intel, *Compatibility
+Support Module Specification* 0.98, 2007): a 16-bit legacy BIOS image and
+the code that loads it and boots legacy devices. The hardware isn't a PC's
+(the floppy is USB mass storage behind xHCI, the keyboard is USB, the
+display has no legacy VGA registers), so instead of reimplementing those
+in 16-bit code, the BIOS services are C running on the UEFI drivers, which
+stay alive: a legacy boot signals the LegacyBoot event group, not
+ExitBootServices (UEFI 2.10 7.4.6), and the E820 map reserves everything
+the firmware holds.
+
+- `csm/csm16.S`: the image at F_0000h–F_FFFFh (shadow RAM through the
+  i440FX PAM registers). Each service interrupt enters a thunk that saves
+  the caller's registers on its stack and switches real mode → protected
+  mode → IA-32e mode (the firmware's page tables and IDT), calls
+  CsmDxe's dispatcher with the register frame, and returns the same way
+  (Intel SDM Vol. 3A 10.8.5, 10.9.2). In 16-bit code stay only IRQ0 (the
+  8254 tick into BDA 46Ch, INT 1Ch), the default IRQ handlers (EOI) and
+  the jump to the boot sector. A service that must wait (INT 16h AH=00h
+  without a key) asks the thunk to open an interrupt window and call
+  again, so the timer keeps ticking.
+- `dxe/csm`: CsmDxe. `csm.c` loads the image, builds the IVT, the BIOS
+  data area and the EBDA, puts the 8259s at vectors 08h/70h and the
+  8254 at 18.2 Hz, reads the boot sector to 0000:7C00 and enters it with
+  DL = the drive. `bios.c` has the services: INT 10h (text modes on the
+  display's text cells, mirrored to COM1 as console redirection), 13h
+  (the boot device's Block I/O as floppy 00h with CHS from its size, or
+  disk 80h with the EDD calls), 16h (ConIn as scan code/ASCII pairs), 1Ah,
+  15h (88h, E801h, E820h, 86h, C0h, A20), 11h, 12h, 14h, 17h, 18h, 19h.
+- Setup: Advanced → CSM Configuration → CSM Support; Boot → Boot Option
+  priorities include "Legacy (CSM) devices": every block device whose
+  first sector ends in 55h AAh.
+
+Graphics video modes (INT 10h AH=00h with a mode above 7) are not
+implemented, so MikeOS's PCX viewer can't show pictures.
+
 ## Limits
 
 - SEC and PEI use DRAM from reset (it is trained before the core runs);
@@ -150,6 +193,10 @@ so ConnectController/DisconnectController only validate their arguments.
 - The IOMMU stays in bypass (PCI I/O Map is 1:1).
 
 ## Platform findings (to fix in the platform, not here)
+
+- Fixed: v1 took the default segment of string instructions and XLAT
+  from the previous instruction's ModRM byte (SS after e.g. XCHG CX, DX),
+  which broke MikeOS's boot sector; `tests/isa/string-seg` covers it.
 
 - **SMP** (above): CSMWrap needs a second core (an AP to INIT/SIPI).
 - The local APIC leaves reset enabled with its LVTs masked, so the DXE

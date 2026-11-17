@@ -55,5 +55,6 @@ typedef struct {
 #define POST_BDS_BOOT		0x32
 #define POST_BDS_SHELL		0x33
 #define POST_EXIT_BOOT_SERVICES	0x40
+#define POST_CSM_BOOT		0x50	/* entering a legacy boot sector */
 
 #endif

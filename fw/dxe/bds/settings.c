@@ -17,7 +17,9 @@ settings_defaults(struct settings *s)
 	s->usb = 1;
 	s->boot_first = BOOT_REMOVABLE;
 	s->boot_second = BOOT_FWCFG;
-	s->boot_third = BOOT_SHELL;
+	s->boot_third = BOOT_LEGACY;
+	s->boot_fourth = BOOT_SHELL;
+	s->csm = 1;
 }
 
 int

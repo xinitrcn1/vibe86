@@ -102,6 +102,17 @@ add_custom_command(OUTPUT ${SEC_BIN}
   COMMENT "fw SEC"
   VERBATIM)
 
+# CSM16: the legacy BIOS image (64 KiB at F_0000h), a raw file of FV_MAIN
+set(CSM16_OBJ ${FW_OUT}/obj/csm16.o)
+set(CSM16_BIN ${FW_OUT}/csm16.bin)
+add_custom_command(OUTPUT ${CSM16_BIN}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${FW_OUT}/obj
+  COMMAND ${FW_CLANG} -c -target x86_64-unknown-none -o ${CSM16_OBJ} ${FW_SRC}/csm/csm16.S
+  COMMAND ${FW_LD_LLD} -T ${CMAKE_SOURCE_DIR}/tests/flat.ld -o ${CSM16_BIN} ${CSM16_OBJ}
+  DEPENDS ${FW_SRC}/csm/csm16.S
+  COMMENT "fw CSM16"
+  VERBATIM)
+
 # PEI: a fixed-address image run in place (file layout = memory layout)
 fw_image(Pei SUBSYSTEM efi_boot_service_driver ENTRY pei_main
   LINK /base:0xFFF00000 /fixed /filealign:4096
@@ -137,6 +148,7 @@ fw_driver(UsbDxe SOURCES dxe/usb/main.c dxe/usb/xhci.c dxe/usb/hid.c dxe/usb/msc
 fw_driver(FatDxe SOURCES dxe/fat/fat.c)
 fw_driver(FwCfgFsDxe SOURCES dxe/fwcfgfs/fwcfgfs.c)
 fw_driver(PlatformDxe SOURCES dxe/platform/platform.c dxe/platform/acpi.c dxe/platform/smbios.c)
+fw_driver(CsmDxe SOURCES dxe/csm/csm.c dxe/csm/bios.c)
 fw_driver(BdsDxe SOURCES dxe/bds/bds.c dxe/bds/boot.c dxe/bds/menu.c dxe/bds/setup.c
           dxe/bds/settings.c dxe/bds/ui.c)
 
@@ -159,8 +171,9 @@ add_custom_command(OUTPUT ${FD}
           --raw d6a2cb7f-6a18-4e2f-b43c-766238360010=${ACPI_OUT}/tables
           --raw d6a2cb7f-6a18-4e2f-b43c-766238360011=${ACPI_OUT}/rsdp
           --raw d6a2cb7f-6a18-4e2f-b43c-766238360012=${ACPI_OUT}/table-loader
+          --raw d6a2cb7f-6a18-4e2f-b43c-766238360030=${CSM16_BIN}
   DEPENDS ${FW_SRC}/tools/mkfd.py ${FW_SRC}/include/layout.h ${SEC_BIN} ${FW_IMAGE_Pei}
-          ${FW_IMAGE_DxeCore} ${FW_DRIVER_FILES} ${FW_IMAGE_Shell} ${ACPI_OUT}/tables
+          ${FW_IMAGE_DxeCore} ${FW_DRIVER_FILES} ${FW_IMAGE_Shell} ${CSM16_BIN} ${ACPI_OUT}/tables
   COMMENT "fw vibe86.fd"
   VERBATIM)
 add_custom_target(firmware ALL DEPENDS ${FD})

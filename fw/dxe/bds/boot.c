@@ -6,6 +6,7 @@
  */
 #include "bds.h"
 #include "devname.h"
+#include "vibe86csm.h"
 
 struct boot_option boot_options[MAX_BOOT_OPTIONS];
 int nboot_options;
@@ -22,6 +23,7 @@ boot_type_name(int t)
 	switch (t) {
 	case BOOT_REMOVABLE: return "UEFI removable media";
 	case BOOT_FWCFG: return "fw_cfg volume";
+	case BOOT_LEGACY: return "Legacy (CSM) devices";
 	case BOOT_SHELL: return "Built-in EFI Shell";
 	}
 	return "Disabled";
@@ -101,6 +103,23 @@ boot_scan(void)
 		}
 		free(hs);
 	}
+	/* legacy boot options: block devices with a boot sector, through the CSM */
+	static EFI_GUID csm_guid = VIBE86_CSM_PROTOCOL_GUID;
+	VIBE86_CSM_PROTOCOL *csm;
+	if (cfg.csm && gBS->LocateProtocol(&csm_guid, 0, (void **)&csm) == EFI_SUCCESS &&
+	    gBS->LocateHandleBuffer(ByProtocol, &gEfiBlockIoProtocolGuid, 0, &n, &hs) == EFI_SUCCESS) {
+		for (UINTN i = 0; i < n; i++) {
+			EFI_DEVICE_PATH_PROTOCOL *dp = dp_of(hs[i]);
+			if (!dp || !csm->Bootable(csm, hs[i]))
+				continue;
+			char name[56], desc[64];
+			device_name(dp, name, sizeof name);
+			snprintf(desc, sizeof desc, "Legacy: %s", name);
+			add_option(desc, BOOT_LEGACY, dp_dup(dp));
+			boot_options[nboot_options - 1].handle = hs[i];
+		}
+		free(hs);
+	}
 #pragma pack(push, 1)
 	struct {
 		MEDIA_FW_VOL_DEVICE_PATH fv;
@@ -129,6 +148,18 @@ boot_run(const struct boot_option *o)
 	dp_to_text(o->path, text, sizeof text);
 	DEBUG("BDS: booting %s: %s\n", o->desc, text);
 	post_code(POST_BDS_BOOT);
+	if (o->type == BOOT_LEGACY) {
+		static EFI_GUID csm_guid = VIBE86_CSM_PROTOCOL_GUID;
+		VIBE86_CSM_PROTOCOL *csm;
+		EFI_STATUS s = gBS->LocateProtocol(&csm_guid, 0, (void **)&csm);
+		if (!EFI_ERROR(s)) {
+			ui_clear(A_NORMAL);
+			s = csm->LegacyBoot(csm, o->handle);
+		}
+		ui_attr(A_NORMAL);
+		ui_printf("Legacy boot of \"%s\" failed: %r\n", o->desc, s);
+		return s;
+	}
 	EFI_STATUS s = gBS->LoadImage(TRUE, gImageHandle, o->path, 0, 0, &h);
 	if (EFI_ERROR(s)) {
 		ui_attr(A_NORMAL);
@@ -152,9 +183,9 @@ boot_run(const struct boot_option *o)
 void
 boot_manager(void)
 {
-	UINT8 order[3] = { cfg.boot_first, cfg.boot_second, cfg.boot_third };
+	UINT8 order[4] = { cfg.boot_first, cfg.boot_second, cfg.boot_third, cfg.boot_fourth };
 	boot_scan();
-	for (int k = 0; k < 3; k++) {
+	for (int k = 0; k < 4; k++) {
 		if (order[k] >= BOOT_NTYPES)
 			continue;
 		for (int i = 0; i < nboot_options; i++)

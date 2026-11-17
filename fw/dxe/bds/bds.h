@@ -12,7 +12,7 @@
 
 /* settings (the "Setup" variable, settings.c) */
 #define SETUP_GUID EFI_GUID_DEF(0xec87d643, 0xeba4, 0x4bb5, 0xa1, 0xe5, 0x3f, 0x3e, 0x36, 0xb2, 0x0d, 0xa9)
-#define SETUP_VERSION	1
+#define SETUP_VERSION	2
 struct settings {
 	UINT8 version;
 	UINT8 quiet_boot;	/* fewer POST messages */
@@ -22,9 +22,11 @@ struct settings {
 	UINT8 boot_first;	/* index into the boot option types (BOOT_*) of #1 */
 	UINT8 boot_second;
 	UINT8 boot_third;
-	UINT8 pad[7];
+	UINT8 boot_fourth;
+	UINT8 csm;		/* the CSM: legacy boot options */
+	UINT8 pad[5];
 };
-enum { BOOT_REMOVABLE, BOOT_FWCFG, BOOT_SHELL, BOOT_NTYPES, BOOT_DISABLED = 0xFF };
+enum { BOOT_REMOVABLE, BOOT_FWCFG, BOOT_LEGACY, BOOT_SHELL, BOOT_NTYPES, BOOT_DISABLED = 0xFF };
 extern struct settings cfg;
 void settings_defaults(struct settings *s);
 int settings_load(void);		/* 0 ok, -1 defaults */
@@ -35,6 +37,7 @@ struct boot_option {
 	char desc[64];
 	int type;			/* BOOT_* */
 	EFI_DEVICE_PATH_PROTOCOL *path;	/* what LoadImage gets */
+	EFI_HANDLE handle;		/* BOOT_LEGACY: the Block I/O device */
 };
 #define MAX_BOOT_OPTIONS 16
 extern struct boot_option boot_options[MAX_BOOT_OPTIONS];

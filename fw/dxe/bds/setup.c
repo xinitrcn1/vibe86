@@ -54,6 +54,7 @@ static void t_cpu2(char *b, int n, int a) { snprintf(b, (size_t)n, "%s", strlen(
 static void t_clock(char *b, int n, int a) { snprintf(b, (size_t)n, "%lu MHz", (unsigned long)(TSC_HZ / 1000000)); }
 static void t_cores(char *b, int n, int a) { snprintf(b, (size_t)n, "1"); }
 static void t_mem(char *b, int n, int a) { snprintf(b, (size_t)n, "%lu MB", (unsigned long)((mem_total + (1 << 19)) >> 20)); }
+static void t_csm(char *b, int n, int a) { snprintf(b, (size_t)n, "vibe86 CSM16 %s", FW_VERSION_STR); }
 static void t_none(char *b, int n, int a) { snprintf(b, (size_t)n, "Not Installed"); }
 static void t_unsup(char *b, int n, int a) { snprintf(b, (size_t)n, "Not Supported"); }
 
@@ -201,7 +202,14 @@ static struct item tpm_items[] = {
 	TEXT("TPM Device", t_tpm, 0),
 	TEXT("Measured Boot", t_unsup, 0),
 };
+static struct item csm_items[] = {
+	HEAD("Compatibility Support Module Configuration"), BLANK,
+	TEXT("CSM16 Module Version", t_csm, 0), BLANK,
+	OPT("CSM Support", "Enables the legacy BIOS (CSM): block devices with a boot "
+	    "sector become legacy boot options, booted in real mode.", &ed.csm, en_dis),
+};
 static const struct page hwmon_page = PAGE("Hardware Monitor", hwmon_items);
+static const struct page csm_page = PAGE("CSM Configuration", csm_items);
 static const struct page pci_page = PAGE("PCI Subsystem Settings", pci_items);
 static const struct page usb_page = PAGE("USB Configuration", usb_items);
 static const struct page tpm_page = PAGE("Trusted Computing", tpm_items);
@@ -230,6 +238,7 @@ static struct item adv_items[] = {
 	SUB("PCI Subsystem Settings", "The PCI Express devices behind the root ports.", &pci_page),
 	SUB("USB Configuration", "USB devices and USB support.", &usb_page),
 	SUB("Trusted Computing", "The TPM.", &tpm_page),
+	SUB("CSM Configuration", "The Compatibility Support Module: legacy boot.", &csm_page),
 };
 static const char *boot_choices[BOOT_NTYPES + 1];
 static struct item boot_items[] = {
@@ -242,6 +251,7 @@ static struct item boot_items[] = {
 	{ K_OPT, "Boot Option #1", "Sets the system boot order.", &ed.boot_first, boot_choices, BOOT_NTYPES + 1, 0, 0, 0, 0, 0, 1 },
 	{ K_OPT, "Boot Option #2", "Sets the system boot order.", &ed.boot_second, boot_choices, BOOT_NTYPES + 1, 0, 0, 0, 0, 0, 1 },
 	{ K_OPT, "Boot Option #3", "Sets the system boot order.", &ed.boot_third, boot_choices, BOOT_NTYPES + 1, 0, 0, 0, 0, 0, 1 },
+	{ K_OPT, "Boot Option #4", "Sets the system boot order.", &ed.boot_fourth, boot_choices, BOOT_NTYPES + 1, 0, 0, 0, 0, 0, 1 },
 };
 static struct item sec_items[] = {
 	HEAD("Password Description"),
