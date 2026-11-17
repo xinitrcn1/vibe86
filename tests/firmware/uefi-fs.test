@@ -1,0 +1,19 @@
+// uefi-fs: the system table, boot services, Block I/O and Simple File System
+// on the USB floppy, GOP and the console (milestone 3 of fw/README.md). The
+// boot manager falls through to the built-in EFI shell, which runs
+// uefi-fs.nsh from the fw_cfg volume as startup.nsh: it lists MikeOS's
+// floppy (FAT12, fs0:), prints a file from it, starts the GOP (the console
+// carries on in pixels) and powers off through ResetSystem.
+// requires: ${WORK}/mikeos.flp
+// ctest-labels: slow
+// vsim-args: -b test -U ${WORK}/mikeos.flp,ro -f opt/vibe86/fs/startup.nsh=${DATA}/uefi-fs.nsh -H 1000000000 -c 1500000000
+// expect-exit: 0   (powered off by "reset -s")
+// expect-out: fs0: Alias(s): vibe86 USB Floppy
+// expect-out: fs1: Alias(s): QEMU fw_cfg volume
+// expect-out: Directory of: fs0:\
+// expect-out: kernel.bin
+// expect-out: REM ADVENTURE 2.3 -- By Justin Tokarchuk
+// expect-out: gop: 2 modes; not started (the display is in text mode)
+// expect-out: *0: 640x480, format 1, 640 pixels per line
+// expect-out: frame buffer f0000000, 1228800 bytes
+// expect-out: ACPI_NVS

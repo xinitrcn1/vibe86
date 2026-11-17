@@ -1,0 +1,11 @@
+// uefi-post: the vibe86 UEFI firmware (build/fw/vibe86.fd) from reset on the
+// test board: SEC, PEI and DXE run, and BDS shows the POST screen on COM1
+// (the console's VT100 terminal) and on the VGA text screen.
+// Milestone 1 of fw/README.md.
+// vsim-args: -b test -c 51000000
+// expect-exit: 3   (the cycle limit: the firmware waits at its setup prompt)
+// expect-out: vibe86 UEFI 0.1
+// expect-out: CPU   : vibe86 Venice-class microcoded processor
+// expect-out: Total Memory: 16384 MB
+// expect-vga: vibe86 UEFI 0.1
+// expect-vga: Press <DEL> or <F2> to enter setup, <F11> or <F12> for the boot menu.

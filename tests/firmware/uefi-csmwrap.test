@@ -1,0 +1,21 @@
+// uefi-csmwrap: CSMWrap (work/csmwrapx64.efi, the user's binary) loaded and
+// run by the boot manager (milestone 4 of fw/README.md). The fw_cfg volume
+// holds it as \EFI\BOOT\BOOTX64.EFI with csmwrap.ini (its log on COM1);
+// CSMWrap draws its banner through the GOP, unlocks C_0000h-F_FFFFh with
+// the Legacy Region 2 protocol and parses the ACPI tables with uACPI.
+//
+// It then stops: CSMWrap 2.0 and later need a second logical CPU for their
+// "BIOS proxy" helper core, started with INIT/SIPI through the local APIC
+// (CSMWrap README, FAQ), and v1 has one core and no LAPIC model. This test
+// pins that point; when the platform has a second core it changes to
+// expect SeaBIOS (fw/README.md "Status").
+// requires: ${WORK}/csmwrapx64.efi
+// requires: ${WORK}/mikeos.flp
+// ctest-labels: slow
+// vsim-args: -b test -U ${WORK}/mikeos.flp,ro -f opt/vibe86/fs/EFI/BOOT/BOOTX64.EFI=${WORK}/csmwrapx64.efi -f opt/vibe86/fs/EFI/BOOT/csmwrap.ini=${DATA}/csmwrap.ini -H 10000000 -c 3000000000
+// expect-exit: 6   (halted: CSMWrap's panic)
+// expect-out: Successfully unlocked legacy region 0xC0000-0xFFFFF using UEFI protocol
+// expect-out: csm_bin_base: 0xe0000
+// expect-out: [uACPI][INFO] DSDT
+// expect-out: No AP available for BIOS proxy
+// expect-out: *** PANIC: BIOS proxy initialization failed
