@@ -1,5 +1,7 @@
 # vibe86
 
+![scr0](./scr0.png)
+
 An x86-64 processor in SystemVerilog whose microcode is compiled from the
 Intel SDM's pseudocode, with the server board it runs on (Verilator + a C
 board model). Target ISA: AMD EPYC "Venice" (Zen 6) — see

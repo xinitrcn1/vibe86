@@ -5,3 +5,4 @@ __pycache__/
 sim/tpmgen
 tools/sdm/extracted/
 work/
+log*.txt
