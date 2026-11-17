@@ -162,7 +162,11 @@ SEL.update({
     "SEGREG": 98, # the segment register named by ModRM.reg (MOV Sreg): its selector
     "TRAPVA": 99, # micro-trap: the linear address that missed / faulted
     "TRAPX": 100, # micro-trap: access kind (bit 0 write, 1 user, 2 fetch, 3 shadow stack)
+    # micro-subroutine arguments: shared by all call levels (T0-T31 are banked:
+    # UCALL gives the callee a fresh bank, URET returns to the caller's)
+    "A0": 101, "A1": 102, "A2": 103, "A3": 104,
 })
+USTACK = 4           # micro-subroutine nesting depth
 
 # vector-side selectors (for vec uops, VLD/VST, VGET/VSET, KOP)
 VSEL = {}

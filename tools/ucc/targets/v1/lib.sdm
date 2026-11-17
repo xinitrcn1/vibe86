@@ -31,14 +31,14 @@ RESULT := (SHR(D, 40) AND FFH) OR (SHR(D, 44) AND F00H);
 # protected mode...") and Vol. 3A 5.10 "Pointer Validation". SEGNUM is a
 # constant (0-5: ES CS SS DS FS GS). The descriptor's accessed bit is set
 # as the processor does (Vol. 3A 3.4.5.1).
-@function LoadSegment(SEGNUM, SELECTOR)
+@subroutine LoadSegment(SEGNUM, SELECTOR)
 s := SELECTOR AND FFFFH;
 IF CR0.PE = 0 OR RFLAGS.VM = 1
     THEN
         SetSegmentReal(SEGNUM, s);
     ELSE IF (s AND FFFCH) = 0
     THEN
-        IF SEGNUM = 2 AND NOT (Mode64 = 1 AND CPL != 3 AND (s AND 3) = CPL)
+        IF SEGNUM = 2 AND NOT (IA32_EFER.LMA = 1 AND CS.L = 1 AND CPL != 3 AND (s AND 3) = CPL)
             THEN #GP(0);
         FI;
         SetSegment(SEGNUM, s, 0, 0, 0);
@@ -70,7 +70,7 @@ FI;
 # and Vol. 3A 5.8.1 "Direct Calls or Jumps to Code Segments". RPL is the
 # privilege the new CS takes (CPL for JMP/CALL, the selector's RPL for
 # returns). Sets CPL.
-@function LoadCodeSegment(SELECTOR, NEWCPL, ISRETURN)
+@subroutine LoadCodeSegment(SELECTOR, NEWCPL, ISRETURN)
 s := SELECTOR AND FFFFH;
 IF CR0.PE = 0 OR RFLAGS.VM = 1
     THEN
@@ -98,3 +98,222 @@ IF CR0.PE = 0 OR RFLAGS.VM = 1
         SetSegment(1, (s AND FFFCH) OR NEWCPL, DescBase(d), DescLimit(d), DescAttr(d) OR 1);
         WriteSpecial(CPL, NEWCPL);
 FI;
+
+# Canonical addresses (Intel SDM Vol. 1, 3.3.7.1): bits 63:47 all equal
+# (63:56 with 5-level paging).
+@function Canonical(X)
+IF CR4.LA57 = 1
+    THEN RESULT := SAR(SHL(X, 7), 7) = X;
+    ELSE RESULT := SAR(SHL(X, 16), 16) = X;
+FI;
+
+# A segment descriptor from the GDT or LDT: CALL's Operation ("IF segment
+# selector index not within descriptor table limits THEN #GP(new code
+# segment selector)") and Vol. 3A 3.5.1. A null selector is #GP(0).
+@function ReadDescriptor(SEL)
+s := SEL AND FFFFH;
+IF (s AND FFFCH) = 0 THEN #GP(0); FI;
+IF (s AND 4) = 0
+    THEN tb := GDTR_BASE; tl := GDTR_LIMIT;
+    ELSE tb := LDTR_BASE; tl := LDTR_LIMIT;
+FI;
+IF (s OR 7) > tl THEN #GP(s AND FFFCH); FI;
+RESULT := Linear64[tb + (s AND FFF8H)];
+
+# The second quadword of a 16-byte system descriptor (IA-32e mode call gates,
+# TSS and LDT descriptors).
+@function ReadDescriptorHigh(SEL)
+s := SEL AND FFFFH;
+IF (s AND 4) = 0
+    THEN tb := GDTR_BASE; tl := GDTR_LIMIT;
+    ELSE tb := LDTR_BASE; tl := LDTR_LIMIT;
+FI;
+IF (s OR 15) > tl THEN #GP(s AND FFFCH); FI;
+RESULT := Linear64[tb + (s AND FFF8H) + 8];
+
+# Stack pushes at a given width, for the transfers that push with the size
+# of a gate rather than the instruction (32-bit call gates push 4-byte
+# values, IA-32e mode always 8), with SP or ESP by SS.B.
+@function PushW(VALUE, WIDTH)
+IF WIDTH = 8 THEN
+    RSP := RSP - 8;
+    Memory64[SS:RSP] := VALUE;
+ELSE IF SS.B = 1 THEN
+    ESP := ESP - WIDTH;
+    IF WIDTH = 4 THEN Memory32[SS:ESP] := VALUE; ELSE Memory16[SS:ESP] := VALUE; FI;
+ELSE
+    SP := SP - WIDTH;
+    IF WIDTH = 4 THEN Memory32[SS:SP] := VALUE; ELSE Memory16[SS:SP] := VALUE; FI;
+FI;
+
+# A task switch (Intel SDM Vol. 3A, 9.3 "Task Switching", and the
+# TASK-GATE/TASK-STATE-SEGMENT branches of CALL, JMP and INT n; 32-bit TSS,
+# Figure 9-2). REASON: 0 JMP, 1 CALL or an interrupt/exception, 2 IRET.
+# OLDEIP is the EIP to save. v1 simplifications: 16-bit TSSs and the I/O
+# permission bitmap aren't supported, and faults loading the new task's
+# segments are reported as by MOV (#GP/#SS/#NP) rather than #TS.
+@subroutine TaskSwitch(NEWSEL, REASON, OLDEIP)
+IF IA32_EFER.LMA = 1 THEN #GP(0); FI;
+ns := NEWSEL AND FFFFH;
+IF (ns AND 4) != 0 OR (ns OR 7) > GDTR_LIMIT THEN #GP(ns AND FFFCH); FI;
+nd := Linear64[GDTR_BASE + (ns AND FFF8H)];
+nty := SHR(nd, 40) AND 1FH;
+IF REASON = 2
+    THEN IF nty != 0BH THEN #TS(ns AND FFFCH); FI;
+    ELSE IF nty != 09H THEN #GP(ns AND FFFCH); FI;
+FI;
+IF (SHR(nd, 47) AND 1) = 0 THEN #NP(ns AND FFFCH); FI;
+IF DescLimit(nd) < 67H THEN #TS(ns AND FFFCH); FI;
+nb := DescBase(nd);
+ob := TR_BASE;
+os := TR_SEL;
+oflags := RFLAGS;
+IF REASON = 2 THEN oflags := oflags AND FFFFBFFFH; FI;
+(* save the current task's state in its TSS *)
+Linear32[ob + 20H] := OLDEIP;
+Linear32[ob + 24H] := oflags;
+Linear32[ob + 28H] := EAX;
+Linear32[ob + 2CH] := ECX;
+Linear32[ob + 30H] := EDX;
+Linear32[ob + 34H] := EBX;
+Linear32[ob + 38H] := ESP;
+Linear32[ob + 3CH] := EBP;
+Linear32[ob + 40H] := ESI;
+Linear32[ob + 44H] := EDI;
+Linear16[ob + 48H] := ES;
+Linear16[ob + 4CH] := CS;
+Linear16[ob + 50H] := SS;
+Linear16[ob + 54H] := DS;
+Linear16[ob + 58H] := FS;
+Linear16[ob + 5CH] := GS;
+(* busy flags and the link *)
+IF REASON != 1 THEN
+    od := Linear64[GDTR_BASE + (os AND FFF8H)];
+    Linear64[GDTR_BASE + (os AND FFF8H)] := od AND FFFFFDFFFFFFFFFFH;
+FI;
+IF REASON = 1 THEN Linear16[nb] := os; FI;
+IF REASON != 2 THEN Linear64[GDTR_BASE + (ns AND FFF8H)] := nd OR 20000000000H; FI;
+(* the new task *)
+SetSegment(7, ns, nb, DescLimit(nd), DescAttr(nd) OR 2);
+WriteSpecial(CR0, CR0 OR 8);
+neip := Linear32[nb + 20H];
+nflags := Linear32[nb + 24H];
+IF REASON = 1 THEN nflags := nflags OR 4000H; FI;
+EAX := Linear32[nb + 28H];
+ECX := Linear32[nb + 2CH];
+EDX := Linear32[nb + 30H];
+EBX := Linear32[nb + 34H];
+ESP := Linear32[nb + 38H];
+EBP := Linear32[nb + 3CH];
+ESI := Linear32[nb + 40H];
+EDI := Linear32[nb + 44H];
+nes := Linear16[nb + 48H];
+ncs := Linear16[nb + 4CH];
+nss := Linear16[nb + 50H];
+nds := Linear16[nb + 54H];
+nfs := Linear16[nb + 58H];
+ngs := Linear16[nb + 5CH];
+nldt := Linear16[nb + 60H];
+IF CR0.PG = 1 THEN WriteSpecial(CR3, Linear32[nb + 1CH]); FI;
+StoreFlags(nflags, 3F7FD5H);
+IF (nldt AND FFFCH) = 0
+    THEN SetSegment(6, nldt, 0, 0, 0);
+    ELSE
+        ld := Linear64[GDTR_BASE + (nldt AND FFF8H)];
+        IF (SHR(ld, 40) AND 1FH) != 2 THEN #TS(nldt AND FFFCH); FI;
+        SetSegment(6, nldt, DescBase(ld), DescLimit(ld), DescAttr(ld));
+FI;
+IF (SHR(nflags, 17) AND 1) = 1
+    THEN
+        (* a virtual-8086 task: real-mode style segments, CPL 3 *)
+        WriteSpecial(CPL, 3);
+        SetSegmentReal(1, ncs);
+        SetSegmentReal(2, nss);
+        SetSegmentReal(3, nds);
+        SetSegmentReal(0, nes);
+        SetSegmentReal(4, nfs);
+        SetSegmentReal(5, ngs);
+    ELSE
+        LoadCodeSegment(ncs, ncs AND 3, 1);
+        LoadSegment(2, nss);
+        LoadSegment(3, nds);
+        LoadSegment(0, nes);
+        LoadSegment(4, nfs);
+        LoadSegment(5, ngs);
+FI;
+RIP := neip;
+
+# Far transfers through a call gate (CALL's "CALL-GATE" branch,
+# Vol. 3A 5.8.3-5.8.5): to the same privilege, or to more privilege with a
+# stack from the TSS and (32-bit gates) the parameters copied across. In
+# IA-32e mode gates are 16 bytes and the new SS is null. RETADDR is the
+# return EIP/RIP; ISCALL 0 is JMP (no privilege change allowed).
+@subroutine CallGate(GSEL, GD, RETADDR, ISCALL)
+gdpl := SHR(GD, 45) AND 3;
+IF gdpl < CPL OR gdpl < (GSEL AND 3) THEN #GP(GSEL AND FFFCH); FI;
+IF (SHR(GD, 47) AND 1) = 0 THEN #NP(GSEL AND FFFCH); FI;
+csel := SHR(GD, 16) AND FFFFH;
+target := (GD AND FFFFH) OR (SHR(GD, 32) AND FFFF0000H);
+IF IA32_EFER.LMA = 1 THEN target := target OR SHL(ReadDescriptorHigh(GSEL) AND FFFFFFFFH, 32); FI;
+gw := 4;
+IF (SHR(GD, 40) AND 0FH) = 4 THEN gw := 2; FI;
+IF IA32_EFER.LMA = 1 THEN gw := 8; FI;
+cd := ReadDescriptor(csel);
+cdpl := SHR(cd, 45) AND 3;
+IF (SHR(cd, 43) AND 3) != 3 OR cdpl > CPL THEN #GP(csel AND FFFCH); FI;
+IF (SHR(cd, 47) AND 1) = 0 THEN #NP(csel AND FFFCH); FI;
+oldcpl := CPL;
+oldcs := CS;
+IF ISCALL = 1 AND (SHR(cd, 42) AND 1) = 0 AND cdpl < oldcpl
+    THEN
+        (* MORE-PRIVILEGE *)
+        oldss := SS;
+        oldsp := RSP;
+        IF IA32_EFER.LMA = 1
+            THEN
+                RSP := Linear64[TR_BASE + 4 + SHL(cdpl, 3)];
+                WriteSpecial(SS_SEL, cdpl);
+                WriteSpecial(SS_BASE, 0);
+                LoadCodeSegment(csel, cdpl, 0);
+            ELSE
+                nss := Linear16[TR_BASE + 8 + SHL(cdpl, 3)];
+                nsp := Linear32[TR_BASE + 4 + SHL(cdpl, 3)];
+                ossb := SS_BASE;
+                pcount := SHR(GD, 32) AND 1FH;
+                LoadCodeSegment(csel, cdpl, 0);
+                LoadSegment(2, nss);
+                ESP := nsp;
+        FI;
+        PushW(oldss, gw);
+        PushW(oldsp, gw);
+        IF IA32_EFER.LMA = 0 THEN
+            (* copy the parameters, from the old stack's top down *)
+            i := pcount;
+            WHILE i != 0
+            DO
+                i := i - 1;
+                IF gw = 4
+                    THEN PushW(Linear32[ossb + (oldsp AND FFFFFFFFH) + SHL(i, 2)], 4);
+                    ELSE PushW(Linear16[ossb + (oldsp AND FFFFH) + SHL(i, 1)], 2);
+                FI;
+            OD;
+        FI;
+    ELSE
+        IF (SHR(cd, 42) AND 1) = 0 AND cdpl != oldcpl THEN #GP(csel AND FFFCH); FI;
+        LoadCodeSegment(csel, oldcpl, 0);
+FI;
+IF ISCALL = 1 THEN
+    PushW(oldcs, gw);
+    PushW(RETADDR, gw);
+FI;
+RIP := target;
+
+# After a return to an outer privilege level, a data segment register (or a
+# nonconforming code segment loaded into one) whose DPL is below the new CPL
+# is loaded with a null selector (RET's Operation, "FOR each SegReg (ES, FS,
+# GS, and DS)").
+@function NullUnusableSegments(NEWCPL)
+IF (SHR(ES_ATTR, 5) AND 3) < NEWCPL AND (ES_ATTR AND 0CH) != 0CH THEN SetSegment(0, 0, 0, 0, 0); FI;
+IF (SHR(DS_ATTR, 5) AND 3) < NEWCPL AND (DS_ATTR AND 0CH) != 0CH THEN SetSegment(3, 0, 0, 0, 0); FI;
+IF (SHR(FS_ATTR, 5) AND 3) < NEWCPL AND (FS_ATTR AND 0CH) != 0CH THEN SetSegment(4, 0, FS_BASE, 0, 0); FI;
+IF (SHR(GS_ATTR, 5) AND 3) < NEWCPL AND (GS_ATTR AND 0CH) != 0CH THEN SetSegment(5, 0, GS_BASE, 0, 0); FI;

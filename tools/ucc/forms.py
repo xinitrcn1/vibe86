@@ -217,6 +217,8 @@ def parse_operands(f, enc):
             f.operands.append(Operand("one", 8, text=o))
         elif re.match(r"^CR[0-8]", o):
             f.operands.append(Operand("cr", 64, text=o))
+        elif re.match(r"^DR[0-7]", o):
+            f.operands.append(Operand("cr", 64, text=o))     # same form shape as MOV CRn
         else:
             raise FormError(f"operand '{o}'")
 
@@ -293,7 +295,8 @@ def make_forms(page, cfg):
         # routine knows statically which descriptor cache it loads
         crx = any(o.kind == "cr" for o in f.operands) and cfg.get("crreg") and f.digit is None
         if (f.operands and f.operands[0].kind == "sreg" and cfg.get("sreg")) or crx:
-            for d in ((0, 2, 3, 4) if crx else (0, 1, 2, 3, 4, 5)):
+            drx = crx and any(o.text.startswith("DR") for o in f.operands)
+            for d in ((0, 1, 2, 3, 4, 5, 6, 7) if drx else (0, 2, 3, 4) if crx else (0, 1, 2, 3, 4, 5)):
                 g = Form(**{**f.__dict__, "operands": list(f.operands), "imm": list(f.imm),
                             "hints": dict(f.hints), "spec": {}})
                 g.digit = d
@@ -311,6 +314,9 @@ def make_forms(page, cfg):
         if (f.page in ("Jcc", "SETcc", "CMOVcc")) or cfg.get("cc"):
             f.cc = f.opc & 0xF
         f.hints["sized"] = operand_size(f) is not None
+        if (f.map, f.opc) == (0, 0x90):
+            # 90h is NOP/PAUSE without REX.B and XCHG with a register otherwise
+            f.hints["sub90"] = 0 if f.plus_r else 1
         if ok64:
             forms.append(f)
         if okleg and not f.rexw:

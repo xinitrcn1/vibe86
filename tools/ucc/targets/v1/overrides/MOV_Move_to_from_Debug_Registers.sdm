@@ -1,0 +1,42 @@
+# MOV—Move to/from Debug Registers -- override
+# One form per debug register (ModRM.reg). The manual's Operation:
+# "IF ((DE = 1) and (SRC or DEST = DR4 or DR5)) THEN #UD; ELSE IF (DR7.GD
+# = 1) THEN #DB (general detect, DR6.BD := 1, DR7.GD := 0); ELSE DEST :=
+# SRC;" with DR4/DR5 aliasing DR6/DR7 when CR4.DE = 0, #GP(0) at CPL > 0,
+# and in 64-bit mode #GP(0) for a write of 1s to the upper 32 bits of DR6
+# or DR7. DR6 and DR7 keep their fixed bits (Vol. 3A 19.2.3, 19.2.4).
+@operation
+IF CPL > 0 THEN #GP(0); FI;
+n := CrNum;
+IF n = 4 OR n = 5 THEN
+    IF CR4.DE = 1 THEN #UD; FI;
+    n := n + 2;
+FI;
+IF (SHR(DR7, 13) AND 1) = 1 THEN
+    WriteSpecial(DR6, DR6 OR 2000H);
+    WriteSpecial(DR7, DR7 AND FFFFFFFFFFFFDFFFH);
+    #DB;
+FI;
+IF CrDest
+    THEN
+        v := SRC;
+        IF n = 0 THEN WriteSpecial(DR0, v);
+        ELSE IF n = 1 THEN WriteSpecial(DR1, v);
+        ELSE IF n = 2 THEN WriteSpecial(DR2, v);
+        ELSE IF n = 3 THEN WriteSpecial(DR3, v);
+        ELSE IF n = 6 THEN
+            IF Mode64 = 1 AND SHR(v, 32) != 0 THEN #GP(0); FI;
+            WriteSpecial(DR6, (v AND 0000E00FH) OR FFFF0FF0H);
+        ELSE
+            IF Mode64 = 1 AND SHR(v, 32) != 0 THEN #GP(0); FI;
+            WriteSpecial(DR7, (v AND FFFF2BFFH) OR 400H);
+        FI;
+    ELSE
+        IF n = 0 THEN DEST := DR0;
+        ELSE IF n = 1 THEN DEST := DR1;
+        ELSE IF n = 2 THEN DEST := DR2;
+        ELSE IF n = 3 THEN DEST := DR3;
+        ELSE IF n = 6 THEN DEST := DR6;
+        ELSE DEST := DR7;
+        FI;
+FI;

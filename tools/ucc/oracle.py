@@ -38,7 +38,7 @@ def lma(f):
 
 CONDITIONS = [
     (r"64-bit mode", lambda f: f.mode == 3),
-    (r"ia-32e mode( active)?|ia-64 mode|ia32_efer\.lma = 1", lma),
+    (r"(in )?ia-32e mode( active)?|ia-64 mode|ia32_efer\.lma = 1", lma),
     (r"non-64-bit mode|not in 64-bit mode", lambda f: f.mode != 3),
     (r"compatibility mode", lambda f: False if f.mode in (0, 3) else "IA32_EFER.LMA = 1"),
     (r"\(?real-address mode\)?|in real-address mode|pe = 0|cr0\.pe = 0", lambda f: f.mode == 0),
@@ -70,6 +70,11 @@ CONDITIONS = [
     (r"shadowstackenabled\(cpl\) and.*", lambda f: False),
     (r"endbranchenabled\(cpl\)", lambda f: False),
     (r"condition( true)?", lambda f: ("CC", f.cc)),
+    (r"cr4\.fred = 0", lambda f: True),           # v1 has no FRED: CR4.FRED is reserved
+    (r"cr4\.fred = 1", lambda f: False),
+    (r"\(?operand size is 64-bit\)?", lambda f: f.osz == 64),
+    (r"\(?rcx is not canonical\)?", lambda f: "NOT Canonical(RCX)"),
+    (r"\(?rip is not canonical\)?", lambda f: "NOT Canonical(RIP)"),
     (r"\(?byte operation\)?", lambda f: f.osz == 8),
     (r"\(?byte (move|store|load|comparison|compare|scan)\)?", lambda f: f.osz == 8),
     (r"\(?word (move|store|load|comparison|compare|scan)\)?", lambda f: f.osz == 16),
@@ -80,6 +85,7 @@ CONDITIONS = [
     (r"instruction is shr", lambda f: f.mnem == "SHR"),
     (r"instruction is rol", lambda f: f.mnem == "ROL"),
     (r"instruction is int3", lambda f: f.mnem == "INT3"),
+    (r"instruction is int1", lambda f: f.mnem == "INT1"),
     (r"instruction is lidt", lambda f: f.mnem == "LIDT"),
     (r"instruction is ror", lambda f: f.mnem == "ROR"),
     (r"instruction is rcl", lambda f: f.mnem == "RCL"),

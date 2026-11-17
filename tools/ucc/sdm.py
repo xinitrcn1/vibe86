@@ -416,7 +416,7 @@ class Expr:
         if tok.kind == "id":
             name = tok.text
             # dotted names: CPUID.80000001H:ECX, CR4.PCIDE, RFLAGS.IF
-            while self.peek().text == "." and self.peek(1).kind in ("id", "num"):
+            while self.peek().text == "." and self.peek(1).kind in ("id", "num", "kw"):
                 self.take()
                 name += "." + self.take().text
             if self.peek().text == "(":
@@ -639,7 +639,9 @@ class Parser:
                         else:
                             target.els = self.block(("FI", "ELSE"))
                         continue
-                    if self.at_kw("FI"):
+                    if self.at_kw("FI") and self.peek().col >= node.col:
+                        # an extra FI closing this chain (DIV); one further
+                        # out belongs to an enclosing IF
                         self.take()
                         self.end_stmt()
                         node.closed = True

@@ -1,8 +1,44 @@
 # RET—Return From Procedure -- override
-# The near-return branch of the manual's Operation at the operand size, no
-# shadow stack; far returns aren't in v1.
+# Near returns as the manual's Operation (no shadow stack). Far returns
+# follow its "(* Far return *)" branches: real-address/virtual-8086 mode;
+# RETURN-TO-SAME-PRIVILEGE-LEVEL; RETURN-TO-OUTER-PRIVILEGE-LEVEL (pop the
+# outer SS:ESP, load SS at the new CPL, and invalidate DS, ES, FS and GS if
+# they aren't usable at the new privilege level). The immediate releases
+# parameters from both stacks.
 @operation
-RIP := Pop();
-IF instruction has immediate operand
-    THEN sSP := sSP + SRC;
+IF instruction = far return
+    THEN
+        off := Pop();
+        sel := Pop() AND FFFFH;
+        IF CR0.PE = 0 OR RFLAGS.VM = 1
+            THEN
+                LoadCodeSegment(sel, 0, 1);
+                IF instruction has immediate operand THEN sSP := sSP + SRC; FI;
+            ELSE
+                rpl := sel AND 3;
+                oldcpl := CPL;
+                IF rpl < oldcpl THEN #GP(sel AND FFFCH); FI;
+                IF rpl > oldcpl
+                    THEN
+                        IF instruction has immediate operand THEN sSP := sSP + SRC; FI;
+                        nsp := Pop();
+                        nss := Pop();
+                        LoadCodeSegment(sel, rpl, 1);
+                        LoadSegment(2, nss);
+                        RSP := nsp;
+                        IF instruction has immediate operand THEN sSP := sSP + SRC; FI;
+                        NullUnusableSegments(rpl);
+                    ELSE
+                        LoadCodeSegment(sel, rpl, 1);
+                        IF instruction has immediate operand THEN sSP := sSP + SRC; FI;
+                FI;
+        FI;
+        IF OperandSize = 16 THEN off := off AND FFFFH; FI;
+        IF OperandSize = 32 THEN off := off AND FFFFFFFFH; FI;
+        RIP := off;
+    ELSE
+        RIP := Pop();
+        IF instruction has immediate operand
+            THEN sSP := sSP + SRC;
+        FI;
 FI;

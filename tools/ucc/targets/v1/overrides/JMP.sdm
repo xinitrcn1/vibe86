@@ -1,9 +1,9 @@
 # JMP—Jump -- override
-# Near jumps as the manual's Operation (64-bit: RIP-relative or absolute;
-# 16/32-bit: EIP truncated to the operand size). Far jumps to a code segment
-# through LoadCodeSegment (the manual's "IF far jump ... THEN ... code
-# segment" branches); far jumps through call gates and task gates aren't in
-# v1 (#GP if the descriptor isn't a code segment).
+# Near jumps as the manual's Operation (EIP/IP truncated to the operand
+# size). Far jumps follow its "IF far jump" branches: real-address mode;
+# protected/IA-32e mode to a code segment, through a call gate (no
+# privilege change), or to a task (TaskSwitch: the old task's busy flag is
+# cleared, no link).
 @operation
 IF FarJump
     THEN
@@ -15,10 +15,35 @@ IF FarJump
                 off := Memory[DEST];
                 sel := Memory16[EffectiveAddress(DEST) + OperandSize / 8];
         FI;
-        LoadCodeSegment(sel, CPL, 0);
         IF OperandSize = 16 THEN off := off AND FFFFH; FI;
         IF OperandSize = 32 THEN off := off AND FFFFFFFFH; FI;
-        RIP := off;
+        IF CR0.PE = 0 OR RFLAGS.VM = 1
+            THEN
+                LoadCodeSegment(sel, CPL, 0);
+                RIP := off;
+            ELSE
+                d := ReadDescriptor(sel);
+                ty := SHR(d, 40) AND 1FH;
+                IF (ty AND 18H) = 18H
+                    THEN
+                        LoadCodeSegment(sel, CPL, 0);
+                        RIP := off;
+                    ELSE IF ty = 0CH OR ty = 04H
+                    THEN
+                        CallGate(sel, d, RIP, 0);
+                    ELSE IF ty = 05H
+                    THEN
+                        IF (SHR(d, 45) AND 3) < CPL OR (SHR(d, 45) AND 3) < (sel AND 3) THEN #GP(sel AND FFFCH); FI;
+                        IF (SHR(d, 47) AND 1) = 0 THEN #NP(sel AND FFFCH); FI;
+                        TaskSwitch(SHR(d, 16) AND FFFFH, 0, RIP);
+                    ELSE IF ty = 09H
+                    THEN
+                        IF (SHR(d, 45) AND 3) < CPL OR (SHR(d, 45) AND 3) < (sel AND 3) THEN #GP(sel AND FFFCH); FI;
+                        TaskSwitch(sel, 0, RIP);
+                    ELSE
+                        #GP(sel AND FFFCH);
+                FI;
+        FI;
     ELSE
         IF near relative jump
             THEN tempRIP := RIP + SignExtend(DEST);

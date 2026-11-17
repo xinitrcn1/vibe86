@@ -85,16 +85,21 @@ def read_isa(path):
 
 
 def read_library(path):
-    """lib.sdm: '@function Name(P1, P2)' then its pseudocode."""
+    """lib.sdm: '@function Name(P1, P2)' (inlined) or '@subroutine Name(...)'
+    (compiled once, called with UCALL), then its pseudocode."""
     lib = {}
+    subs = set()
     cur, params, lines = None, [], []
     with open(path) as f:
         for line in f:
-            m = re.match(r"^@function\s+(\w+)\((.*)\)\s*$", line)
+            m = re.match(r"^@(function|subroutine)\s+(\w+)\((.*)\)\s*$", line)
             if m:
                 if cur:
                     lib[cur] = (params, sdm.parse("".join(lines)))
-                cur = m.group(1)
+                cur = m.group(2)
+                if m.group(1) == "subroutine":
+                    subs.add(cur)
+                m = re.match(r"^@\w+\s+(\w+)\((.*)\)\s*$", line)
                 params = [p.strip() for p in m.group(2).split(",") if p.strip()]
                 lines = []
                 continue
@@ -103,6 +108,7 @@ def read_library(path):
             lines.append(line)
     if cur:
         lib[cur] = (params, sdm.parse("".join(lines)))
+    lib["__subroutines__"] = subs
     return lib
 
 
@@ -134,7 +140,7 @@ class Image:
                     self.listing.append(f"       {c['label'].split('#')[1]}:")
                     continue
                 c = dict(c)
-                if c["op"] in ("JMP", "JCC", "JU") and isinstance(c["imm"], str):
+                if c["op"] in ("JMP", "JCC", "JU", "UCALL") and isinstance(c["imm"], str):
                     c["imm"] = self.addr[c["imm"]]
                 w = U.encode(c["op"], c["sz"], sel(c["dst"]), sel(c["a"]), sel(c["b"]),
                              sel(c["c"]), c["fmask"], c["cc"], c.get("seg", 8), c["x"],
@@ -363,6 +369,17 @@ def main():
             image.add(page.name, lw.lower())
         except (L.LowerError, L.NeedSpec, TypeError) as e:
             errors.append(f"{page.name}: {e}")
+    # micro-subroutines (lib.sdm @subroutine): compiled once, any mode
+    for name in sorted(lib["__subroutines__"]):
+        params, body = lib[name]
+        page = sdm.Page(name=f"SUB:{name}", title=name, source="lib.sdm")
+        f = F.Form(page=page.name, mnem=name, text=name, opcol="", open="", osz=64, mode=4)
+        f.subroutine = params
+        lw = L.Lowerer(f, page, body, oracle.flags_spec("None."), lib, name=f"SUB:{name}")
+        try:
+            image.add(f"SUB:{name}", lw.lower())
+        except (L.LowerError, L.NeedSpec, TypeError) as e:
+            errors.append(f"SUB:{name}: {e}")
     compiled = []
     per_page = {}
     content = {}        # micro-op listing -> routine name (identical routines are shared)

@@ -67,7 +67,10 @@ module v1_core
   logic [63:0] w_gpr [16];      // working
   logic [63:0] a_flags, w_flags;
   logic [63:0] rip, nrip;
-  logic [63:0] t [64];          // micro temporaries (T0-T31 routines, T32-T63 micro-traps)
+  logic [63:0] tb [4][32];      // T0-T31: one bank per micro-call level (UCALL/URET)
+  logic [63:0] tt [32];         // T32-T63: the micro-trap routines' (WALK)
+  logic [63:0] ua [4];          // A0-A3: micro-subroutine arguments
+  logic [1:0]  udepth;          // micro-call depth
   logic [63:0] hi_r, rem_r;
   logic        u_eq, u_ltu, u_lts;
   logic [63:0] sp [256];        // special registers (uop_pkg::SPECIAL)
@@ -102,13 +105,16 @@ module v1_core
 
   // execute
   logic [UADDR_W-1:0] upc, upc_trap;
-  logic [UADDR_W-1:0] ustack;
+  logic [UADDR_W-1:0] ustack [4];
   logic        in_delivery, in_trap, trap_fetch;
   logic [7:0]  ucount;
   logic        halt_req;
   logic        intr_pend;
   logic [7:0]  intr_vec;
   logic        nmi_pend;
+  logic [7:0]  deliv_vec;       // the event being delivered (for #DF)
+  logic [3:0]  db_data;         // data breakpoints hit by this instruction (DR6.B0-B3)
+  logic        flags_loaded;    // this instruction loaded RFLAGS (IRET, POPF): RF stays
   logic        shadow_set;      // this instruction asked for an interrupt shadow
   logic        int_shadow;      // no interrupts at this boundary (MOV SS, POP SS, STI)
 
@@ -198,7 +204,9 @@ module v1_core
   function automatic logic [63:0] rd(input logic [6:0] s);
     if (s < 7'd16) return w_gpr[s[3:0]];
     if (s < 7'd20) return {56'b0, w_gpr[s[1:0]][15:8]};
-    if (s < S_T63 + 7'd1) return t[6'(s - S_T0)];
+    if (s < S_T32) return tb[udepth][5'(s - S_T0)];
+    if (s <= S_T63) return tt[5'(s - S_T32)];
+    if (s >= S_A0 && s <= S_A3) return ua[2'(s - S_A0)];
     case (s)
       S_REG:   return reg_hi8 ? {56'b0, w_gpr[dreg[1:0]][15:8]} : w_gpr[dreg];
       S_RM:    return rm_hi8 ? {56'b0, w_gpr[drm[1:0]][15:8]} : w_gpr[drm];
@@ -341,6 +349,12 @@ module v1_core
   wire        fetch_limit_bad = (mode != 2'd3) && (fetch_off > sp[segi(1, 2)]);
 
   wire        m64 = (mode == 2'd3);
+  // instruction breakpoints matching this instruction's first byte
+  logic [3:0] ibp_hit;
+  always_comb
+    for (int i = 0; i < 4; i++)
+      ibp_hit[i] = sp[SP_DR7[7:0]][2 * i +: 2] != 0 && sp[SP_DR7[7:0]][16 + 4 * i +: 2] == 2'd0 &&
+                   sp[8'(9 + i)] == fetch_la;
   // decode states that consume the next instruction byte
   wire need_byte = ds == D_PFX || ds == D_ESC || ds == D_OPC3 || ds == D_MODRM || ds == D_SIB ||
                    (ds == D_DISP && disp_i != disp_n) || (ds == D_IMM && imm_i != imm_n);
@@ -458,34 +472,61 @@ module v1_core
     a_flags <= w_flags;
   endtask
 
-  // the exception/interrupt entry: roll back, record, enter DELIVER
+  // exception classes for #DF (Intel SDM Vol. 3A, 7.15, Table 7-4)
+  function automatic logic contributory(input logic [7:0] v);
+    return v == 8'd0 || v == 8'd10 || v == 8'd11 || v == 8'd12 || v == 8'd13;
+  endfunction
+
+  // the exception/interrupt entry: roll back, record, enter DELIVER. An
+  // exception while delivering another is #DF if both are contributory, or
+  // the first is #PF and the second #PF or contributory (Table 7-5);
+  // otherwise the second replaces the first. Anything while delivering #DF
+  // shuts the processor down. keep: the instruction completed (a trap raised
+  // at END): don't roll back.
   task automatic raise(input logic [7:0] vec, input logic has_err, input logic [31:0] err,
-                       input logic trap, input logic swi, input logic ext);
-    if (in_delivery) begin
-      // a fault while delivering: v1 doesn't model #DF; shut down like a triple fault
+                       input logic trap, input logic swi, input logic ext,
+                       input logic keep = 1'b0);
+    logic [7:0] v;
+    logic he;
+    logic [31:0] ec;
+    v = vec;
+    he = has_err;
+    ec = err;
+    if (in_delivery && deliv_vec == 8'd8) begin
       st <= S_SHUTDOWN;
       shutdown_rip <= rip;
-    end else begin
+      return;
+    end
+    if (in_delivery && ((contributory(deliv_vec) && contributory(vec)) ||
+                        (deliv_vec == 8'd14 && (vec == 8'd14 || contributory(vec))))) begin
+      v = 8'd8;
+      he = 1'b1;
+      ec = 32'd0;
+    end
+    if (!keep) begin
       for (int i = 0; i < 16; i++) w_gpr[i] <= a_gpr[i];
       w_flags <= a_flags;
-      sp[SP_FAULT_VEC[7:0]] <= {53'b0, ext, swi, has_err, vec};
-      sp[SP_FAULT_ERR[7:0]] <= {32'b0, err};
-      sp[SP_FAULT_RIP[7:0]] <= trap ? nrip : rip;
-      nrip <= trap ? nrip : rip;
-      ev_valid <= 1'b1;
-      ev_vector <= vec;
-      ev_has_error <= has_err;
-      ev_error <= err;
-      ev_rip <= rip;
-      upc <= UADDR_DELIVER;
-      bus_req <= 1'b0;
-      bus_io <= 1'b0;
-      in_delivery <= 1'b1;
-      in_trap <= 1'b0;
-      shadow_set <= 1'b0;
-      ms <= M_IDLE;
-      st <= S_EXEC;
     end
+    sp[SP_FAULT_VEC[7:0]] <= {53'b0, ext, swi, he, v};
+    sp[SP_FAULT_ERR[7:0]] <= {32'b0, ec};
+    sp[SP_FAULT_RIP[7:0]] <= trap ? nrip : rip;
+    nrip <= trap ? nrip : rip;
+    ev_valid <= 1'b1;
+    ev_vector <= v;
+    ev_has_error <= he;
+    ev_error <= ec;
+    ev_rip <= rip;
+    upc <= UADDR_DELIVER;
+    udepth <= '0;
+    bus_req <= 1'b0;
+    bus_io <= 1'b0;
+    in_delivery <= 1'b1;
+    deliv_vec <= v;
+    in_trap <= 1'b0;
+    shadow_set <= 1'b0;
+    db_data <= '0;
+    ms <= M_IDLE;
+    st <= S_EXEC;
   endtask
 
   // a TLB miss or denied access: run WALK, then retry
@@ -518,12 +559,19 @@ module v1_core
       endcase
     end else if (s < 7'd20) begin
       w_gpr[s[1:0]][15:8] <= v[7:0];
+    end else if (s < S_T32) begin
+      tb[udepth][5'(s - S_T0)] <= v & m;
     end else if (s <= S_T63) begin
-      t[6'(s - S_T0)] <= v & m;
+      tt[5'(s - S_T32)] <= v & m;
+    end else if (s >= S_A0 && s <= S_A3) begin
+      ua[2'(s - S_A0)] <= v;
     end else begin
       case (s)
         S_NRIP:  nrip <= v;
-        S_FLAGS: w_flags <= (v & 64'h0000_0000_003F_7FD5) | 64'h2;
+        S_FLAGS: begin
+          w_flags <= (v & 64'h0000_0000_003F_7FD5) | 64'h2;
+          flags_loaded <= 1'b1;
+        end
         S_HI:    hi_r <= v & m;
         S_REM:   rem_r <= v & m;
         default: ;
@@ -583,6 +631,11 @@ module v1_core
     sp[SP_XCR0[7:0]] <= 64'h1;
     sp[SP_PAT[7:0]] <= 64'h0007_0406_0007_0406;
     sp[SP_APIC_BASE[7:0]] <= 64'hFEE0_0900;
+    sp[SP_DR6[7:0]] <= 64'hFFFF_0FF0;
+    sp[SP_DR7[7:0]] <= 64'h400;
+    udepth <= '0;
+    db_data <= '0;
+    deliv_vec <= '0;
     for (int i = 0; i < NTLB; i++) tlb_v[i] <= 1'b0;
     tlb_next <= '0;
     lb_v <= 1'b0;
@@ -611,6 +664,7 @@ module v1_core
     imm_r <= '0; imm2_r <= '0; imm_n <= '0; imm_i <= '0;
     ibytes <= '0;
     ucount <= '0;
+    flags_loaded <= 1'b0;
     ds <= D_PFX;
   endtask
 
@@ -649,6 +703,9 @@ module v1_core
                 ds <= dstate_e'(mdata[3:0]);   // resume
               end
             end
+          end else if (ds == D_PFX && idx == 0 && !in_delivery && !w_flags[16] && ibp_hit != 0) begin
+            sp[SP_DR6[7:0]] <= (sp[SP_DR6[7:0]] & ~64'hF) | {60'b0, ibp_hit};
+            raise(8'd1, 1'b0, 32'd0, 1'b0, 1'b0, 1'b0);
           end else if (need_byte && !fetch_hit) begin
             `ifdef V1_DEBUG $display("fetch la=%h ds=%0d hit=%0d pa=%h", fetch_la, ds, ftlb.hit, ftlb.pa); `endif
             // fetch the 16-byte line holding the next byte
@@ -841,6 +898,18 @@ module v1_core
               else begin
                 logic [63:0] pa;
                 pa = paging ? mtlb.pa : mla_cur;
+                for (int i = 0; i < 4; i++) begin
+                  logic [63:0] bp;
+                  logic [1:0] rw, ln;
+                  logic [63:0] blen;
+                  bp = sp[8'(9 + i)];
+                  rw = sp[SP_DR7[7:0]][16 + 4 * i +: 2];
+                  ln = sp[SP_DR7[7:0]][18 + 4 * i +: 2];
+                  blen = (ln == 2'd0) ? 1 : (ln == 2'd1) ? 2 : (ln == 2'd3) ? 4 : 8;
+                  if (sp[SP_DR7[7:0]][2 * i +: 2] != 0 && (rw == 2'd3 || (rw == 2'd1 && u.op == U_ST)) &&
+                      mla_cur < (bp & ~(blen - 1)) + blen && mla_cur + 64'(mn) > (bp & ~(blen - 1)))
+                    db_data[i] <= 1'b1;
+                end
                 if (ms == M_IDLE && !maligned) begin
                   ms <= M_BYTES;
                   mb_i <= '0;
@@ -941,7 +1010,12 @@ module v1_core
                 u_ltu <= am < bm;
                 u_lts <= $signed(as) < $signed(bs);
               end
-              U_UCALL: begin ustack <= next; next = u.imm[UADDR_W-1:0]; end
+              U_UCALL: begin
+                `ifdef V1_DEBUG $display("ucall %0d depth=%0d a0=%h a1=%h a2=%h", u.imm, udepth, ua[0], ua[1], ua[2]); `endif
+                ustack[udepth] <= next;
+                udepth <= udepth + 1;
+                next = u.imm[UADDR_W-1:0];
+              end
               U_URET: begin
                 `ifdef V1_DEBUG $display("uret in_trap=%0d fetch=%0d upc_trap=%0d", in_trap, trap_fetch, upc_trap); `endif
                 if (in_trap) begin
@@ -950,9 +1024,13 @@ module v1_core
                     st <= S_FETCH;
                     hold = 1'b1;
                   end else next = upc_trap;
-                end else next = ustack;
+                end else begin
+                  next = ustack[udepth - 1];
+                  udepth <= udepth - 1;
+                end
               end
               U_END: begin
+                hold = 1'b1;
                 `ifdef V1_DEBUG $display("end upc=%0d rip=%h nrip=%h", upc, rip, nrip); `endif
                 commit();
                 rip <= nrip;
@@ -965,6 +1043,23 @@ module v1_core
                   sp[SP_UCOUNT[7:0]] <= sp[SP_UCOUNT[7:0]] + 64'(ucount) + 1;
                 end
                 in_delivery <= 1'b0;
+                // RF is cleared when an instruction completes (Vol. 3A 19.3.1.1)
+                if (!in_delivery && !flags_loaded) w_flags[16] <= 1'b0;
+                // single-step (EFLAGS.TF at the start of the instruction) and data
+                // breakpoints are traps after it (Vol. 3A 19.2.4, 19.3.1.5); not in
+                // the shadow of MOV SS / POP SS
+                if (!in_delivery && !shadow_set && (a_flags[8] || db_data != 0)) begin
+                  sp[SP_DR6[7:0]] <= (sp[SP_DR6[7:0]] & ~64'h400F) | {49'b0, a_flags[8], 10'b0, db_data};
+                  rt_valid <= 1'b1;
+                  rt_rip <= rip;
+                  rt_len <= idx;
+                  rt_bytes <= ibytes;
+                  rt_uops <= ucount + 1;
+                  commit();
+                  rip <= nrip;
+                  raise(8'd1, 1'b0, 32'd0, 1'b1, 1'b0, 1'b0, 1'b1);
+                  hold = 1'b1;
+                end else begin
                 // the shadow lasts until the next instruction completes (Intel SDM
                 // Vol. 3A, 7.8.3 "Masking Exceptions and Interrupts When Switching Stacks")
                 int_shadow <= shadow_set && !in_delivery;
@@ -972,6 +1067,7 @@ module v1_core
                 start_decode();
                 st <= halt_req ? S_HALT : S_FETCH;
                 halt_req <= 1'b0;
+                end
               end
               U_COMMIT: commit();
               U_RDS: wr(u.dst, 2'd3, (u.imm[7:0] == SP_MODE[7:0]) ?
@@ -979,7 +1075,7 @@ module v1_core
                          (u.imm[7:0] == SP_CPL[7:0]) ? {62'b0, cpl} : sp[u.imm[7:0]]);
               U_WRS: begin
                 `ifdef V1_DEBUG $display("  wrs %0d <= %h", u.imm[7:0], va); `endif
-                wr_special(u.imm[7:0], va);
+                wr_special(u.x == 4'd1 ? vb[7:0] : u.imm[7:0], va);
               end
               U_EXC: begin
                 raise(u.imm[10] ? va[7:0] : u.imm[7:0], u.imm[8], va[31:0], u.imm[9],

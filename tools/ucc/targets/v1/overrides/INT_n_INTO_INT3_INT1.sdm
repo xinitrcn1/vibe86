@@ -4,9 +4,12 @@
 # interrupt through one microcode routine, routines/DELIVER.sdm (the IA-32e
 # branch of this Operation for a 64-bit interrupt gate at CPL 0). What's
 # left here is raising the vector as a trap (the saved RIP is the next
-# instruction).
+# instruction). INT1 (ICEBP) raises #DB as a trap and, like INT3, is not
+# checked against the gate's DPL (Vol. 3A 19.3.1.2... treated here as #DB).
 @operation
 IF instruction is INT3
     THEN #BP;
+    ELSE IF instruction is INT1
+    THEN #DB;
     ELSE RaiseVector(SRC);
 FI;

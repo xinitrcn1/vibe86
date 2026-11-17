@@ -38,8 +38,8 @@ CMPXCHG
 # stack and control transfer
 PUSH                class=d64
 POP                 class=d64  skip='POP CS'
-CALL                skip='ptr16|m16:'        class=f64
-RET                 only='^C[23]'            class=f64  immz
+CALL                class=f64
+RET                 class=f64  immz
 JMP                 class=f64
 Jcc                 skip='CXZ'               class=f64
 LEAVE               class=d64
@@ -81,7 +81,7 @@ PUSHF_PUSHFD_PUSHFQ only='PUSHFQ|^9C.*PUSHF$'  class=d64  osz=PUSHF:16,PUSHFQ:64
 POPF_POPFD_POPFQ    only='POPFQ|^9D.*POPF$'    class=d64  osz=POPF:16,POPFQ:64
 CLI
 STI
-INT_n_INTO_INT3_INT1 skip='INTO|INT1'  immz
+INT_n_INTO_INT3_INT1 skip='INTO'  immz
 IRET_IRETD_IRETQ
 LGDT_LIDT           memonly
 SIDT                memonly
@@ -98,3 +98,8 @@ SFENCE
 MOV_Move_to_from_Control_Registers   crreg  anymod  skip='CR8'   # CR8 (REX.R) isn't in the decode key yet
 LTR                 anyosz
 LLDT                anyosz
+SYSCALL
+SYSRET
+SYSENTER
+SYSEXIT
+MOV_Move_to_from_Debug_Registers     crreg  anymod

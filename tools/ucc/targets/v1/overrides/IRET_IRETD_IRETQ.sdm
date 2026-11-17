@@ -5,7 +5,8 @@
 # (RETURN-TO-SAME-PRIVILEGE-LEVEL, RETURN-TO-OUTER-PRIVILEGE-LEVEL; IA-32e
 # mode always pops SS:RSP). RFLAGS is loaded with the mask CPL allows (IOPL
 # and IF only at CPL 0 / CPL <= IOPL). Task returns (NT = 1) and returns to
-# virtual-8086 mode aren't in v1.
+# virtual-8086 mode aren't in v1; IRET with NT = 1 outside IA-32e mode
+# returns to the previous task (TaskSwitch, lib.sdm).
 @operation
 IF CR0.PE = 0
     THEN
@@ -18,6 +19,10 @@ IF CR0.PE = 0
             ELSE StoreFlags(tempFLAGS, 257FD5H);
         FI;
         RIP := tempRIP;
+    ELSE IF RFLAGS.NT = 1 AND IA32_EFER.LMA = 0
+    THEN
+        (* TASK-RETURN: back to the task in this TSS's link field *)
+        TaskSwitch(Linear16[TR_BASE], 2, RIP);
     ELSE
         tempRIP := Pop();
         tempCS := Pop();
@@ -42,6 +47,7 @@ IF CR0.PE = 0
                     ELSE LoadSegment(2, tempSS);
                 FI;
                 RSP := tempRSP;
+                IF rpl > oldcpl THEN NullUnusableSegments(rpl); FI;
         FI;
         RIP := tempRIP;
 FI;

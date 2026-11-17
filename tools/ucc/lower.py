@@ -53,6 +53,24 @@ FIELDS = {
              "TCE": 15},
 }
 FIELDS["IA32_EFER"] = FIELDS["EFER"]
+FIELDS["CR4"]["FRED"] = 32
+
+# the manual's MSR names (Intel SDM Vol. 4) -> the core's special registers
+MSR_ALIAS = {"IA32_EFER": "EFER", "IA32_STAR": "STAR", "IA32_LSTAR": "LSTAR",
+             "IA32_CSTAR": "CSTAR", "IA32_FMASK": "FMASK", "IA32_FS_BASE": "FS_BASE",
+             "IA32_GS_BASE": "GS_BASE", "IA32_KERNEL_GS_BASE": "KERNEL_GS_BASE",
+             "IA32_SYSENTER_CS": "SYSENTER_CS", "IA32_SYSENTER_ESP": "SYSENTER_ESP",
+             "IA32_SYSENTER_EIP": "SYSENTER_EIP", "IA32_TSC_AUX": "TSC_AUX",
+             "IA32_PAT": "PAT", "IA32_APIC_BASE": "APIC_BASE", "IA32_PL0_SSP": "PL0_SSP",
+             "IA32_PL3_SSP": "PL3_SSP", "IA32_U_CET": "U_CET", "IA32_S_CET": "S_CET",
+             "IA32_TSC_ADJUST": "TSC_ADJUST", "IA32_XSS": "XSS"}
+
+# segment register fields: the descriptor cache's attributes are
+# {G, D/B, L, AVL, P, DPL[1:0], S, Type[3:0]} (bits 11..0)
+SEG_ATTR_FIELDS = {"Type": (0, 4), "S": (4, 1), "DPL": (5, 2), "P": (7, 1), "AVL": (8, 1),
+                   "L": (9, 1), "D": (10, 1), "B": (10, 1), "G": (11, 1)}
+SEG_PARTS = {"Selector": "SEL", "Base": "BASE", "Limit": "LIMIT"}
+SEG_REGS = ("ES", "CS", "SS", "DS", "FS", "GS", "LDTR", "TR")
 
 
 VECTORS = {"DE": 0, "DB": 1, "BP": 3, "OF": 4, "BR": 5, "UD": 6, "NM": 7, "DF": 8,
@@ -152,6 +170,8 @@ class Lowerer:
         trap = getattr(form, "trap", False)
         rng = range(NTEMPS, NTEMPS + NTRAPTEMPS) if trap else range(NTEMPS)
         self.free = [f"T{i}" for i in reversed(rng)]
+        self.lib_live = {}
+        self.protected = set()     # the temporaries of callers of an inlined function
         self.vars = {}                 # pseudocode variable -> V
         self.stmt_temps = []
         self.mem_cache = {}            # 'DEST'/'SRC' memory operand -> V loaded
@@ -161,6 +181,7 @@ class Lowerer:
         self.ret = None
         self.uses_rem = False
         self.loop_ends = []
+        self.lib_live = {}
         self.native_flags = 0          # flags a primitive (ShiftOp, BitScan) set itself
         self.find_flag_assignments(ast)
         self.bind_operands()
@@ -241,7 +262,7 @@ class Lowerer:
                 v = self.vars.pop(n)
                 for t in ([v.hi, v.lo] if v.kind == "pair" else [v]):
                     if t is not None and t.kind == "sel" and t.sel.startswith("T") \
-                            and t.sel not in self.free:
+                            and t.sel not in self.free and t.sel not in self.protected:
                         self.free.append(t.sel)
 
     @staticmethod
@@ -341,6 +362,7 @@ class Lowerer:
         keep = {v.sel for v in self.vars.values() if v.kind == "sel"}
         keep |= {p.sel for v in self.vars.values() if v.kind == "pair" for p in (v.hi, v.lo)}
         keep |= {v.sel for v in self.mem_cache.values() if v and v.kind == "sel"}
+        keep |= self.protected
         for t in self.stmt_temps:
             if t not in keep and t not in self.free:
                 self.free.append(t)
@@ -463,7 +485,9 @@ class Lowerer:
             return 0
         if n in ("CS.L",):
             return 1
-        if n == "Mode64":
+        if n == "CR4.FRED":
+            return 0            # v1 has no FRED (CR4.FRED is reserved)
+        if n == "Mode64" and m != 4:
             return int(m == 3)
         if n == "CodeSize":
             return {0: 16, 1: 16, 2: 32, 3: 64}[m]
@@ -481,6 +505,8 @@ class Lowerer:
         if n == "RegisterOffset":
             return int(len(self.f.operands) > 1 and self.f.operands[1].kind == "reg")
         if n == "CrNum":
+            if "crnum" in self.f.hints and self.f.page.startswith("MOV_Move_to_from_Debug"):
+                return self.f.hints["crnum"]
             if "crnum" in self.f.hints:
                 return 8 if (self.f.digit == 0 and "CR8" in self.f.text) else self.f.hints["crnum"]
             return None
@@ -576,6 +602,15 @@ class Lowerer:
             return V("sel", self.f.osz, sel="RAX")
         if n in ("RFLAGS", "EFLAGS", "FLAGS"):
             return V("sel", {"RFLAGS": 64, "EFLAGS": 32, "FLAGS": 16}[n], sel="FLAGS")
+        if n in MSR_ALIAS:
+            return V("special", 64, sel=MSR_ALIAS[n])
+        if "." in n and n.split(".")[0] in SEG_REGS:
+            reg, _, fld = n.partition(".")
+            if fld in SEG_PARTS:
+                return V("special", 64 if fld != "Selector" else 16, sel=f"{reg}_{SEG_PARTS[fld]}")
+            if fld in SEG_ATTR_FIELDS:
+                lo, w = SEG_ATTR_FIELDS[fld]
+                return V("segfield", w, sel=f"{reg}_ATTR", k=lo)
         if "." in n:
             reg, _, fld = n.partition(".")
             if reg in FIELDS and fld in FIELDS[reg]:
@@ -609,6 +644,11 @@ class Lowerer:
                 t = self.tmp()
                 self.E("RDS", 64, dst=t, imm=SPECIAL[v.sel])
                 return V("sel", 64, sel=t)
+            if v.kind == "segfield":
+                t = self.tmp()
+                self.E("RDS", 64, dst=t, imm=SPECIAL[v.sel])
+                self.E("SLICE", 64, dst=t, a=t, imm=v.k | (v.w << 8))
+                return V("sel", v.w, sel=t)
             if v.kind == "field":
                 t = self.tmp()
                 self.E("RDS", 64, dst=t, imm=SPECIAL[v.sel])
@@ -916,8 +956,80 @@ class Lowerer:
                 m |= FMASK[fl]
         return m
 
+    def call_sub(self, fname, args):
+        """A micro-subroutine: the arguments go in A0-A3, then UCALL; the
+        callee runs in its own bank of temporaries."""
+        params, _ = self.lib[fname]
+        if len(args) > 4:
+            raise LowerError(f"{fname}: more than 4 arguments")
+        vals = []
+        for a in args:
+            v = self.eval(a, 64)
+            if v.kind == "mem":
+                v = self.load(v)
+            vals.append(self.widen(v, 64) if v.kind == "sel" else v)
+        for i, v in enumerate(vals):
+            (s,), imm = self.srcs(v, w=64)
+            self.E("MOV", 64, dst=f"A{i}", a=s, imm=imm)
+        self.E("UCALL", imm=f"SUB:{fname}")
+        return None
+
     def inline(self, fname, args, want):
-        """Library functions (Push, Pop, ...) are pseudocode too, inlined."""
+        """Library functions (Push, Pop, ...) are pseudocode too, inlined in
+        a scope of their own: their locals don't see or clobber the caller's,
+        and their temporaries are freed when they return (all but RESULT)."""
+        params, body = self.lib[fname]
+        argv = []
+        for p, a in zip(params, args):
+            v = self.eval(a, self.f.osz)
+            if v.kind == "mem":
+                v = self.load(v)
+            if v.kind == "sel" and v.sel in U_ARCH:
+                t = self.tmp(keep=True)
+                self.E("MOV", opsize(v.w), dst=t, a=v.sel)
+                v = V("sel", v.w, sel=t)
+            elif v.kind == "sel" and v.sel in self.stmt_temps:
+                self.stmt_temps.remove(v.sel)       # the argument lives through the call
+            argv.append((p, v))
+        caller = self.vars
+        saved_prot = set(self.protected)
+        for v in caller.values():
+            for t in ([v.hi, v.lo] if v.kind == "pair" else [v]):
+                if t is not None and t.kind == "sel":
+                    self.protected.add(t.sel)
+        saved_live = (self.pos, self.last, getattr(self, "_inlining", 0))
+        self.vars = dict(argv)
+        if fname not in self.lib_live:
+            self.liveness(body)
+            self.lib_live[fname] = (self.pos, self.last)
+        self.pos, self.last = self.lib_live[fname]
+        self._inlining = 0
+        try:
+            self.block(body)
+        finally:
+            res = self.vars.get("RESULT")
+            keep = set()
+            if res is not None:
+                keep = {res.sel} if res.kind == "sel" else ({res.hi.sel, res.lo.sel}
+                                                            if res.kind == "pair" else set())
+            # the caller's variables (an argument can be one of them) stay
+            for v in caller.values():
+                for t in ([v.hi, v.lo] if v.kind == "pair" else [v]):
+                    if t is not None and t.kind == "sel":
+                        keep.add(t.sel)
+            for n, v in self.vars.items():
+                for t in ([v.hi, v.lo] if v.kind == "pair" else [v]):
+                    if t is not None and t.kind == "sel" and t.sel.startswith("T") \
+                            and t.sel not in keep and t.sel not in self.free:
+                        self.free.append(t.sel)
+            self.vars = caller
+            self.protected = saved_prot
+            self.pos, self.last, self._inlining = saved_live
+        if res is not None and res.kind == "sel" and res.sel.startswith("T"):
+            self.stmt_temps.append(res.sel)         # freed with the caller's statement
+        return res
+
+    def _old_inline(self, fname, args, want):
         params, body = self.lib[fname]
         saved = {}
         for p, a in zip(params, args):
@@ -1030,6 +1142,8 @@ class Lowerer:
             a = self.static_cond(e.a)
             if isinstance(a, bool):
                 return not a
+        if isinstance(e, Call) and e.f in ("ShadowStackEnabled", "EndbranchEnabled"):
+            return False        # CET: not in v1 yet (CPUID doesn't report it)
         return None
 
     @staticmethod
@@ -1196,11 +1310,26 @@ class Lowerer:
                 self.store_var(n, v)
                 return
             loc = self.rname(n)
-            if loc.kind == "special":
-                (s,), imm = self.srcs(v, w=64)
-                self.E("WRS", 64, a=s, imm=SPECIAL[loc.sel] if s != "K" else SPECIAL[loc.sel])
+            if loc.kind == "flag":
+                (s,), imm = self.srcs(self.widen(v, 8) if v.kind == "sel" else v, w=8)
                 if s == "K":
-                    raise LowerError("WRS of a constant")
+                    s = "ONE" if imm & 1 else "ZERO"
+                self.E("SETF", 8, a=s, imm=FLAG[loc.sel])
+                return
+            if loc.kind == "segfield":
+                self.store_segfield(n, loc, v)
+                return
+            if loc.kind == "special":
+                v = self.widen(v, 64) if v.kind == "sel" else v
+                (s,), imm = self.srcs(v, w=64)
+                if s == "K":
+                    if imm == 0:
+                        s = "ZERO"
+                    else:
+                        k = self.tmp()
+                        self.E("MOV", 64, dst=k, a="K", imm=imm)
+                        s = k
+                self.E("WRS", 64, a=s, imm=SPECIAL[loc.sel])
                 return
             if loc.kind == "mem":
                 self.store_mem(loc, v)
@@ -1224,6 +1353,34 @@ class Lowerer:
             self.store_mem(loc, v)
             return
         raise LowerError(f"can't assign to {lhs}")
+
+    def store_segfield(self, n, loc, v):
+        """CS.Type := 11 and the like: a bit field of the descriptor cache's
+        attributes. Setting G scales the limit written before it, as a
+        descriptor's limit is in 4-KByte units when G = 1."""
+        t = self.tmp()
+        self.E("RDS", 64, dst=t, imm=SPECIAL[loc.sel])
+        (s,), imm = self.srcs(self.widen(v, 64) if v.kind != "k" else v, w=64)
+        if s == "K":
+            if imm == 0:
+                s = "ZERO"
+            else:
+                k = self.tmp()
+                self.E("MOV", 64, dst=k, a="K", imm=imm)
+                s = k
+        self.E("INSERT", 64, dst=t, a=s, imm=loc.k | (loc.w << 8))
+        self.E("WRS", 64, a=t, imm=SPECIAL[loc.sel])
+        if n.endswith(".G"):
+            seg = loc.sel[:-5]
+            lim = self.tmp()
+            skip = self.r.label()
+            self.E("CMP", 64, a=s, b="ZERO")
+            self.E("JU", cc=self.ucc("EQ"), imm=skip)
+            self.E("RDS", 64, dst=lim, imm=SPECIAL[f"{seg}_LIMIT"])
+            self.E("SHL", 64, dst=lim, a=lim, b="K", imm=12)
+            self.E("OR", 64, dst=lim, a=lim, b="K", imm=0xFFF)
+            self.E("WRS", 64, a=lim, imm=SPECIAL[f"{seg}_LIMIT"])
+            self.r.place(skip)
 
     def store_any(self, lhs_e, loc, v):
         if loc.kind == "mem":
@@ -1399,7 +1556,7 @@ class Lowerer:
                         if k:
                             raise LowerError("constant non-zero error code")
                         a = "ZERO"
-            if s.exc in ("BP", "OF"):
+            if s.exc in ("BP", "OF") or (s.exc == "DB" and self.f.mnem == "INT1"):
                 imm |= 1 << 9          # a trap: delivered with the next RIP
             self.E("EXC", 32, a=a, imm=imm, note=f"#{s.exc}")
             return
@@ -1408,6 +1565,10 @@ class Lowerer:
             if isinstance(e, Name) and e.n == "ModifyStatusFlags":
                 return
             if isinstance(e, Call) and e.f == "ModifyStatusFlags":
+                return
+            if isinstance(e, Call) and e.f in self.lib.get("__subroutines__", ()):
+                self.call_sub(e.f, e.args)
+                self.release_stmt()
                 return
             if isinstance(e, Call) and e.f in self.lib:
                 self.inline(e.f, e.args, None)
@@ -1467,7 +1628,26 @@ class Lowerer:
         # SetSegment(n, selector, base, limit, attributes): load a descriptor cache
         n = self.static_val(e.args[0])
         if n is None:
-            raise LowerError("SetSegment needs a constant segment number")
+            # a run-time segment number (LoadSegment as a subroutine): WRS with
+            # the special register's number in b (x = 1)
+            nv = self.widen(self.eval(e.args[0], 64), 64)
+            ix = self.tmp()
+            self.E("SHL", 64, dst=ix, a=self.to_sel(nv, 64), b="K", imm=2)
+            self.E("ADD", 64, dst=ix, a=ix, b="K", imm=SPECIAL["ES_SEL"])
+            for i, a in enumerate(e.args[1:]):
+                v = self.widen(self.eval(a, 64), 64)
+                sv = self.to_sel(v, 64)
+                if isinstance(sv, tuple):
+                    if sv[1] == 0:
+                        sv = "ZERO"
+                    else:
+                        k = self.tmp()
+                        self.E("MOV", 64, dst=k, a="K", imm=sv[1])
+                        sv = k
+                if i:
+                    self.E("ADD", 64, dst=ix, a=ix, b="ONE")
+                self.E("WRS", 64, a=sv, b=ix, x=1)
+            return
         seg = self.SEGNAMES[n]
         for part, a in zip(("SEL", "BASE", "LIMIT", "ATTR"), e.args[1:]):
             v = self.widen(self.eval(a, 64), 64)
@@ -1487,6 +1667,21 @@ class Lowerer:
     def s_setseg_real(self, e):
         # SetSegmentReal(n, selector): real-address / virtual-8086 mode, base = selector * 16
         n = self.static_val(e.args[0])
+        if n is None:
+            nv = self.widen(self.eval(e.args[0], 64), 64)
+            ix = self.tmp()
+            self.E("SHL", 64, dst=ix, a=self.to_sel(nv, 64), b="K", imm=2)
+            self.E("ADD", 64, dst=ix, a=ix, b="K", imm=SPECIAL["ES_SEL"])
+            v = self.widen(self.eval(e.args[1], 16), 64)
+            sv = self.to_sel(v, 64)
+            b = self.tmp()
+            self.E("AND", 64, dst=b, a=sv if not isinstance(sv, tuple) else "K",
+                   b="K" if not isinstance(sv, tuple) else "ZERO", imm=0xFFFF)
+            self.E("WRS", 64, a=b, b=ix, x=1)
+            self.E("SHL", 64, dst=b, a=b, b="K", imm=4)
+            self.E("ADD", 64, dst=ix, a=ix, b="ONE")
+            self.E("WRS", 64, a=b, b=ix, x=1)
+            return
         seg = self.SEGNAMES[n]
         v = self.widen(self.eval(e.args[1], 16), 64)
         s = self.to_sel(v, 64)
@@ -1620,6 +1815,16 @@ class Lowerer:
 
     def lower(self):
         self.cur_producer = None
+        sub = getattr(self.f, "subroutine", None)
+        if sub is not None:
+            # parameters arrive in A0-A3: copy them (a nested call reuses A0-A3)
+            for i, p in enumerate(sub):
+                t = self.tmp(keep=True)
+                self.E("MOV", 64, dst=t, a=f"A{i}")
+                self.vars[p] = V("sel", 64, sel=t)
+            self.block(self.ast)
+            self.E("URET")
+            return self.r
         self.block(self.ast)
         # prose 'cleared'/'set' flags nobody produced or assigned
         for fl, act in self.flags.items():

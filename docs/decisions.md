@@ -75,7 +75,8 @@ reports exactly what a version implements, so partial versions stay honest.
 
 SVM and AVX512-BMM are AMD-only: their semantics come from the AMD64
 Architecture Programmer's Manual (Vol. 2 "System Programming", Vol. 3/4
-instruction references), not the Intel SDM.
+instruction references), not the Intel SDM. Both are deferred until the rest
+of the ISA is done.
 
 ## D-008: microcode-heavy system architecture
 
@@ -85,15 +86,24 @@ delivery are microcode routines (as the Intel 80386 did segment loads in
 microcode). This keeps the RTL small and puts the architecture in one place:
 the compiled specification.
 
-## D-009: v1's floating-point unit is behavioural
+## D-009 (revised): v1 has a floating-point datapath in RTL
 
-v1's x87/SSE/AVX floating-point micro-ops are computed by Berkeley SoftFloat
-3e (J. R. Hauser, http://www.jhauser.us/arithmetic/SoftFloat.html) through
-Verilator DPI-C: bit-exact IEEE 754-2019 (and x87 80-bit extended), not
-synthesizable. A later core version replaces it with FP datapaths (e.g. a
-fused multiply-add after Montoye, Hokenek & Runyon, "Design of the IBM RISC
-System/6000 floating-point execution unit", IBM J. R&D 34(1), 1990,
-doi:10.1147/rd.341.0059).
+~~v1's floating-point micro-ops are computed by Berkeley SoftFloat through
+DPI-C.~~ Revised: v1 computes floating point in RTL (`rtl/v1/v1_fpu.sv`),
+so the microcode stays one micro-op per FP operation instead of emulating
+IEEE 754 in micro-ops. The unit unpacks f16, bf16, f32, f64 and x87's f80
+into a common wide format, computes add, multiply, fused multiply-add,
+divide and square root exactly enough to round correctly (guard, round and
+sticky bits), and rounds in all four IEEE 754-2019 modes with x86's rules:
+the MXCSR/x87 exception flags (IE, DE, ZE, OE, UE, PE), DAZ/FTZ, the x86
+"QNaN floating-point indefinite" and NaN propagation (Intel SDM Vol. 1,
+4.8.3 and 11.5, Table 4-7). Division and square root are single-cycle
+behavioural operators on wide integers in v1; a later version iterates them
+(SRT division and square root: Ercegovac & Lang, *Digital Arithmetic*,
+Morgan Kaufmann 2004, ch. 5-6). The FMA follows the single-rounding
+structure of Montoye, Hokenek & Runyon, "Design of the IBM RISC System/6000
+floating-point execution unit", IBM J. R&D 34(1), 1990,
+doi:10.1147/rd.341.0059.
 
 ## D-010: vector instructions by lane-loop recognition
 
@@ -106,3 +116,26 @@ compiles and recognition only affects speed. This is loop idiom recognition
 over the specification, cf. the vectorization of loops in Allen & Kennedy,
 *Optimizing Compilers for Modern Architectures*, Morgan Kaufmann 2001
 (ch. 2, 5).
+
+## D-011: #DF and shutdown in hardware
+
+The core classifies an exception raised while delivering another as the
+Intel SDM Vol. 3A, 7.15 (Interrupt 8, Tables 7-4 and 7-5) does: benign,
+contributory (#DE, #TS, #NP, #SS, #GP) or page fault; two contributory
+exceptions, or a page fault followed by a page fault or a contributory
+exception, become #DF; an exception while delivering #DF shuts the
+processor down (triple fault). Otherwise the second exception is delivered
+after the first is abandoned.
+
+## D-012: system transfers in microcode
+
+Far CALL/RET/JMP through code segments, call gates (with a stack switch
+and parameter copy) and task gates/TSS descriptors, task switches (a
+microcode routine saving and loading the TSS, Vol. 3A ch. 9), SYSCALL/
+SYSRET and SYSENTER/SYSEXIT are compiled from the manual's Operation
+sections (with overrides where the manual's prose needs it). The debug
+registers DR0-DR3/DR6/DR7 are architectural state; the core checks
+instruction breakpoints at decode and data breakpoints on memory micro-ops,
+and raises single-step traps (EFLAGS.TF) after an instruction, as Vol. 3A
+ch. 19 "Debug, Branch Profile, TSX, and Intel Resource Director
+Technology" describes.

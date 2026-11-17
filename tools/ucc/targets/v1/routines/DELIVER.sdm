@@ -12,10 +12,13 @@
 #   IA-32e mode: 16-byte gates, IST, a privilege change through the 64-bit
 #     TSS, the stack aligned to 16 bytes (Vol. 3A 7.14 "Exception and
 #     Interrupt Handling in 64-bit Mode").
-# v1 simplifications, each a shutdown where the manual raises a further
-# exception: an IDT too short, a gate not present, a software interrupt
-# through a gate with DPL < CPL (#GP), a fault during delivery (#DF; the core
-# checks that). Task gates and virtual-8086 mode aren't delivered.
+# Problems with the IDT raise the manual's exceptions with the IDT error code
+# (vector * 8 + 2, + 1 for an external event): an IDT too short or a gate of
+# the wrong type #GP, a gate not present #NP, a software interrupt through a
+# gate with DPL < CPL #GP; the core turns an exception raised while
+# delivering into #DF or a shutdown as Vol. 3A 7.15 says (D-011). Protected
+# mode task gates switch tasks (TaskSwitch). Interrupts in virtual-8086 mode
+# aren't delivered in v1.
 @operation
 vec := FAULT_VEC AND FFH;
 soft := SHR(FAULT_VEC, 9) AND 1;
@@ -25,6 +28,7 @@ oldflags := RFLAGS;
 oldcs := CS;
 oldss := SS;
 oldrsp := RSP;
+ecode := SHL(vec, 3) OR 2 OR (1 - soft);
 IF CR0.PE = 0
     THEN
         IF IDTR_LIMIT < SHL(vec, 2) + 3 THEN SHUTDOWN; FI;
@@ -44,11 +48,12 @@ IF CR0.PE = 0
         RIP := ip;
     ELSE IF IA32_EFER.LMA = 1
     THEN
-        IF IDTR_LIMIT < SHL(vec, 4) + 15 THEN SHUTDOWN; FI;
+        IF IDTR_LIMIT < SHL(vec, 4) + 15 THEN #GP(ecode); FI;
         lo := Linear64[IDTR_BASE + SHL(vec, 4)];
         hi := Linear64[IDTR_BASE + SHL(vec, 4) + 8];
-        IF (SHR(lo, 47) AND 1) = 0 THEN SHUTDOWN; FI;
-        IF soft = 1 AND (SHR(lo, 45) AND 3) < oldcpl THEN SHUTDOWN; FI;
+        IF (SHR(lo, 40) AND 1FH) != 0EH AND (SHR(lo, 40) AND 1FH) != 0FH THEN #GP(ecode); FI;
+        IF soft = 1 AND (SHR(lo, 45) AND 3) < oldcpl THEN #GP(ecode); FI;
+        IF (SHR(lo, 47) AND 1) = 0 THEN #NP(ecode); FI;
         target := (lo AND FFFFH) OR (SHR(lo, 32) AND FFFF0000H) OR SHL(hi, 32);
         sel := SHR(lo, 16) AND FFFFH;
         ist := SHR(lo, 32) AND 7;
@@ -90,10 +95,18 @@ IF CR0.PE = 0
         SetFlag(RF, 0);
         RIP := target;
     ELSE
-        IF IDTR_LIMIT < SHL(vec, 3) + 7 THEN SHUTDOWN; FI;
+        IF IDTR_LIMIT < SHL(vec, 3) + 7 THEN #GP(ecode); FI;
         g := Linear64[IDTR_BASE + SHL(vec, 3)];
-        IF (SHR(g, 47) AND 1) = 0 THEN SHUTDOWN; FI;
-        IF soft = 1 AND (SHR(g, 45) AND 3) < oldcpl THEN SHUTDOWN; FI;
+        gty := SHR(g, 40) AND 1FH;
+        IF gty != 05H AND gty != 06H AND gty != 07H AND gty != 0EH AND gty != 0FH THEN #GP(ecode); FI;
+        IF soft = 1 AND (SHR(g, 45) AND 3) < oldcpl THEN #GP(ecode); FI;
+        IF (SHR(g, 47) AND 1) = 0 THEN #NP(ecode); FI;
+        IF gty = 05H
+            THEN
+                (* a task gate: switch tasks, then the error code on the new stack *)
+                TaskSwitch(SHR(g, 16) AND FFFFH, 1, FAULT_RIP);
+                IF haserr = 1 THEN PushW(FAULT_ERR, 4); FI;
+            ELSE
         target := (g AND FFFFH) OR (SHR(g, 32) AND FFFF0000H);
         sel := SHR(g, 16) AND FFFFH;
         desc := Linear64[GDTR_BASE + (sel AND FFF8H)];
@@ -135,6 +148,7 @@ IF CR0.PE = 0
         SetFlag(NT, 0);
         SetFlag(RF, 0);
         RIP := target;
+        FI;
 FI;
 @flags
 None.
