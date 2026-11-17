@@ -1043,12 +1043,14 @@ module v1_core
       // = C001_0200 + 2n, PERF_CTRn = + 1): EN (22), OS (17) / USR (16) by
       // CPL; events 76h (cycles not halted) and C0h (retired instructions);
       // 48-bit counters
+      // (the event select is EventSelect[11:8] in bits 35:32 and [7:0] in 7:0)
       for (int i = 0; i < 6; i++) begin
-        logic [63:0] c;
+        logic [11:0] evsel;
         logic run;
-        c = sp[8'(SP_PERF_CTL0 + i)];
-        run = c[22] && ((cpl == 2'd3) ? c[16] : c[17]) && c[35:32] == 4'h0;
-        if (run && ((c[7:0] == 8'h76 && st != S_HALT) || (c[7:0] == 8'hC0 && rt_valid)))
+        evsel = {sp[8'(SP_PERF_CTL0 + i)][35:32], sp[8'(SP_PERF_CTL0 + i)][7:0]};
+        run = sp[8'(SP_PERF_CTL0 + i)][22] &&
+              ((cpl == 2'd3) ? sp[8'(SP_PERF_CTL0 + i)][16] : sp[8'(SP_PERF_CTL0 + i)][17]);
+        if (run && ((evsel == 12'h076 && st != S_HALT) || (evsel == 12'h0C0 && rt_valid)))
           sp[8'(SP_PERF_CTR0 + i)] <= (sp[8'(SP_PERF_CTR0 + i)] + 64'd1) & 64'h0000_FFFF_FFFF_FFFF;
       end
       shutdown <= (st == S_SHUTDOWN);
@@ -1338,19 +1340,20 @@ module v1_core
                 pk = !attr.pfx_sens ? 2'd0 : (prep != 2'd0) ? prep : (attr.p66 && p66) ? 2'd3 : 2'd0;
                 // VEX.pp is the mandatory prefix: 01 66h, 10 F3h, 11 F2h
                 if (vex) pk = (vpp == 2'd1) ? 2'd3 : (vpp == 2'd2) ? 2'd1 : (vpp == 2'd3) ? 2'd2 : 2'd0;
-                if (!attr.valid || vex_bad || (vex && attr.vvvv0 && vvvv != 4'd0)) upc <= UADDR_UD;
                 // MOV CR/DR: REX.R extends ModRM.reg (Intel SDM Vol. 2B "MOV--
                 // Move to/from Control Registers"): REX.R + reg 0 is CR8, keyed
                 // as reg 1 (ucc's forms.py: CR1 doesn't exist); CR1, CR9-CR15
                 // and DR8-DR15 are #UD
                 kdig = modrm[5:3];
                 crud = 1'b0;
-                if (dmap == 2'd1 && (dopc == 8'h20 || dopc == 8'h22)) begin
+                if (dmap == 3'd1 && (dopc == 8'h20 || dopc == 8'h22)) begin
                   if (rex_v && rex[2]) begin
                     if (modrm[5:3] == 3'd0) kdig = 3'd1;
                     else crud = 1'b1;
                   end else if (modrm[5:3] == 3'd1) crud = 1'b1;
                 end
+                if (dmap == 3'd1 && (dopc == 8'h21 || dopc == 8'h23) && rex_v && rex[2]) crud = 1'b1;
+                if (!attr.valid || vex_bad || (vex && attr.vvvv0 && vvvv != 4'd0) || crud) upc <= UADDR_UD;
                 else upc <= uentry(dmap == 3'd0 && dopc == 8'h90 && !(rex_v && rex[0]),
                                    mode, dmap, vl, plus_base(dopc),
                                    kdig, pk, dosz, (has_modrm && modrm[7:6] != 2'd3) || attr.moffs,
@@ -1654,7 +1657,15 @@ module v1_core
               U_VSET, U_VZUP, U_VMOVR: ;
               U_FADD, U_FSUB, U_FMUL, U_FDIV, U_FSQRT, U_FMA, U_FMIN, U_FMAX, U_FCVT, U_FCVTI,
               U_FCVTIT, U_ICVTF, U_FRND: begin
-                wr(u.dst, u.sz, fp_res & szmask(u.sz));
+                // ICVTF's sz is the integer source's size: the result is
+                // as wide as its float type (et: f16/bf16 8-9, f32 10, f64
+                // 11; CVTDQ2PD and CVTSI2SD r/m32 make doubles of dwords)
+                if (u.op == U_ICVTF) begin
+                  logic [1:0] fsz;
+                  fsz = (u.et == 4'd11) ? 2'd3 : (u.et == 4'd10) ? 2'd2 : 2'd1;
+                  wr(u.dst, fsz, fp_res & szmask(fsz));
+                end else
+                  wr(u.dst, u.sz, fp_res & szmask(u.sz));
                 // x bit 3 on an arithmetic op: no exceptions (RCPPS, RSQRTPS)
                 if (!(u.x[3] && u.op inside {U_FADD, U_FSUB, U_FMUL, U_FDIV, U_FSQRT, U_FMA,
                                              U_FMIN, U_FMAX}))
@@ -1711,7 +1722,11 @@ module v1_core
                                  U_MULU, U_MULS, U_IMULT, U_ZEXT, U_SEXT, U_SETCC, U_BSF, U_BSR,
                                  U_TZCNT, U_LZCNT, U_POPCNT, U_BSWAP, U_SZP, U_GETF, U_SLICE,
                                  U_PDEP, U_PEXT, U_BEXTR, U_BZHI, U_BLSI, U_BLSMSK, U_BLSR,
-                                 U_INSERT, U_KHI, U_SEL}) begin
+                                 U_INSERT, U_KHI, U_SEL,
+                                 // element-wise (vector integer: PMIN/PMAX/PABS/PAVG,
+                                 // saturating PADD/PSUB, PACKSS/PACKUS)
+                                 U_MIN, U_MAX, U_MINU, U_MAXU, U_ABS, U_AVGU,
+                                 U_ADDS, U_SUBS, U_ADDUS, U_SUBUS, U_PACKSS, U_PACKUS}) begin
                   logic [5:0] wm;
                   logic [63:0] f;
                   wm = u.fmask & alu_native;
@@ -1734,8 +1749,6 @@ module v1_core
                   raise(8'd6, 1'b0, 32'd0, 1'b0, 1'b0, 1'b0);
                   hold = 1'b1;
                 end
-                if (dmap == 2'd1 && (dopc == 8'h21 || dopc == 8'h23) && rex_v && rex[2]) crud = 1'b1;
-                if (!attr.valid || crud) upc <= UADDR_UD;
               end
             endcase
             if (!(hold || u.op == U_END || u.op == U_SHUTDOWN)) upc <= next;

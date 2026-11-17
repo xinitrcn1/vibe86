@@ -691,7 +691,10 @@ package v1_fp_pkg;
       return r;
     end
     if (a.zero) return r;
-    r.x[XDE] = a.denorm;
+    // no denormal exception: the conversions to integer report invalid and
+    // precision only (Intel SDM Vol. 2 CVTSD2SI, CVTTPD2DQ... "SIMD
+    // Floating-Point Exceptions"; FIST: #IA, #P), a denormal source becomes
+    // 0 or +-1 with PE
     // value = sig * 2^(exp - 63); integer part = sig >> (63 - exp)
     x = {a.sig, 64'b0};                       // binary point at bit 64
     if (a.exp > 63) begin
@@ -787,7 +790,10 @@ package v1_fp_pkg;
     if (pred[4]) sig = !sig;
     x = '0;
     x[XIE] = a.snan || b.snan || (sig && un);
-    x[XDE] = a.denorm || b.denorm;
+    // an invalid operation outranks a denormal operand (Intel SDM Vol. 1
+    // "SIMD Floating-Point Exception Priority"), as in fp_arith: CMPSS of a
+    // QNaN and a denormal with a signaling predicate reports IE alone
+    x[XDE] = (a.denorm || b.denorm) && !(f != FMT_F80 && x[XIE]);
     return res;
   endfunction
 
