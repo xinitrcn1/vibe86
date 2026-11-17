@@ -536,7 +536,7 @@ class Lowerer:
             if "crnum" in self.f.hints and self.f.page.startswith("MOV_Move_to_from_Debug"):
                 return self.f.hints["crnum"]
             if "crnum" in self.f.hints:
-                return 8 if (self.f.digit == 0 and "CR8" in self.f.text) else self.f.hints["crnum"]
+                return self.f.hints["crnum"]
             return None
         if n == "CrDest":
             return int(bool(self.f.operands) and self.f.operands[0].kind == "cr")

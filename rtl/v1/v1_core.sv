@@ -1279,6 +1279,8 @@ module v1_core
                 logic [63:0] e;
                 logic [1:0] pk;
                 logic [3:0] rr, rm;
+                logic [2:0] kdig;
+                logic       crud;
                 nr = rip + 64'(idx);
                 if (mode != 2'd3) nr = (mode == 2'd2) ? {32'b0, nr[31:0]} : {48'b0, nr[15:0]};
                 nrip <= nr;
@@ -1313,9 +1315,21 @@ module v1_core
                 // VEX.pp is the mandatory prefix: 01 66h, 10 F3h, 11 F2h
                 if (vex) pk = (vpp == 2'd1) ? 2'd3 : (vpp == 2'd2) ? 2'd1 : (vpp == 2'd3) ? 2'd2 : 2'd0;
                 if (!attr.valid || vex_bad || (vex && attr.vvvv0 && vvvv != 4'd0)) upc <= UADDR_UD;
+                // MOV CR/DR: REX.R extends ModRM.reg (Intel SDM Vol. 2B "MOV--
+                // Move to/from Control Registers"): REX.R + reg 0 is CR8, keyed
+                // as reg 1 (ucc's forms.py: CR1 doesn't exist); CR1, CR9-CR15
+                // and DR8-DR15 are #UD
+                kdig = modrm[5:3];
+                crud = 1'b0;
+                if (dmap == 2'd1 && (dopc == 8'h20 || dopc == 8'h22)) begin
+                  if (rex_v && rex[2]) begin
+                    if (modrm[5:3] == 3'd0) kdig = 3'd1;
+                    else crud = 1'b1;
+                  end else if (modrm[5:3] == 3'd1) crud = 1'b1;
+                end
                 else upc <= uentry(dmap == 3'd0 && dopc == 8'h90 && !(rex_v && rex[0]),
                                    mode, dmap, vl, plus_base(dopc),
-                                   modrm[5:3], pk, dosz, (has_modrm && modrm[7:6] != 2'd3) || attr.moffs,
+                                   kdig, pk, dosz, (has_modrm && modrm[7:6] != 2'd3) || attr.moffs,
                                    dasz, ssz, modrm[2:0]);
                 st <= S_EXEC;
               end
@@ -1693,6 +1707,8 @@ module v1_core
                   raise(8'd6, 1'b0, 32'd0, 1'b0, 1'b0, 1'b0);
                   hold = 1'b1;
                 end
+                if (dmap == 2'd1 && (dopc == 8'h21 || dopc == 8'h23) && rex_v && rex[2]) crud = 1'b1;
+                if (!attr.valid || crud) upc <= UADDR_UD;
               end
             endcase
             if (!(hold || u.op == U_END || u.op == U_SHUTDOWN)) upc <= next;

@@ -395,6 +395,13 @@ def make_forms(page, cfg):
                 o.size = 64
         # MOV Sreg, r/m: one form per segment register (ModRM.reg), so its
         # routine knows statically which descriptor cache it loads
+        if any(o.kind == "cr" for o in f.operands) and "CR8" in f.text and f.digit == 0:
+            # MOV to/from CR8 is REX.R + ModRM.reg 0. The decode key has the
+            # 3-bit ModRM.reg only, so the CR8 forms take reg 1 (CR1 doesn't
+            # exist) and the core keys REX.R + reg 0 as 1, with CR1 and
+            # CR9-CR15 #UD (v1_core.sv, the decode key)
+            f.digit = 1
+            f.hints["crnum"] = 8
         crx = any(o.kind == "cr" for o in f.operands) and cfg.get("crreg") and f.digit is None
         if (f.operands and f.operands[0].kind == "sreg" and cfg.get("sreg")) or crx:
             drx = crx and any(o.text.startswith("DR") for o in f.operands)

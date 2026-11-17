@@ -95,7 +95,7 @@ PAUSE               anyosz   # 66h, REX.W: still PAUSE
 LFENCE
 MFENCE
 SFENCE
-MOV_Move_to_from_Control_Registers   crreg  anymod  skip='CR8'   # CR8 (REX.R) isn't in the decode key yet
+MOV_Move_to_from_Control_Registers   crreg  anymod   # CR8: REX.R + /0, keyed as ModRM.reg 1 (forms.py)
 LTR                 anyosz
 LLDT                anyosz
 SYSCALL
