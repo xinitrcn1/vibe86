@@ -1,6 +1,7 @@
 /*
  * vsim xHCI USB host controller (a PCIe endpoint) with a USB HID boot
- * keyboard on port 1 and a USB HID boot mouse on port 2.
+ * keyboard on port 1, a USB HID boot mouse on port 2 and, with vsim -U, a
+ * USB floppy drive (mass storage, Bulk-Only Transport) on port 3.
  *
  * Follows Intel, "eXtensible Host Controller Interface for Universal Serial
  * Bus (xHCI)", revision 1.2 (May 2019),
@@ -24,6 +25,11 @@ extern "C" {
 #define XHCI_BAR_SIZE	0x10000ull	/* BAR0: 64 KiB */
 
 struct pcidev *xhci_new(void);
+
+/* a USB floppy drive (mass storage, Bulk-Only) on port 3 with the disk image
+ * at path (read into memory; writes stay there unless the medium is
+ * write-protected, ro). 0, or -1 if the image can't be read */
+int xhci_msc_attach(struct pcidev *d, const char *path, int ro);
 
 /* input to the devices (vsim's window and -K) */
 /* a key of the HID Keyboard/Keypad page (0x07): usage 0x04..0xE7; the

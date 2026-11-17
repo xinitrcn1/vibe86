@@ -16,6 +16,7 @@
  * request through pcie_dma(), so bus mastering and the IOMMU apply. Work per
  * core cycle is bounded: at most TRB_BUDGET TRBs are fetched per tick.
  */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -109,7 +110,7 @@ enum {
 /* slot and endpoint states (§4.5.3, §4.8.3) */
 enum { SS_ENABLED = 0, SS_DEFAULT, SS_ADDRESSED, SS_CONFIGURED };
 enum { EP_DISABLED = 0, EP_RUNNING, EP_HALTED, EP_STOPPED, EP_ERROR };
-enum { EPT_CONTROL = 4, EPT_INT_IN = 7 };
+enum { EPT_BULK_OUT = 2, EPT_CONTROL = 4, EPT_BULK_IN = 6, EPT_INT_IN = 7 };
 
 struct trb {
 	uint64_t p;
@@ -118,7 +119,8 @@ struct trb {
 
 /* ------------------------------------------------------------------ devices */
 
-enum { DEV_NONE, DEV_KBD, DEV_MOUSE };
+enum { DEV_NONE, DEV_KBD, DEV_MOUSE, DEV_MSC };
+#define MSC_RESP	64	/* the longest non-data response (MODE SENSE with page 05h) */
 #define KQ	32		/* keyboard reports waiting */
 #define MAXHELD	16
 
@@ -137,9 +139,22 @@ struct usbdev {
 	int dx, dy;
 	uint8_t btn, bq[8];
 	unsigned bqh, bqn;
+	/* mass storage: a USB floppy drive (Bulk-Only Transport) */
+	uint8_t *img;			/* the medium, in memory; NULL: no disk */
+	uint64_t img_size;
+	int ro;				/* write-protected */
+	int bot;			/* 0 expect a CBW, 1 data in, 2 data out, 3 CSW */
+	uint32_t tag, dlen, done;	/* the CBW's tag and length, bytes moved */
+	int rw;				/* data: 0 resp[], 1 read the medium, 2 write it */
+	uint8_t resp[MSC_RESP];
+	uint32_t rlen;
+	uint64_t moff;			/* READ/WRITE: byte offset into the medium */
+	uint32_t xlen;			/* bytes the command transfers */
+	uint8_t status;			/* CSW status: 0 passed, 1 failed */
+	uint8_t skey, asc, ascq;	/* sense data for REQUEST SENSE */
 };
 
-static const char *const dev_product[] = { "", "USB Keyboard", "USB Mouse" };
+static const char *const dev_product[] = { "", "USB Keyboard", "USB Mouse", "USB Floppy" };
 
 /* HID 1.11 Appendix B.1 (= E.6): the boot keyboard report descriptor */
 static const uint8_t kbd_report_desc[] = {
@@ -175,6 +190,239 @@ dev_reset(struct usbdev *u)
 	u->dx = u->dy = 0;
 	memset(u->last, 0, sizeof u->last);
 	u->idle_at = 0;
+	u->bot = 0;			/* mass storage: wait for a CBW; the medium stays */
+	u->rw = 0;
+}
+
+/*
+ * The USB floppy drive: USB Mass Storage Class Bulk-Only Transport 1.0
+ * (USB-IF, 1999, https://www.usb.org/document-library/mass-storage-bulk-only-10),
+ * the SCSI transparent command set (subclass 06h; SeaBIOS and UEFI's
+ * UsbMassStorageDxe drive it) answering the commands of the UFI command
+ * specification (USB-IF, "Mass Storage Class UFI Command Specification" 1.0,
+ * 1998) a USB floppy drive answers: READ FORMAT CAPACITIES and the Flexible
+ * Disk mode page (05h: 80 cylinders, 2 heads, 18 sectors for a 1.44 MB disk).
+ * Real USB floppy drives mostly use UFI over Control/Bulk/Interrupt; SeaBIOS
+ * only drives BOT, so this one reports BOT with the UFI command set.
+ *
+ * The data phase is always as long as the host's CBW says (BOT 6.7.2, case
+ * Hi > Di: the device pads, and reports the residue in the CSW), so the host
+ * never sees a short packet.
+ */
+static void
+msc_sense(struct usbdev *u, uint8_t key, uint8_t asc, uint8_t ascq)
+{
+	u->status = 1;
+	u->skey = key;
+	u->asc = asc;
+	u->ascq = ascq;
+	u->rw = 0;
+	u->rlen = 0;
+	u->xlen = 0;
+}
+
+static uint32_t
+be32(const uint8_t *p)
+{
+	return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
+static void
+put_be32(uint8_t *p, uint32_t v)
+{
+	p[0] = (uint8_t)(v >> 24);
+	p[1] = (uint8_t)(v >> 16);
+	p[2] = (uint8_t)(v >> 8);
+	p[3] = (uint8_t)v;
+}
+
+/* the Flexible Disk page (UFI 4.5.4 / SBC-1 5.3.3.3) for the medium's geometry */
+static unsigned
+msc_page05(const struct usbdev *u, uint8_t *p)
+{
+	unsigned spt = 18, heads = 2;
+	uint64_t secs = u->img_size / 512;
+	if (secs == 1440)		/* 720 KB */
+		spt = 9;
+	else if (secs == 2400)		/* 1.2 MB */
+		spt = 15;
+	else if (secs == 5760)		/* 2.88 MB */
+		spt = 36;
+	unsigned cyl = (unsigned)(secs / (spt * heads));
+	memset(p, 0, 32);
+	p[0] = 0x05;
+	p[1] = 0x1E;
+	p[2] = 0x01;			/* transfer rate 500 kbit/s */
+	p[3] = 0xF4;
+	p[4] = (uint8_t)heads;
+	p[5] = (uint8_t)spt;
+	p[6] = 0x02;			/* 512 bytes per sector */
+	p[8] = (uint8_t)(cyl >> 8);
+	p[9] = (uint8_t)cyl;
+	p[28] = 0x01;			/* medium rotation rate 300 rpm */
+	p[29] = 0x2C;
+	return 32;
+}
+
+/* run the command block of a CBW */
+static void
+msc_command(struct usbdev *u, const uint8_t *cb)
+{
+	uint64_t blocks = u->img_size / 512;
+	u->status = 0;
+	u->rw = 0;
+	u->rlen = 0;
+	u->xlen = 0;
+	memset(u->resp, 0, sizeof u->resp);
+	uint8_t op = cb[0];
+	if (!u->img && op != 0x03 && op != 0x12) {
+		msc_sense(u, 0x02, 0x3A, 0x00);		/* NOT READY: medium not present */
+		return;
+	}
+	switch (op) {
+	case 0x00:					/* TEST UNIT READY */
+	case 0x1B:					/* START STOP UNIT */
+	case 0x1E:					/* PREVENT ALLOW MEDIUM REMOVAL */
+	case 0x2F:					/* VERIFY(10) */
+	case 0x35:					/* SYNCHRONIZE CACHE(10) */
+		break;
+	case 0x03:					/* REQUEST SENSE */
+		u->resp[0] = 0x70;
+		u->resp[2] = u->skey;
+		u->resp[7] = 10;
+		u->resp[12] = u->asc;
+		u->resp[13] = u->ascq;
+		u->rlen = 18;
+		u->skey = u->asc = u->ascq = 0;
+		break;
+	case 0x12:					/* INQUIRY */
+		if (cb[1] & 1) {			/* EVPD: no vital product data */
+			msc_sense(u, 0x05, 0x24, 0x00);
+			return;
+		}
+		u->resp[0] = 0x00;			/* direct-access block device */
+		u->resp[1] = 0x80;			/* removable medium */
+		u->resp[3] = 0x01;			/* response data format (UFI) */
+		u->resp[4] = 31;
+		memcpy(u->resp + 8, "vibe86  USB Floppy      1.00", 28);
+		u->rlen = 36;
+		break;
+	case 0x1A:					/* MODE SENSE(6) */
+	case 0x5A: {					/* MODE SENSE(10) */
+		unsigned page = cb[2] & 0x3F, h = op == 0x1A ? 4 : 8, n = h;
+		if (page == 0x05 || page == 0x3F)
+			n += msc_page05(u, u->resp + h);
+		else if (page != 0) {
+			msc_sense(u, 0x05, 0x24, 0x00);	/* invalid field in CDB */
+			return;
+		}
+		if (op == 0x1A) {
+			u->resp[0] = (uint8_t)(n - 1);
+			u->resp[2] = u->ro ? 0x80 : 0;
+		} else {
+			u->resp[1] = (uint8_t)(n - 2);
+			u->resp[2] = 0x94;		/* medium type: 1.44 MB (UFI) */
+			u->resp[3] = u->ro ? 0x80 : 0;
+		}
+		u->rlen = n;
+		break;
+	}
+	case 0x23:					/* READ FORMAT CAPACITIES (UFI 4.10) */
+		u->resp[3] = 8;
+		put_be32(u->resp + 4, (uint32_t)blocks);
+		u->resp[8] = 0x02;			/* formatted medium */
+		u->resp[10] = 0x02;			/* 512-byte blocks */
+		u->rlen = 12;
+		break;
+	case 0x25:					/* READ CAPACITY(10) */
+		put_be32(u->resp, (uint32_t)(blocks - 1));
+		put_be32(u->resp + 4, 512);
+		u->rlen = 8;
+		break;
+	case 0x28: case 0xA8:				/* READ(10), READ(12) */
+	case 0x2A: case 0xAA: {				/* WRITE(10), WRITE(12) */
+		uint64_t lba = be32(cb + 2);
+		uint32_t n = (op & 0x80) ? be32(cb + 6) : (uint32_t)(cb[7] << 8 | cb[8]);
+		if (lba + n > blocks) {
+			msc_sense(u, 0x05, 0x21, 0x00);	/* LBA out of range */
+			return;
+		}
+		if ((op & 0x0F) == 0x0A && u->ro) {
+			msc_sense(u, 0x07, 0x27, 0x00);	/* DATA PROTECT: write protected */
+			return;
+		}
+		u->rw = (op & 0x0F) == 0x0A ? 2 : 1;
+		u->moff = lba * 512;
+		u->xlen = n * 512;
+		break;
+	}
+	default:
+		msc_sense(u, 0x05, 0x20, 0x00);		/* invalid command operation code */
+		break;
+	}
+}
+
+/* a bulk OUT transfer to the device: a CBW, or WRITE data */
+static void
+msc_out(struct usbdev *u, const uint8_t *p, unsigned n)
+{
+	if (u->bot == 2) {
+		for (unsigned i = 0; i < n && u->done < u->dlen; i++, u->done++)
+			if (u->rw == 2 && u->done < u->xlen)
+				u->img[u->moff + u->done] = p[i];
+		if (u->done >= u->dlen)
+			u->bot = 3;
+		return;
+	}
+	if (u->bot != 0 || n != 31 || be32(p) != 0x55534243u)	/* "USBC" little-endian */
+		return;					/* not a valid CBW: ignored */
+	u->tag = (uint32_t)p[4] | (uint32_t)p[5] << 8 | (uint32_t)p[6] << 16 | (uint32_t)p[7] << 24;
+	u->dlen = (uint32_t)p[8] | (uint32_t)p[9] << 8 | (uint32_t)p[10] << 16 | (uint32_t)p[11] << 24;
+	u->done = 0;
+	msc_command(u, p + 15);
+	int din = (p[12] & 0x80) != 0;
+	if ((u->rw == 2 && din) || (u->rw == 1 && !din))
+		msc_sense(u, 0x05, 0x24, 0x00);		/* direction doesn't match the command */
+	u->bot = u->dlen == 0 ? 3 : din ? 1 : 2;
+}
+
+/* bytes the device has for the next bulk IN transfer */
+static unsigned
+msc_avail(const struct usbdev *u)
+{
+	return u->bot == 1 ? u->dlen - u->done : u->bot == 3 ? 13 : 0;
+}
+
+/* the next bulk IN bytes (data, or the CSW); returns how many */
+static unsigned
+msc_in(struct usbdev *u, uint8_t *p, unsigned max)
+{
+	if (u->bot == 3) {
+		uint32_t have = u->rw ? u->xlen : u->rlen;
+		uint32_t resid = u->dlen > have ? u->dlen - have : 0;
+		uint8_t c[13] = { 'U', 'S', 'B', 'S' };
+		for (int i = 0; i < 4; i++) {
+			c[4 + i] = (uint8_t)(u->tag >> (8 * i));
+			c[8 + i] = (uint8_t)(resid >> (8 * i));
+		}
+		c[12] = u->status;
+		unsigned n = max < 13 ? max : 13;
+		memcpy(p, c, n);
+		u->bot = 0;
+		return n;
+	}
+	if (u->bot != 1)
+		return 0;
+	unsigned n = u->dlen - u->done < max ? u->dlen - u->done : max;
+	for (unsigned i = 0; i < n; i++) {
+		uint32_t at = u->done + i;
+		p[i] = u->rw == 1 ? (at < u->xlen ? u->img[u->moff + at] : 0)
+		     : (at < u->rlen ? u->resp[at] : 0);
+	}
+	u->done += n;
+	if (u->done >= u->dlen)
+		u->bot = 3;
+	return n;
 }
 
 static void
@@ -215,6 +463,8 @@ dev_has_data(const struct usbdev *u, uint64_t now)
 		return u->config && (u->qn || (u->idle && now >= u->idle_at));
 	if (u->kind == DEV_MOUSE)
 		return mouse_pending(u);
+	if (u->kind == DEV_MSC)
+		return u->config && msc_avail(u) != 0;
 	return 0;
 }
 
@@ -294,6 +544,16 @@ desc_hid(const struct usbdev *u, uint8_t *b)
 static unsigned
 desc_config(const struct usbdev *u, uint8_t *b)
 {
+	if (u->kind == DEV_MSC) {
+		static const uint8_t m[32] = {
+			9, 2, 32, 0, 1, 1, 0, 0x80, 250,	/* bus powered, 500 mA */
+			9, 4, 0, 0, 2, 8, 6, 0x50, 0,		/* mass storage, SCSI, Bulk-Only */
+			7, 5, 0x81, 2, 64, 0, 0,		/* EP1 IN, bulk, 64 bytes */
+			7, 5, 0x02, 2, 64, 0, 0,		/* EP2 OUT, bulk, 64 bytes */
+		};
+		memcpy(b, m, 32);
+		return 32;
+	}
 	static const uint8_t c[9] = { 9, 2, 34, 0, 1, 1, 0, 0xA0, 50 };	/* bus powered, remote wakeup, 100 mA */
 	uint8_t i[9] = { 9, 4, 0, 0, 1, 3, 1, (uint8_t)u->kind, 0 };	/* HID, boot, kbd 1 / mouse 2 */
 	static const uint8_t e[7] = { 7, 5, 0x81, 3, 8, 0, 10 };	/* EP1 IN, interrupt, 8 bytes, 10 ms */
@@ -357,7 +617,8 @@ dev_request(struct usbdev *u, const uint8_t s[8], uint8_t *buf, unsigned *len)
 		n = 2;
 		break;
 	case 0x8200:					/* GET_STATUS endpoint */
-		if ((idx & 0xFF) != 0 && (idx & 0xFF) != 0x81)
+		if ((idx & 0xFF) != 0 && (idx & 0xFF) != 0x81 &&
+		    !(u->kind == DEV_MSC && (idx & 0xFF) == 0x02))
 			return -1;
 		d[0] = d[1] = 0;
 		n = 2;
@@ -369,8 +630,20 @@ dev_request(struct usbdev *u, const uint8_t s[8], uint8_t *buf, unsigned *len)
 		u->rwake = req == 3;
 		break;
 	case 0x0201:					/* CLEAR_FEATURE endpoint */
-		if (val != 0 || ((idx & 0xFF) != 0 && (idx & 0xFF) != 0x81))
+		if (val != 0 || ((idx & 0xFF) != 0 && (idx & 0xFF) != 0x81 &&
+		    !(u->kind == DEV_MSC && (idx & 0xFF) == 0x02)))
 			return -1;			/* ENDPOINT_HALT: never halted */
+		break;
+	case 0xA1FE:					/* BOT: Get Max LUN */
+		if (u->kind != DEV_MSC || idx != 0)
+			return -1;
+		d[0] = 0;
+		n = 1;
+		break;
+	case 0x21FF:					/* BOT: Bulk-Only Mass Storage Reset */
+		if (u->kind != DEV_MSC || idx != 0)
+			return -1;
+		u->bot = 0;
 		break;
 	case 0x8006:					/* GET_DESCRIPTOR */
 		switch (val >> 8) {
@@ -388,7 +661,7 @@ dev_request(struct usbdev *u, const uint8_t s[8], uint8_t *buf, unsigned *len)
 		}
 		break;
 	case 0x8106:					/* GET_DESCRIPTOR interface: HID class */
-		if (idx != 0)
+		if (idx != 0 || u->kind == DEV_MSC)
 			return -1;
 		if (val >> 8 == 0x21)
 			n = desc_hid(u, d);
@@ -420,7 +693,7 @@ dev_request(struct usbdev *u, const uint8_t s[8], uint8_t *buf, unsigned *len)
 			return -1;
 		break;
 	case 0xA101:					/* GET_REPORT (input) */
-		if (idx != 0 || val >> 8 != 1)
+		if (idx != 0 || val >> 8 != 1 || u->kind == DEV_MSC)
 			return -1;
 		if (u->kind == DEV_KBD) {
 			kbd_report(u, d);
@@ -1299,6 +1572,80 @@ epint_run(struct xhci *x, unsigned sid, unsigned dci, int *budget)
 	}
 }
 
+/*
+ * A bulk endpoint (§4.11.2.1): each Normal TRB is serviced whole (the
+ * device's data phases are as long as the host asks, so packets are never
+ * short except a CSW or data read into a longer buffer, which ends the TD).
+ */
+static uint8_t bulk_buf[0x20000];
+
+static void
+epbulk_run(struct xhci *x, unsigned sid, unsigned dci, int *budget)
+{
+	struct ep *e = &x->slot[sid].ep[dci];
+	struct usbdev *u = slot_dev(x, sid);
+	struct trb t;
+
+	while (e->state == EP_RUNNING && *budget > 0) {
+		int r = ep_fetch(x, e, &t, budget);
+		if (r <= 0) {
+			if (r == 0) {
+				x->slot[sid].act &= ~(1u << dci);
+				e->pending = 0;
+			}
+			return;
+		}
+		if (ep_misc_trb(x, sid, dci, e, &t))
+			continue;
+		if (TRB_TYPE(t.c) != TRB_NORMAL) {
+			ev_xfer(x, sid, dci, e->deq, t.s & 0x1FFFF, CC_TRB, 0);
+			ep_halt(x, sid, dci);
+			return;
+		}
+		if (e->skip) {				/* the rest of a TD after a short packet */
+			if (!(t.c & C_CH))
+				e->skip = 0;
+			ep_advance(e);
+			continue;
+		}
+		unsigned len = t.s & 0x1FFFF;
+		if (!u || u->kind != DEV_MSC || !(x->portsc[x->slot[sid].port - 1] & PS_PED)) {
+			e->pending = 1;			/* nothing answers: keep the TRB */
+			return;
+		}
+		if (e->type == EPT_BULK_OUT) {
+			if (t.c & C_IDT)
+				memcpy(bulk_buf, &t.p, len > 8 ? 8 : len);
+			else if (len && dma_rd(x, t.p, bulk_buf, len))
+				return;
+			msc_out(u, bulk_buf, len);
+			e->edtla += len;
+			if (t.c & C_IOC)
+				ev_xfer(x, sid, dci, e->deq, 0, CC_SUCCESS, 0);
+			ep_advance(e);
+			continue;
+		}
+		if (e->type != EPT_BULK_IN)
+			return;
+		if (!msc_avail(u)) {
+			e->pending = 1;			/* NAK until the device has data */
+			return;
+		}
+		unsigned n = msc_in(u, bulk_buf, len);
+		if (n && ((t.c & C_IDT) || dma_wr(x, t.p, bulk_buf, n)))
+			return;
+		e->edtla += n;
+		e->pending = 0;
+		if (n < len) {
+			if (t.c & (C_ISP | C_IOC))
+				ev_xfer(x, sid, dci, e->deq, len - n, CC_SHORT, 0);
+			e->skip = (t.c & C_CH) != 0;
+		} else if (t.c & C_IOC)
+			ev_xfer(x, sid, dci, e->deq, 0, CC_SUCCESS, 0);
+		ep_advance(e);
+	}
+}
+
 /* ---------------------------------------------------------------- registers */
 
 static void
@@ -1557,7 +1904,10 @@ xhci_tick(struct pcidev *d)
 			/* a waiting interrupt TRB only needs service when data came */
 			if (e->pending && !e->skip && !data)
 				continue;
-			epint_run(x, s, i, &budget);
+			if (e->type == EPT_BULK_IN || e->type == EPT_BULK_OUT)
+				epbulk_run(x, s, i, &budget);
+			else
+				epint_run(x, s, i, &budget);
 		}
 	}
 	if (x->evn)
@@ -1613,6 +1963,41 @@ xhci_new(void)
 	x->dev[1].speed = SPEED_FULL;
 	xhci_reset(&x->d);
 	return &x->d;
+}
+
+/* ---------------------------------------------------------------- floppy */
+
+int
+xhci_msc_attach(struct pcidev *d, const char *path, int ro)
+{
+	struct xhci *x = (struct xhci *)d;
+	struct usbdev *u = &x->dev[2];
+	FILE *f = fopen(path, "rb");
+	if (!f)
+		return -1;
+	fseek(f, 0, SEEK_END);
+	long n = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	if (n <= 0 || n % 512) {
+		fclose(f);
+		return -1;
+	}
+	uint8_t *m = malloc((size_t)n);
+	if (!m || fread(m, 1, (size_t)n, f) != (size_t)n) {
+		free(m);
+		fclose(f);
+		return -1;
+	}
+	fclose(f);
+	free(u->img);
+	u->img = m;
+	u->img_size = (uint64_t)n;
+	u->ro = ro;
+	u->kind = DEV_MSC;
+	u->speed = SPEED_FULL;
+	dev_reset(u);
+	port_init(x, 2);
+	return 0;
 }
 
 /* ---------------------------------------------------------------- input */

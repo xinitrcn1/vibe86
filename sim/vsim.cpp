@@ -1,6 +1,6 @@
 // vsim - vibe86 board simulator: the Verilated core + board model.
 //
-// vsim [-b server|test] [-C cpu] [-n] [-d] [-J strap] [-m dimm]... [-P slot] [-X slot] [-K script]
+// vsim [-b server|test] [-C cpu] [-n] [-d] [-J strap] [-m dimm]... [-P slot] [-X slot] [-U image] [-K script]
 //      [-c cycles] [-H cycles] [-t] [-v] [-x] [-s scale] [-V vga.bmp] [-Y vga.txt] [-T tpm-state]
 //      [-N nvram] [-l file@addr]... [-e file.elf]... [eeprom.bin]
 //
@@ -56,6 +56,8 @@ struct opts {
 	bool dimms_given = false;
 	int pci_slot = 0;		// -P: the DMA test endpoint's slot, -1 none
 	int xhci_slot = 1;		// -X: the xHCI controller's slot, -1 none
+	const char *usb_floppy = nullptr;	// -U: USB floppy image (xHCI port 3)
+	bool usb_floppy_ro = false;
 	const char *keys = nullptr;	// -K: key script
 	dimm_cfg dimms[DRAM_SLOTS] = {};
 	const char *vga_bmp = nullptr;	// -V: dump the VGA picture on exit
@@ -86,6 +88,8 @@ usage()
 	    "      repeatable; replaces the default (0:8G, ECC, DDR5-4800). -m none: no DIMMs\n"
 	    "  -P  PCIe slot of the DMA test endpoint: 0..7 or none (default 0)\n"
 	    "  -X  PCIe slot of the xHCI USB controller (keyboard, mouse): 0..7 or none (default 1)\n"
+	    "  -U  a USB floppy drive on the xHCI's port 3 with this disk image (IMAGE[,ro]:\n"
+	    "      read into memory; writes are not saved to the file)\n"
 	    "  -K  key script, items 'delay:key' (delay in cycles after the previous item, k/M\n"
 	    "      suffixes; key: F1-F12 Up Down Left Right Enter Esc Tab Backspace Space Home End\n"
 	    "      PgUp PgDn Insert Delete CapsLock LShift RShift LCtrl RCtrl LAlt RAlt, one\n"
@@ -956,7 +960,7 @@ main(int argc, char **argv)
 	opts o;
 	int c;
 
-	while ((c = getopt(argc, argv, "b:ndJ:m:c:H:tvxs:S:P:X:K:V:Y:T:l:e:N:C:M:g:f:")) != -1) {
+	while ((c = getopt(argc, argv, "b:ndJ:m:c:H:tvxs:S:P:X:U:K:V:Y:T:l:e:N:C:M:g:f:")) != -1) {
 		switch (c) {
 		case 'b':
 			if (!std::strcmp(optarg, "server"))
@@ -1007,6 +1011,15 @@ main(int argc, char **argv)
 				o.xhci_slot = (int)v;
 			}
 			break;
+		case 'U': {
+			char *c = std::strrchr(optarg, ',');
+			if (c && !std::strcmp(c, ",ro")) {
+				*c = 0;
+				o.usb_floppy_ro = true;
+			}
+			o.usb_floppy = optarg;
+			break;
+		}
 		case 'K': o.keys = optarg; break;
 		case 'c': o.max_cycles = std::strtoull(optarg, nullptr, 0); break;
 		case 'H': o.halt_idle = std::strtoull(optarg, nullptr, 0); break;
@@ -1097,6 +1110,17 @@ main(int argc, char **argv)
 	if ((o.pci_slot != 0 || o.xhci_slot != 1) &&
 	    board_pci_slots(&m.brd, o.pci_slot, o.xhci_slot))
 		return 4;
+	if (o.usb_floppy) {
+		if (!m.brd.xhci) {
+			std::fprintf(stderr, "vsim: -U needs the xHCI controller (-X)\n");
+			return 4;
+		}
+		if (xhci_msc_attach(m.brd.xhci, o.usb_floppy, o.usb_floppy_ro)) {
+			std::fprintf(stderr, "vsim: %s: not a readable disk image (a multiple of 512 bytes)\n",
+			    o.usb_floppy);
+			return 4;
+		}
+	}
 	if (o.keys) {
 		std::string script = o.keys;
 		if (script[0] == '@') {		// -K @file: the script is in a file
