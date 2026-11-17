@@ -1160,6 +1160,11 @@ module v1_core
                 nrip <= nr;
                 `ifdef V1_DEBUG $display("finish map=%0d opc=%h mode=%0d osz=%0d idx=%0d ds=%0d", dmap, dopc, mode, dosz, idx, ds); `endif
                 e = calc_ea(nr, dseg);
+                // without a memory ModRM operand the default segment is DS
+                // (string sources, XLAT: Intel SDM Vol. 1 3.7.5); modrm
+                // still holds the previous instruction's byte, whose
+                // BP/SP-based forms would select SS
+                if (!has_modrm || modrm[7:6] == 2'd3) dseg = 3'd3;
                 if (attr.moffs) begin
                   e = imm_r;
                   dseg = 3'd3;
