@@ -47,7 +47,10 @@ foreach(t IN LISTS UEFI_TESTS)
   get_filename_component(name ${t} NAME_WE)
   add_test(NAME firmware/${name}
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/run.py $<TARGET_FILE:vsim> ${VIBE86_FD} ${t})
-  set_tests_properties(firmware/${name} PROPERTIES LABELS firmware TIMEOUT 3000 SKIP_RETURN_CODE 77
+  file(STRINGS ${t} labels REGEX "^// ctest-labels:")
+  string(REGEX REPLACE "^// ctest-labels:[ ]*" "" labels "${labels}")
+  string(REPLACE " " ";" labels "${labels}")
+  set_tests_properties(firmware/${name} PROPERTIES LABELS "firmware;${labels}" TIMEOUT 3000 SKIP_RETURN_CODE 77
     ENVIRONMENT "ACPI=${VIBE86_ACPI_DIR};DATA=${CMAKE_CURRENT_SOURCE_DIR}/firmware;WORK=${CMAKE_SOURCE_DIR}/work")
 endforeach()
 
