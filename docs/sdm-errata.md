@@ -26,3 +26,4 @@ Developer's Manual, Vol. 2, order no. 325383-093US (September 2026).
 | E-15 | SDM, LFENCE and MFENCE, opcode tables | Opcode/Op-En/64-32 bit/CPUID layout without an Instruction column | | table layout | opcode overrides |
 | E-16 | SDM, SETcc, opcode table | rows like `0F 94 \| SETE r/m8` without `/r` (or `/0`), though the instruction has a ModRM byte | | table | forms.py infers ModRM from an r/m operand |
 | E-17 | SDM, CWD/CDQ/CQO, Operation | `DX := SignExtend(AX);` (and EDX/EAX, RDX/RAX) | DX:AX := SignExtend(AX): DX receives the sign only | notation | override `CWD_CDQ_CQO.sdm` |
+| E-18 | SDM, CMPXCHG, Operation | `ELSE accumulator := TEMP; DEST := TEMP;` | for a register destination nothing is written (a 32-bit write would zero-extend the register in 64-bit mode; Intel and AMD processors leave it); the write-back is the memory operand's locked cycle | semantics | override `CMPXCHG.sdm` |

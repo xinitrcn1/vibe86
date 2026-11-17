@@ -38,3 +38,10 @@ if(EXISTS ${VIBE86_SEABIOS})
 else()
   message(STATUS "no SeaBIOS image (${VIBE86_SEABIOS}): firmware/seabios test skipped")
 endif()
+
+# tools: unit tests of the SDM extractor and the microcode compiler (parser,
+# inlining, forms and the generated decode tables of the latest version)
+add_test(NAME tools/ucc
+  COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ucc.py)
+set_tests_properties(tools/ucc PROPERTIES ENVIRONMENT
+  "VIBE86_EXTRACTED=${UCC_SDM};VIBE86_UCODE_PKG=${CMAKE_BINARY_DIR}/rtl/${VIBE86_LATEST}/gen/${VIBE86_LATEST}_ucode_pkg.sv")

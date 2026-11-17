@@ -23,7 +23,7 @@ IMUL
 DIV
 IDIV
 # data movement
-MOV                 skip='r16/r32/m16|r64/m16'  sreg
+MOV                 sreg
 MOVZX
 MOVSX_MOVSXD        skip='MOVSXD r16'
 LEA                 memonly
@@ -61,7 +61,7 @@ STD
 LAHF
 SAHF
 # misc
-NOP
+NOP                 anyosz   # 66h, REX.W: still no operation
 HLT
 BSF
 BSR
@@ -91,7 +91,7 @@ RDTSC
 RDMSR
 WRMSR
 UD                  only='UD2'
-PAUSE
+PAUSE               anyosz   # 66h, REX.W: still PAUSE
 LFENCE
 MFENCE
 SFENCE
@@ -110,7 +110,7 @@ SHRD
 # legacy and system instructions (BIOS-era code: SeaBIOS, DOS, MikeOS)
 PUSHA_PUSHAD
 POPA_POPAD
-ENTER              class=d64  skip='iw 0[01]'
+ENTER              class=d64  immnotsize  skip='iw 0[01]'
 LOOP_LOOPcc
 XLAT_XLATB
 CLTS
@@ -145,7 +145,7 @@ CLAC
 STAC
 CLFLUSHOPT         memonly
 CLWB               memonly
-CRC32
+CRC32              oszsrc
 ENDBR32
 ENDBR64
 INVPCID            memonly

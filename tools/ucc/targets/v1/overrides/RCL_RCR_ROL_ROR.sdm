@@ -3,7 +3,11 @@
 # tempCOUNT ((COUNT AND countMASK) MOD SIZE, or MOD SIZE+1 through CF) and a
 # bit-at-a-time WHILE loop. v1's rotator does the rotation in one step with
 # the same count reduction and flag rules (CF the last bit rotated, OF for
-# 1-bit rotates, other flags unaffected).
+# 1-bit rotates, other flags unaffected). The manual's Flags Affected calls
+# OF undefined for counts other than 1, which made ucc leave OF out of the
+# rotate's flag mask altogether -- so a 1-bit rotate didn't write it (found
+# by tests/diff). The rotator's OF is committed for every count: correct for
+# 1, an allowed value otherwise; a zero count changes no flag in the ALU.
 @operation
 IF instruction is ROL
     THEN DEST := ShiftOp(ROL, DEST, COUNT);
@@ -14,3 +18,5 @@ ELSE IF instruction is RCL
 ELSE
     DEST := ShiftOp(RCR, DEST, COUNT);
 FI;
+@flags
+The CF and OF flags are set according to the result. The SF, ZF, AF and PF flags are not affected.

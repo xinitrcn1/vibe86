@@ -150,7 +150,7 @@ def section(body, name, stops, indented=False):
 
 
 OPC_START = re.compile(
-    r"^\s{0,6}((?:NP\s+|NFx\s+)?(?:REX(?:\.W|\.R)?\s*\+\s*)?(?:REX\s+)?(?:[0-9A-F]{2}\b|VEX\.|EVEX\.|"
+    r"^\s{0,6}((?:NP\s+|NFx\s+)?(?:REX(?:\.[WRwr])?\s*\+?\s*)?(?:[0-9A-F]{2}\b|VEX\.|EVEX\.|"
     r"[0-9A-F]{2}\+))")
 
 
