@@ -45,6 +45,49 @@ width = 1
 desc = "RESET# (active low): cold and warm reset"
 
 [[pin]]
+name = "pwrok"
+group = "clock_reset"
+dir = "in"
+width = 1
+desc = "PWROK: every package rail is in regulation (low: the whole die in reset, the SMU off)"
+
+# --- voltage regulator control (SVID-like, D-019; docs/package.md)
+[[pin]]
+name = "svc"
+group = "vrctl"
+dir = "out"
+width = 1
+desc = "SVC: the VR bus clock, one bit per two clocks"
+
+[[pin]]
+name = "svd_o"
+group = "vrctl"
+dir = "out"
+width = 1
+desc = "SVD (open drain): 0 pulls the data line low"
+
+[[pin]]
+name = "svd_i"
+group = "vrctl"
+dir = "in"
+width = 1
+desc = "SVD: the data line's level"
+
+[[pin]]
+name = "svt"
+group = "vrctl"
+dir = "in"
+width = 1
+desc = "SVT: the VRs' alert (wired-OR, low: a rail settled or a VR wants attention)"
+
+[[pin]]
+name = "vr_hot_n"
+group = "vrctl"
+dir = "in"
+width = 1
+desc = "VR_HOT_L: a VR is hot (throttle, as PROCHOT_L)"
+
+[[pin]]
 name = "meminit_fast"
 group = "test"
 dir = "in"

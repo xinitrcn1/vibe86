@@ -7,6 +7,8 @@ The source's comment lines say what to expect:
     // expect-exit: N          vsim's exit status (default 0: powered off)
     // expect-out: TEXT        a line the serial port (COM1) must print (contained in it)
     // expect-vga: TEXT        a line of the VGA text screen at exit (vsim -Y; contained in it)
+    // expect-err: TEXT        a line vsim's stderr must contain
+    // expect-no-out: TEXT     no serial line may contain TEXT
     // vsim-args: ARGS         extra vsim arguments (default: -b test; shell quoting); ${VAR}
                                expands from the environment (ACPI, DATA, WORK, ...)
     // requires: FILE          skip the test (exit 77) unless FILE exists; ${VAR} expands
@@ -33,6 +35,8 @@ def main():
     exit_want = int((re.findall(r"//\s*expect-exit:\s*(\d+)", text) or ["0"])[0])
     outs = re.findall(r"//\s*expect-out:\s*(.*)", text)
     vgas = re.findall(r"//\s*expect-vga:\s*(.*)", text)
+    errs = re.findall(r"//\s*expect-err:\s*(.*)", text)
+    nouts = re.findall(r"//\s*expect-no-out:\s*(.*)", text)
     args = (re.findall(r"//\s*vsim-args:\s*(.*)", text) or ["-b test -c 2000000"])[0]
     args = shlex.split(expand(args))
     with tempfile.TemporaryDirectory() as tmp:
@@ -50,6 +54,15 @@ def main():
     for o in outs:
         if not any(o.strip() in l for l in lines):
             print(f"missing output line: {o.strip()!r}")
+            ok = False
+    for o in nouts:
+        if any(o.strip() in l for l in lines):
+            print(f"unexpected output line: {o.strip()!r}")
+            ok = False
+    elines = p.stderr.splitlines()
+    for e in errs:
+        if not any(e.strip() in l for l in elines):
+            print(f"missing stderr line: {e.strip()!r}")
             ok = False
     for v in vgas:
         if not any(v.strip() in l for l in screen):

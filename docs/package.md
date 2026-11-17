@@ -99,9 +99,11 @@ sequences the package:
    the SVID bus idles.
 2. **Rails up**: PWROK rises (the VRs came up at their boot voltage). The
    SMU sets each controlled rail's operating voltage over SVID and waits
-   for every VR's acknowledgement and settled status. A VR that NAKs or
-   never settles leaves the package here, with POST code E5h and
-   ERROR_L[2] asserted (a fatal error).
+   for every VR's acknowledgement and settled status. A VR that NAKs (or
+   answers with bad parity) three times, or doesn't settle within 2^18
+   clocks, leaves the die off until PWROK falls, with ERROR_L[2] asserted
+   (a fatal error) and the sideband's power state reading 7. (No POST
+   code: the fabric that would send one is still in reset.)
 3. **Reset**: rails good, waiting for RESET_L to go high.
 4. **Memory init**: the memory init engine (D-014) trains DRAM.
 5. **Run**: the cores leave reset.
@@ -123,9 +125,13 @@ fully specified here):
 | VR_HOT_L | in | a VR is hot (also wired to PROCHOT_L on most boards) |
 
 Frame: a start (SVD falling while SVC is high), 4-bit VR address, 5-bit
-command, 8-bit payload, an even-parity bit, then a turnaround and the VR's
-2-bit acknowledge (01 ACK, 11 NAK; 10 = ACK and busy: the VR will pull
-SVT when settled), and for reads 8 data bits and parity from the VR.
+command, 8-bit payload, an even-parity bit over those 17 bits, then a
+turnaround bit (nobody drives) and the VR's 2-bit acknowledge (01 ACK,
+11 NAK -- also what an address with no VR reads; 10 = ACK and busy: the
+VR will pull SVT when settled), for reads 8 data bits and their even
+parity from the VR, and a stop (SVD rising while SVC is high). Every bit
+is MSB first; the driver changes SVD while SVC is low, the receiver
+samples it when SVC rises. The bus idles with both lines high.
 Addresses: 0 VDDCR_CPU, 1 VDDCR_SOC. Commands: 01h SetVID-fast (payload:
 VID, 5 mV steps from 0.25 V: V = 0.25 + 0.005·VID), 02h SetVID-slow,
 03h SetPS (power state 0–3), 04h SetVR-enable, 10h GetReg (payload: the

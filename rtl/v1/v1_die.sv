@@ -17,6 +17,21 @@ module v1_die
   // inter-socket links -- outputs idle, inputs unused
 `include "vibe86_die_reserved.svh"
 
+  // ------------------------------------------------------------ power
+  // the SMU (standby domain): PWROK, the VRs over the SVID-like bus, RESET_L
+  // -> the rest of the die out of reset (D-019)
+  logic       die_rst_n, smu_fatal;
+  logic [2:0] smu_pstate;
+  logic [7:0] smu_vr_status [2];
+  /* verilator lint_off UNUSEDSIGNAL */
+  wire smu_unused = smu_fatal ^ (^smu_pstate) ^ (^smu_vr_status[0]) ^ (^smu_vr_status[1])
+                    ^ vr_hot_n;   // the error/thermal balls and the sideband (next steps)
+  /* verilator lint_on UNUSEDSIGNAL */
+
+  smu u_smu (
+    .clk, .pwrok, .rst_n, .svc, .svd_o, .svd_i, .svt,
+    .die_rst_n, .pstate(smu_pstate), .fatal(smu_fatal), .vr_status(smu_vr_status));
+
   // ------------------------------------------------------------ memory init
   logic        dram_ready, two_ch;
   logic [40:0] dram_size;
@@ -26,7 +41,7 @@ module v1_die
   logic [7:0]  post_code;
 
   meminit u_meminit (
-    .clk, .rst_n, .fast(meminit_fast),
+    .clk, .rst_n(die_rst_n), .fast(meminit_fast),
     .scl_o(spd0_scl_o), .sda_o(spd0_sda_o), .scl_i(spd0_scl_i), .sda_i(spd0_sda_i),
     .ddr_reset_n({ddr1_reset_n, ddr0_reset_n}),
     .sub_in_reset, .sub_start, .sub_pop, .sub_two_rank, .sub_ready,
@@ -35,7 +50,7 @@ module v1_die
 
   // ------------------------------------------------------------ the core
   logic         core_rst_n;
-  assign core_rst_n = rst_n && dram_ready;
+  assign core_rst_n = die_rst_n && dram_ready;
 
   logic         c_req, c_we, c_io, c_smm, c_ack, c_err;
   logic [63:0]  c_addr;
@@ -184,7 +199,7 @@ module v1_die
 
   for (genvar k = 0; k < 4; k++) begin : g_sub
     ddr5_sub u_sub (
-      .clk, .rst_n,
+      .clk, .rst_n(die_rst_n),
       .in_reset(sub_in_reset), .start(sub_start), .fast(meminit_fast),
       .pop(sub_pop), .two_rank(sub_two_rank), .ready(sub_ready[k]),
       .req_valid(m_valid[k]), .req_ready(m_ready[k]), .req_we(m_we), .req_off(m_off),
@@ -216,7 +231,7 @@ module v1_die
 
   // ------------------------------------------------------------ fabric
   fabric u_fabric (
-    .clk, .rst_n, .dram_ready, .dram_size, .two_ch,
+    .clk, .rst_n(die_rst_n), .dram_ready, .dram_size, .two_ch,
     .c_req, .c_we, .c_io, .c_addr, .c_size, .c_wdata, .c_smm, .c_ack, .c_err, .c_rdata,
     .ic_inv(c_ic_inv), .ic_inv_line(c_ic_inv_line), .ic_inv_core(c_ic_inv_core),
     .d_req, .d_we, .d_addr, .d_size, .d_wdata, .d_ack, .d_err, .d_rdata,

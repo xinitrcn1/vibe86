@@ -2,7 +2,8 @@
 # docs/die-interface.md). Each version's die top lists the sources it uses.
 #
 # The memory system (D-014): DDR5 subchannel controllers, the init engine,
-# the address fabric (with the I/O link endpoint and the host bridge)
+# the address fabric (with the I/O link endpoint and the host bridge); the
+# system management unit (power sequencing, VR control: D-019)
 set(VIBE86_UNCORE_SV
   ${CMAKE_CURRENT_SOURCE_DIR}/ddr5_pkg.sv
   ${CMAKE_CURRENT_SOURCE_DIR}/ddr5_sub.sv
@@ -11,6 +12,7 @@ set(VIBE86_UNCORE_SV
   ${CMAKE_CURRENT_SOURCE_DIR}/lapic.sv
   ${CMAKE_CURRENT_SOURCE_DIR}/apic_bus.sv
   ${CMAKE_CURRENT_SOURCE_DIR}/fabric.sv
+  ${CMAKE_CURRENT_SOURCE_DIR}/smu.sv
   CACHE INTERNAL "")
 
 # JTAG (docs/jtag.md): the TAP (TCK domain) and the debug module (core domain)

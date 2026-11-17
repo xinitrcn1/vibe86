@@ -32,6 +32,7 @@
 #include "jtag_bitbang.h"
 #include "board.h"
 #include "iod.h"
+#include "vr.h"
 #include "verilated.h"
 
 namespace {
@@ -68,6 +69,7 @@ struct opts {
 	const char *vga_txt = nullptr;	// -Y: dump the VGA text cells on exit
 	const char *nvram = nullptr;	// -N: NVRAM file
 	const char *debugcon = nullptr;	// -g: the debug console (port 402h) to this file, - stderr
+	std::vector<const char *> vr_faults;	// -W: VR faults (vr.h)
 	const char *fwcfg[16] = {};	// -f name=file: fw_cfg files
 	int nfwcfg = 0;
 	const char *cpu = nullptr;	// -C: the core version (default: the latest)
@@ -113,6 +115,8 @@ usage()
 	    "  -T  keep the debug TPM's NV state in this file (default: fresh each run)\n"
 	    "  -N  keep the NVRAM (firmware settings) in this file (default: erased each run)\n"
 	    "  -g  write the debug console (I/O port 402h) to this file (- for stderr)\n"
+	    "  -W  a voltage regulator fault for tests: vr0:nak, vr1:stuck, vr0:parity, ... (vr.h);\n"
+	    "      repeatable\n"
 	    "  -f  name=file: offer a file through fw_cfg (e.g. etc/acpi/tables=tables.bin); repeatable\n"
 	    "  -l  file@addr: copy a raw image into memory before reset (DRAM through the\n"
 	    "      DIMMs' backdoor, or the EEPROM range); repeatable\n"
@@ -353,6 +357,7 @@ struct machine {
 	uint64_t cycles = 0;
 	bool trace = false;
 	iod *io = nullptr;		// the I/O die at the far end of the link
+	vrs *vr = nullptr;		// the board's voltage regulators (vr.h)
 	// why the run stopped, besides the board's power state
 	enum { RUNNING, SHUTDOWN, HALTED } stop = RUNNING;
 	unsigned stop_core = 0;
@@ -410,6 +415,10 @@ struct machine {
 	void reset()
 	{
 		top->rst_n = 0;
+		top->pwrok = vr_power_good(vr);
+		top->svd_i = 1;
+		top->svt = 1;
+		top->vr_hot_n = 1;
 		top->trst_n = 0;		// power-on: the TAP resets too
 		top->clk = 0;
 		top->iol_tx_ready = 0;
@@ -433,9 +442,14 @@ struct machine {
 	// and answer for the next edge (ddr5.h).
 	int link_tx_valid = 0, link_rx_ready = 0;
 	uint64_t link_tx_flit = 0;
+	int vr_svc = 1, vr_svd = 1;
+	bool rail_flagged = false;
+	bool retired = false;		// an instruction has retired since power-on
 
 	void pins_pre_edge()
 	{
+		vr_svc = top->svc;
+		vr_svd = top->svd_o;
 		link_tx_valid = top->iol_tx_valid;
 		link_tx_flit = top->iol_tx_flit;
 		link_rx_ready = top->iol_rx_ready;
@@ -450,6 +464,13 @@ struct machine {
 		top->iol_rx_valid = rxv;
 		top->iol_rx_flit = rxf;
 		ddr5_eval_pins(brd.ddr5, *top, cycles);
+		// the VRs: SVD is open drain (the line is low if either pulls it),
+		// PWROK is their power-good (D-019)
+		int svd = 1, svt = 1;
+		vr_cycle(vr, vr_svc, vr_svd, &svd, &svt);
+		top->svd_i = vr_svd && svd;
+		top->svt = svt;
+		top->pwrok = vr_power_good(vr);
 	}
 
 	// Board events: the chipset's NMI, SMI and machine checks are
@@ -512,8 +533,19 @@ struct machine {
 			char cs[8] = "";
 			if (top->ncores() > 1)
 				std::snprintf(cs, sizeof cs, "c%u ", c);
-			if (r.valid)
+			if (r.valid) {
 				last_rip[c] = r.rip;
+				retired = true;
+			}
+			if (r.valid && !vr_cpu_rail_set(vr) && !rail_flagged) {
+				// the die's sequencer must not run the cores before their
+				// rail is at the voltage it set (docs/package.md)
+				std::fprintf(stderr, "vsim: an instruction retired with VDDCR_CPU at %u mV, "
+				    "not at a voltage the die set and the VR settled\n", vr_mv(vr, 0));
+				rail_flagged = true;
+				brd.power = PWR_FAIL;
+				brd.failcode = 0x5652;		/* 'VR' */
+			}
 			if (trace && r.valid) {
 				char hex[3 * 16 + 1] = "";
 				unsigned len = r.len > 15 ? 15 : r.len;
@@ -677,6 +709,8 @@ run_headless(machine &m, uint64_t max)
 		return 5;
 	}
 	std::fprintf(stderr, "vsim: stopped after %llu cycles\n", (unsigned long long)m.cycles);
+	if (!m.retired)
+		std::fprintf(stderr, "vsim: the cores never left reset\n");
 	return 3;
 }
 
@@ -929,7 +963,7 @@ main(int argc, char **argv)
 	opts o;
 	int c;
 
-	while ((c = getopt(argc, argv, "b:ndJ:m:F:c:H:tvxs:S:P:X:U:K:V:Y:T:l:e:N:C:M:g:f:D:")) != -1) {
+	while ((c = getopt(argc, argv, "b:ndJ:m:F:c:H:tvxs:S:P:X:U:K:V:Y:T:l:e:N:C:M:g:f:D:W:")) != -1) {
 		switch (c) {
 		case 'b':
 			if (!std::strcmp(optarg, "server"))
@@ -1026,6 +1060,7 @@ main(int argc, char **argv)
 			o.fwcfg[o.nfwcfg++] = optarg;
 			break;
 		case 'C': o.cpu = optarg; break;
+		case 'W': o.vr_faults.push_back(optarg); break;
 		case 's': o.scale = std::atoi(optarg); if (o.scale < 1) o.scale = 1; break;
 		default: usage();
 		}
@@ -1052,6 +1087,14 @@ main(int argc, char **argv)
 	    o.meminit_fast) || !(m.io = iod_new(&m.brd)))
 		return 4;
 	m.brd.iod = m.io;
+	if (!(m.vr = vr_new()))
+		return 4;
+	for (const char *f : o.vr_faults)
+		if (vr_fault(m.vr, f)) {
+			std::fprintf(stderr, "vsim: -W %s: not a VR fault (vr0:nak, vr1:stuck, vr0:parity)\n", f);
+			return 4;
+		}
+	vr_power_on(m.vr);
 	m.top->meminit_fast = o.meminit_fast;
 	if (o.debugcon) {
 		FILE *dc = !std::strcmp(o.debugcon, "-") ? stderr : std::fopen(o.debugcon, "w");
@@ -1169,9 +1212,15 @@ main(int argc, char **argv)
 		iod_stats(m.io, buf, sizeof buf);
 		std::fprintf(stderr, "vsim: %s\n", buf);
 	}
+	if (o.verbose) {
+		char buf[256];
+		vr_stats(m.vr, buf, sizeof buf);
+		std::fprintf(stderr, "vsim: %s\n", buf);
+	}
 	dump_vga(m.brd.vga, o.vga_bmp, o.vga_txt);
 	m.top->final();
 	board_free(&m.brd);
 	iod_free(m.io);
+	vr_free(m.vr);
 	return r;
 }
