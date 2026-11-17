@@ -28,6 +28,7 @@ enable_testing()
 
 add_subdirectory(tools)
 add_subdirectory(rtl/common)
+add_subdirectory(rtl/uncore)
 foreach(v IN LISTS VIBE86_VERSIONS)
   add_subdirectory(rtl/${v})
 endforeach()

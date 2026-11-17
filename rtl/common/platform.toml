@@ -98,3 +98,16 @@ IA32_FS_BASE     = { addr = 0xC000_0100, default = 0 }
 IA32_GS_BASE     = { addr = 0xC000_0101, default = 0 }
 IA32_KERNEL_GS_BASE = { addr = 0xC000_0102, default = 0 }
 IA32_TSC_AUX     = { addr = 0xC000_0103, default = 0 }
+
+# ---------------------------------------------------------------------------
+# JTAG (IEEE Std 1149.1-2013; docs/jtag.md). IDCODE = version[31:28],
+# part[27:12], manufacturer bank (JEP106 continuation count)[11:8],
+# manufacturer code without its parity bit [7:1], 1 [0]. Manufacturer 00h in
+# bank 0 is not assigned by JEP106 (its tables start at 01h), so the IDCODE
+# claims no real company.
+[jtag]
+ir_width = 5
+idcode_version = 1
+idcode_part = 0x0B86
+idcode_mfr_bank = 0
+idcode_mfr_code = 0x00
