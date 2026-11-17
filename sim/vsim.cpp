@@ -1,6 +1,6 @@
 // vsim - vibe86 board simulator: the Verilated core + board model.
 //
-// vsim [-b server|test] [-C cpu] [-n] [-d] [-J strap] [-m dimm]... [-P slot] [-X slot] [-U image] [-K script]
+// vsim [-b server|test] [-C cpu] [-n] [-d] [-J strap] [-m dimm]... [-P slot] [-X slot] [-U image] [-K script] [-D port]
 //      [-c cycles] [-H cycles] [-t] [-v] [-x] [-s scale] [-V vga.bmp] [-Y vga.txt] [-T tpm-state]
 //      [-N nvram] [-l file@addr]... [-e file.elf]... [eeprom.bin]
 //
@@ -29,6 +29,7 @@
 #include <unistd.h>
 
 #include "cpu.h"
+#include "jtag_bitbang.h"
 #include "board.h"
 #include "verilated.h"
 
@@ -59,6 +60,7 @@ struct opts {
 	const char *usb_floppy = nullptr;	// -U: USB floppy image (xHCI port 3)
 	bool usb_floppy_ro = false;
 	const char *keys = nullptr;	// -K: key script
+	int jtag_port = 0;		// -D: JTAG remote_bitbang server port
 	dimm_cfg dimms[DRAM_SLOTS] = {};
 	const char *vga_bmp = nullptr;	// -V: dump the VGA picture on exit
 	const char *vga_txt = nullptr;	// -Y: dump the VGA text cells on exit
@@ -88,6 +90,7 @@ usage()
 	    "      repeatable; replaces the default (0:8G, ECC, DDR5-4800). -m none: no DIMMs\n"
 	    "  -P  PCIe slot of the DMA test endpoint: 0..7 or none (default 0)\n"
 	    "  -X  PCIe slot of the xHCI USB controller (keyboard, mouse): 0..7 or none (default 1)\n"
+	    "  -D  a JTAG probe: OpenOCD remote_bitbang server on 127.0.0.1:PORT (docs/jtag.md)\n"
 	    "  -U  a USB floppy drive on the xHCI's port 3 with this disk image (IMAGE[,ro]:\n"
 	    "      read into memory; writes are not saved to the file)\n"
 	    "  -K  key script, items 'delay:key' (delay in cycles after the previous item, k/M\n"
@@ -358,6 +361,27 @@ struct machine {
 	uint64_t stop_rip = 0;
 	uint64_t halt_idle = 1000000;	// -H
 	uint64_t halted_for[cpu::MAXCORES] = {};
+	jtag_bitbang *jtag = nullptr;	// -D: the JTAG probe (OpenOCD remote_bitbang)
+	bool jtag_srst = false;
+
+	// the JTAG pins, from the probe; without one, TRST_n is held low (as
+	// boards pull it down) and the TAP stays in Test-Logic-Reset
+	void jtag_pins()
+	{
+		if (!jtag) {
+			top->trst_n = 0;
+			return;
+		}
+		jtag_bitbang_poll(jtag, top->tdo);
+		top->tck = jtag->tck;
+		top->tms = jtag->tms;
+		top->tdi = jtag->tdi;
+		top->trst_n = !jtag->trst;
+		if (jtag->srst != jtag_srst) {	// SRST: the probe holds RESET_L
+			jtag_srst = jtag->srst;
+			top->rst_n = !jtag_srst;
+		}
+	}
 	uint64_t last_rip[cpu::MAXCORES] = {};	// of the last retired instruction
 	// -K: scheduled input
 	std::vector<kev> keys;
@@ -388,6 +412,7 @@ struct machine {
 	void reset()
 	{
 		top->rst_n = 0;
+		top->trst_n = 0;		// power-on: the TAP resets too
 		top->clk = 0;
 		top->bus_ack = 0;
 		top->intr_valid = 0;
@@ -533,6 +558,7 @@ struct machine {
 				inject();
 			return;
 		}
+		jtag_pins();
 		top->clk = 0;
 		top->eval();
 		bus();
@@ -968,7 +994,7 @@ main(int argc, char **argv)
 	opts o;
 	int c;
 
-	while ((c = getopt(argc, argv, "b:ndJ:m:c:H:tvxs:S:P:X:U:K:V:Y:T:l:e:N:C:M:g:f:")) != -1) {
+	while ((c = getopt(argc, argv, "b:ndJ:m:c:H:tvxs:S:P:X:U:K:V:Y:T:l:e:N:C:M:g:f:D:")) != -1) {
 		switch (c) {
 		case 'b':
 			if (!std::strcmp(optarg, "server"))
@@ -1029,6 +1055,11 @@ main(int argc, char **argv)
 			break;
 		}
 		case 'K': o.keys = optarg; break;
+		case 'D':
+			o.jtag_port = std::atoi(optarg);
+			if (o.jtag_port <= 0 || o.jtag_port > 65535)
+				usage();
+			break;
 		case 'c': o.max_cycles = std::strtoull(optarg, nullptr, 0); break;
 		case 'H': o.halt_idle = std::strtoull(optarg, nullptr, 0); break;
 		case 'e':
@@ -1072,6 +1103,11 @@ main(int argc, char **argv)
 	if (!m.top)
 		return 4;
 	m.trace = o.trace;
+	if (o.jtag_port) {
+		m.jtag = new jtag_bitbang;
+		if (jtag_bitbang_open(m.jtag, o.jtag_port))
+			return 4;
+	}
 	m.halt_idle = o.halt_idle ? o.halt_idle : 1;
 	if (o.ram_mib)
 		board_ram_size = (uint64_t)o.ram_mib << 20;

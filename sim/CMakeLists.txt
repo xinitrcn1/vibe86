@@ -41,7 +41,7 @@ target_include_directories(vsim_board PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${VIBE8
 target_compile_options(vsim_board PRIVATE ${VSIM_WARN})
 target_link_libraries(vsim_board PUBLIC ${TPMS_LIBRARY})
 
-add_executable(vsim vsim.cpp cpu.cpp)
+add_executable(vsim vsim.cpp cpu.cpp jtag_bitbang.cpp)
 target_compile_options(vsim PRIVATE ${VSIM_WARN})
 foreach(v IN LISTS VIBE86_VERSIONS)
   # the Verilated model's and Verilator's headers: system headers to us, so
