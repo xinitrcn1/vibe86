@@ -1,14 +1,14 @@
 # POPF/POPFD/POPFQ -- override
-# The manual's Operation for protected, compatibility and 64-bit mode
-# (VM = 0): at CPL 0 every flag POPF may change is loaded (IOPL included);
-# at 0 < CPL <= IOPL everything but IOPL; at CPL > IOPL neither IOPL nor
-# IF. RF is cleared, VM, VIF and VIP are unaffected, and a 16-bit POPF
-# leaves the upper half of EFLAGS alone. In real-address mode it is the
-# CPL 0 case. Virtual-8086 mode (IOPL < 3: #GP; VME) isn't in v1.
+# The manual's Operation without VME: at CPL 0 every flag POPF may change is
+# loaded (IOPL included); at 0 < CPL <= IOPL everything but IOPL; at
+# CPL > IOPL neither IOPL nor IF; in virtual-8086 mode #GP(0) unless
+# IOPL = 3, and then IOPL can't change. RF is cleared, VM, VIF and VIP are
+# unaffected, and a 16-bit POPF leaves the upper half of EFLAGS alone.
 @operation
+IF CR0.PE = 1 AND RFLAGS.VM = 1 AND IOPL != 3 THEN #GP(0); FI;
 tmp := Pop();
 mask := 247FD5H;
-IF CPL > 0 THEN mask := mask AND FFFFCFFFH; FI;
+IF CPL > 0 OR (CR0.PE = 1 AND RFLAGS.VM = 1) THEN mask := mask AND FFFFCFFFH; FI;
 IF CPL > IOPL THEN mask := mask AND FFFFFDFFH; FI;
 IF OperandSize = 16 THEN mask := mask AND FFFFH; FI;
 StoreFlags(tmp, mask);

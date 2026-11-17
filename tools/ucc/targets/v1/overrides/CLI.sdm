@@ -1,5 +1,13 @@
 # CLI—Clear Interrupt Flag -- override
-# At CPL 0 in 64-bit mode the manual's Operation reduces to 'IF := 0'
-# (written here as SetFlag, since IF is also the keyword).
+# The manual's Operation without VME/PVI (CR4.VME and CR4.PVI aren't in v1):
+# real-address mode: IF := 0; protected mode: IF := 0 if CPL <= IOPL, else
+# #GP(0); virtual-8086 mode: IF := 0 if IOPL = 3, else #GP(0).
 @operation
-SetFlag(INTF, 0);
+IF CR0.PE = 0
+    THEN SetFlag(INTF, 0);
+    ELSE IF RFLAGS.VM = 0
+    THEN
+        IF CPL <= IOPL THEN SetFlag(INTF, 0); ELSE #GP(0); FI;
+    ELSE
+        IF IOPL = 3 THEN SetFlag(INTF, 0); ELSE #GP(0); FI;
+FI;

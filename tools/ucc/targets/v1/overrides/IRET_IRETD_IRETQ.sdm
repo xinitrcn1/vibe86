@@ -5,7 +5,9 @@
 # (RETURN-TO-SAME-PRIVILEGE-LEVEL, RETURN-TO-OUTER-PRIVILEGE-LEVEL; IA-32e
 # mode always pops SS:RSP). RFLAGS is loaded with the mask CPL allows (IOPL
 # and IF only at CPL 0 / CPL <= IOPL). Task returns (NT = 1) and returns to
-# virtual-8086 mode aren't in v1; IRET with NT = 1 outside IA-32e mode
+# virtual-8086 mode (RETURN-TO-VIRTUAL-8086-MODE: VM set in the popped
+# EFLAGS at CPL 0) and IRET in virtual-8086 mode (IOPL 3) are in;
+# IRET with NT = 1 outside IA-32e mode
 # returns to the previous task (TaskSwitch, lib.sdm).
 @operation
 IF CR0.PE = 0
@@ -19,6 +21,20 @@ IF CR0.PE = 0
             ELSE StoreFlags(tempFLAGS, 257FD5H);
         FI;
         RIP := tempRIP;
+    ELSE IF RFLAGS.VM = 1
+    THEN
+        (* IRET in virtual-8086 mode: IOPL-sensitive; at IOPL 3 as in real
+           mode, IOPL itself unchanged *)
+        IF IOPL != 3 THEN #GP(0); FI;
+        tempRIP := Pop();
+        tempCS := Pop();
+        tempFLAGS := Pop();
+        SetSegmentReal(1, tempCS);
+        IF OperandSize = 16
+            THEN StoreFlags(tempFLAGS, 4DD5H);
+            ELSE StoreFlags(tempFLAGS, 254DD5H);
+        FI;
+        RIP := tempRIP AND FFFFH;
     ELSE IF RFLAGS.NT = 1 AND IA32_EFER.LMA = 0
     THEN
         (* TASK-RETURN: back to the task in this TSS's link field *)
@@ -30,6 +46,27 @@ IF CR0.PE = 0
         rpl := tempCS AND 3;
         oldcpl := CPL;
         IF rpl < oldcpl THEN #GP(tempCS AND FFFCH); FI;
+        IF (SHR(tempFLAGS, 17) AND 1) = 1 AND oldcpl = 0 AND OperandSize = 32 AND IA32_EFER.LMA = 0
+            THEN
+                (* RETURN-TO-VIRTUAL-8086-MODE *)
+                tempESP := Pop();
+                tempSS := Pop();
+                tempES := Pop();
+                tempDS := Pop();
+                tempFS := Pop();
+                tempGS := Pop();
+                StoreFlags(tempFLAGS, 3F7FD5H);
+                WriteSpecial(CPL, 3);
+                SetSegmentReal(1, tempCS);
+                SetSegmentReal(2, tempSS);
+                SetSegmentReal(0, tempES);
+                SetSegmentReal(3, tempDS);
+                SetSegmentReal(4, tempFS);
+                SetSegmentReal(5, tempGS);
+                ESP := tempESP;
+                RIP := tempRIP AND FFFFH;
+                Done;
+        FI;
         IF Mode64 = 1 OR rpl > oldcpl
             THEN
                 tempRSP := Pop();

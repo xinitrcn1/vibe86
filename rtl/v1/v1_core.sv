@@ -284,6 +284,11 @@ module v1_core
     end
     r.la = {32'b0, base[31:0] + off[31:0]};
     last = off + 64'(n) - 1;
+    if (rf_vm) begin
+      // virtual-8086 mode: real-mode segments, 64-KByte limits (Vol. 3A 21.1.1)
+      if (last > 64'hFFFF) r.fault = 1'b1;
+      return r;
+    end
     if (mode != 2'd0) begin
       if (!attr[7]) r.fault = 1'b1;                       // not present / null selector
       else if (attr[4] && attr[3]) begin                   // code segment

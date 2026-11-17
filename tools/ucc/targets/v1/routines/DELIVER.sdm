@@ -17,8 +17,12 @@
 # the wrong type #GP, a gate not present #NP, a software interrupt through a
 # gate with DPL < CPL #GP; the core turns an exception raised while
 # delivering into #DF or a shutdown as Vol. 3A 7.15 says (D-011). Protected
-# mode task gates switch tasks (TaskSwitch). Interrupts in virtual-8086 mode
-# aren't delivered in v1.
+# mode task gates switch tasks (TaskSwitch). From virtual-8086 mode the
+# handler must be a ring-0 non-conforming code segment (else #GP); the
+# processor leaves virtual-8086 mode, switches to the TSS's ring-0 stack and
+# pushes GS, FS, DS and ES before SS:ESP, then loads them with null
+# selectors (INT n's INTER-PRIVILEGE-LEVEL-INTERRUPT branch from
+# virtual-8086 mode; Vol. 3A 21.3.1.1, Figure 21-5).
 @operation
 vec := FAULT_VEC AND FFH;
 soft := SHR(FAULT_VEC, 9) AND 1;
@@ -112,6 +116,15 @@ IF CR0.PE = 0
         desc := Linear64[GDTR_BASE + (sel AND FFF8H)];
         newcpl := SHR(desc, 45) AND 3;
         IF (SHR(desc, 42) AND 1) = 1 THEN newcpl := oldcpl; FI;
+        fromvm := SHR(oldflags, 17) AND 1;
+        IF fromvm = 1 THEN
+            IF newcpl != 0 OR (SHR(desc, 42) AND 1) = 1 THEN #GP(sel AND FFFCH); FI;
+            oldgs := GS;
+            oldfs := FS;
+            oldds := DS;
+            oldes := ES;
+            SetFlag(VM, 0);
+        FI;
         IF newcpl < oldcpl THEN
             newss := Linear16[TR_BASE + 8 + SHL(newcpl, 3)];
             newesp := Linear32[TR_BASE + 4 + SHL(newcpl, 3)];
@@ -127,6 +140,20 @@ IF CR0.PE = 0
         WriteSpecial(CS_LIMIT, DescLimit(desc));
         WriteSpecial(CS_ATTR, DescAttr(desc));
         WriteSpecial(CPL, newcpl);
+        IF fromvm = 1 THEN
+            ESP := ESP - 4;
+            Memory32[SS:ESP] := oldgs;
+            ESP := ESP - 4;
+            Memory32[SS:ESP] := oldfs;
+            ESP := ESP - 4;
+            Memory32[SS:ESP] := oldds;
+            ESP := ESP - 4;
+            Memory32[SS:ESP] := oldes;
+            SetSegment(3, 0, 0, 0, 0);
+            SetSegment(0, 0, 0, 0, 0);
+            SetSegment(4, 0, 0, 0, 0);
+            SetSegment(5, 0, 0, 0, 0);
+        FI;
         IF newcpl < oldcpl THEN
             ESP := ESP - 4;
             Memory32[SS:ESP] := oldss;

@@ -1,5 +1,6 @@
 # OUT—Output to Port -- override
-# As IN: at CPL 0 the I/O permission checks pass; 'DEST := SRC; (* Writes
-# to selected I/O port *)' is a port write.
+# As IN: the I/O permission check of the manual's Operation (IOPermitted),
+# then 'DEST := SRC' to the port.
 @operation
+IF IOPermitted(DEST, OperandSize / 8) = 0 THEN #GP(0); FI;
 Out(DEST, SRC);

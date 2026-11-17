@@ -1,5 +1,6 @@
 # PUSHF/PUSHFD/PUSHFQ -- override
-# The 64-bit branch of the manual's Operation: "push(RFLAGS AND 00FCFFFFH)"
-# (VM and RF are cleared in the image), without the virtual-8086 cases.
+# The manual's Operation without VME: in virtual-8086 mode with IOPL < 3,
+# #GP(0); otherwise the flags are pushed with VM and RF cleared in the image.
 @operation
+IF CR0.PE = 1 AND RFLAGS.VM = 1 AND IOPL != 3 THEN #GP(0); FI;
 Push(RFLAGS AND FCFFFFH);

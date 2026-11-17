@@ -11,5 +11,8 @@ IF instruction is INT3
     THEN #BP;
     ELSE IF instruction is INT1
     THEN #DB;
-    ELSE RaiseVector(SRC);
+    ELSE
+        (* virtual-8086 mode without VME: INT n is IOPL-sensitive *)
+        IF CR0.PE = 1 AND RFLAGS.VM = 1 AND IOPL != 3 THEN #GP(0); FI;
+        RaiseVector(SRC);
 FI;

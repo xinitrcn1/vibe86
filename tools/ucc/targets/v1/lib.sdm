@@ -320,3 +320,25 @@ IF (SHR(ES_ATTR, 5) AND 3) < NEWCPL AND (ES_ATTR AND 0CH) != 0CH THEN SetSegment
 IF (SHR(DS_ATTR, 5) AND 3) < NEWCPL AND (DS_ATTR AND 0CH) != 0CH THEN SetSegment(3, 0, 0, 0, 0); FI;
 IF (SHR(FS_ATTR, 5) AND 3) < NEWCPL AND (FS_ATTR AND 0CH) != 0CH THEN SetSegment(4, 0, FS_BASE, 0, 0); FI;
 IF (SHR(GS_ATTR, 5) AND 3) < NEWCPL AND (GS_ATTR AND 0CH) != 0CH THEN SetSegment(5, 0, GS_BASE, 0, 0); FI;
+
+# The I/O permission check (Intel SDM Vol. 1, 19.5.1-19.5.2): with CR0.PE
+# set and CPL > IOPL (or in virtual-8086 mode) an I/O access needs every
+# bit for its ports clear in the TSS's I/O permission bitmap (whose offset
+# is the 16-bit word at TSS + 66H); a bitmap out of the TSS limit, or a TSS
+# that isn't a 32/64-bit one, denies the access.
+@function IOPermitted(PORT, BYTES)
+ok := 1;
+IF CR0.PE = 1 AND (CPL > IOPL OR RFLAGS.VM = 1) THEN
+    ok := 0;
+    IF (TR_ATTR AND 15) = 9 OR (TR_ATTR AND 15) = 11 THEN
+        IF TR_LIMIT >= 67H THEN
+            bm := Linear16[TR_BASE + 66H];
+            p := PORT AND FFFFH;
+            IF bm + SHR(p, 3) + 1 <= TR_LIMIT THEN
+                bits := Linear16[TR_BASE + bm + SHR(p, 3)];
+                IF (SHR(bits, p AND 7) AND (SHL(1, BYTES) - 1)) = 0 THEN ok := 1; FI;
+            FI;
+        FI;
+    FI;
+FI;
+RESULT := ok;

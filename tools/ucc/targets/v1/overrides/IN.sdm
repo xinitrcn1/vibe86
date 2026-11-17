@@ -1,6 +1,8 @@
 # IN—Input From Port -- override
-# The manual's Operation checks I/O permission (CPL > IOPL) in prose; at
-# CPL 0 the access is always allowed, and what remains is 'DEST :=
-# SRC; (* Read from selected I/O port *)', a port read.
+# The manual's Operation: "IF ((PE = 1) and ((CPL > IOPL) or (VM = 1)))
+# THEN (* Protected mode with CPL > IOPL or virtual-8086 mode *) IF (Any I/O
+# Permission Bit for I/O port being accessed = 1) THEN #GP(0);" -- the
+# bitmap check is IOPermitted (lib.sdm) -- then 'DEST := SRC' from the port.
 @operation
+IF IOPermitted(SRC, OperandSize / 8) = 0 THEN #GP(0); FI;
 In(DEST, SRC);

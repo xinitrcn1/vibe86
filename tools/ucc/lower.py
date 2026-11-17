@@ -1584,7 +1584,12 @@ class Lowerer:
                 self.release_stmt()
                 return
             if isinstance(e, Name) and e.n in ("SHUTDOWN", "HLT", "Halt", "Shutdown", "Commit",
-                                               "COMMIT", "TrapReturn", "InhibitInterrupts"):
+                                               "COMMIT", "TrapReturn", "InhibitInterrupts",
+                                               "Done"):
+                if e.n == "Done":
+                    # leave the routine: the rest of the Operation is skipped
+                    self.E("JMP", imm=self.done_label)
+                    return
                 if e.n == "InhibitInterrupts":
                     self.E("WRS", 64, a="ONE", imm=SPECIAL["INT_SHADOW"])
                     return
@@ -1820,6 +1825,7 @@ class Lowerer:
 
     def lower(self):
         self.cur_producer = None
+        self.done_label = self.r.label()
         sub = getattr(self.f, "subroutine", None)
         if sub is not None:
             # parameters arrive in A0-A3: copy them (a nested call reuses A0-A3)
@@ -1828,9 +1834,11 @@ class Lowerer:
                 self.E("MOV", 64, dst=t, a=f"A{i}")
                 self.vars[p] = V("sel", 64, sel=t)
             self.block(self.ast)
+            self.r.place(self.done_label)
             self.E("URET")
             return self.r
         self.block(self.ast)
+        self.r.place(self.done_label)
         # prose 'cleared'/'set' flags nobody produced or assigned
         for fl, act in self.flags.items():
             if fl in self.assigned_flags or self.native_flags & FMASK[fl]:
