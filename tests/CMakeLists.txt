@@ -40,6 +40,17 @@ else()
   message(STATUS "no SeaBIOS image (${VIBE86_SEABIOS}): firmware/seabios test skipped")
 endif()
 
+# firmware: the vibe86 UEFI firmware (fw/), tests/firmware/uefi-*.test;
+# WORK is the git-ignored work/ directory with the user's binaries (requires:)
+file(GLOB UEFI_TESTS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/firmware/uefi-*.test)
+foreach(t IN LISTS UEFI_TESTS)
+  get_filename_component(name ${t} NAME_WE)
+  add_test(NAME firmware/${name}
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/run.py $<TARGET_FILE:vsim> ${VIBE86_FD} ${t})
+  set_tests_properties(firmware/${name} PROPERTIES LABELS firmware TIMEOUT 3000 SKIP_RETURN_CODE 77
+    ENVIRONMENT "ACPI=${VIBE86_ACPI_DIR};DATA=${CMAKE_CURRENT_SOURCE_DIR}/firmware;WORK=${CMAKE_SOURCE_DIR}/work")
+endforeach()
+
 add_subdirectory(diff)
 
 # tools: unit tests of the SDM extractor and the microcode compiler (parser,
