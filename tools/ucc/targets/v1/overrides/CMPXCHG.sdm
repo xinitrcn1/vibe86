@@ -4,6 +4,13 @@
 # has no subtraction to take them from; this adds the comparison the
 # Description names ("compares the value in the AL, AX, EAX, or RAX register
 # with the first operand").
+#
+# ZF: the manual sets it in its Operation ('ZF := 1' / 'ZF := 0'); the
+# comparison's subtraction (above) gives the same ZF, so it is committed
+# with the other flags here (it wasn't: found by tests/diff).
+# The failing case's write-back 'DEST := TEMP' is a memory operand's locked
+# write cycle; a register destination is left alone, as processors do -- a
+# 32-bit write would zero-extend it in 64-bit mode (SDM errata E-18).
 @operation
 TEMP := DEST;
 CMPTEMP := accumulator - TEMP;
@@ -13,5 +20,7 @@ IF accumulator = TEMP
         DEST := SRC;
     ELSE
         accumulator := TEMP;
-        DEST := TEMP;
+        IF MemoryOperand THEN DEST := TEMP; FI;
 FI;
+@flags
+The ZF, CF, PF, AF, SF, and OF flags are set according to the result of the comparison.

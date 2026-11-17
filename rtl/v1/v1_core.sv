@@ -342,7 +342,11 @@ module v1_core
   // the tables under their base opcode
   function automatic logic [7:0] plus_base(input logic [7:0] o);
     if (dec_attr(m64, dmap, o, 3'd0).valid || dec_modrm(m64, dmap, o)) return o;
-    return {o[7:3], 3'b0};
+    // only a +r opcode (50+r, B8+r, ...) folds onto its base: any other
+    // opcode without a form stays itself and decodes as #UD (EA in 64-bit
+    // mode is not E8 CALL rel32)
+    if (dec_attr(m64, dmap, {o[7:3], 3'b0}, 3'd0).plus_r) return {o[7:3], 3'b0};
+    return o;
   endfunction
 
   function automatic logic is_legacy_prefix(input logic [7:0] b);
@@ -842,7 +846,9 @@ module v1_core
                 rm = attr.plus_r ? {rex_v & rex[0], dopc[2:0]} : {rex_v & rex[0], modrm[2:0]};
                 dreg <= rr;
                 drm <= rm;
-                pk = attr.pfx_sens ? prep : 2'd0;
+                // F3/F2 select the form; a 66h selects it only where a form has
+                // 66h as its mandatory prefix (ADCX, CLWB...), else it is osz
+                pk = !attr.pfx_sens ? 2'd0 : (prep != 2'd0) ? prep : (attr.p66 && p66) ? 2'd3 : 2'd0;
                 if (!attr.valid) upc <= UADDR_UD;
                 else upc <= uentry(dmap == 2'd0 && dopc == 8'h90 && !(rex_v && rex[0]),
                                    mode, dmap, plus_base(dopc),

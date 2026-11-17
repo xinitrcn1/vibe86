@@ -173,6 +173,13 @@ def parse_operands(f, enc):
     # footnote marks on operands: 'MOV Sreg, r/m162', 'MOV r64/m16, Sreg2'
     ins = re.sub(r"\b(Sreg|r/m16|r/m64|r/m32)\d\b", r"\1", ins)
     ins = re.sub(r"\bmoffs(8|16|64)3\b", r"moffs\1", ins)
+    # 'MOV r16/r32/m16, Sreg', 'MOV r64/m16, Sreg': the register forms of
+    # 8C at operand size 32/64 (the selector zero-extended); its memory form
+    # is the 'MOV r/m16, Sreg' row's, which stores 16 bits at any size
+    if re.search(r",\s*Sreg\b", ins) and re.search(r"\br(16/r32|64)/m16\b", ins):
+        ins = re.sub(r"\br16/r32/m16\b", "r32", ins)
+        ins = re.sub(r"\br64/m16\b", "r64", ins)
+        f.hints["regform"] = True
     # 'LAR r16, r16/m16', 'SMSW r32/m16': a register or a 16-bit memory operand
     ins = re.sub(r"\br(16|32|64)/m16\d?\b", "r/m16", ins)
     # 'MOVDIR64B r16/r32/r64, m512': a register of the address size
@@ -192,6 +199,11 @@ def parse_operands(f, enc):
                 kind = "opreg" if "opcode" in role else "reg"
                 if "r/m" in role:
                     kind = "rm"
+                if f.plus_r and not f.modrm:
+                    # '90+rd XCHG EAX, r32': the register is the opcode's
+                    # (the table's two 'O' encodings of XCHG share a name,
+                    # so the role can be the other operand's)
+                    kind = "opreg"
             elif k == "r/m":
                 kind = "rm"
             elif k == "m":
@@ -239,6 +251,12 @@ SUFFIX = {"B": 8, "W": 16, "D": 32, "Q": 64}
 
 
 def operand_size(f):
+    if f.cfg.get("oszsrc"):
+        # CRC32 r32, r/m16: the source (r/m) operand has the operand size
+        # (66h selects r/m16); an r/m8 source takes the destination's
+        rm = [o for o in f.operands if o.kind in ("rm", "mem") and o.size]
+        if rm and rm[-1].size != 8:
+            return rm[-1].size
     for o in f.operands:
         if o.kind in ("rm", "reg", "opreg", "mem", "fixed") and o.size and o.size <= 64:
             return o.size
@@ -251,6 +269,13 @@ def operand_size(f):
     if "osz" in f.hints:
         return f.hints["osz"]
     return None
+
+
+def is_far(f):
+    """A far transfer (JMP/CALL m16:xx or ptr16:xx, RET far: CA/CB): its
+    default operand size in 64-bit mode is 32, not the near forms' 64."""
+    return any(o.kind in ("farptr", "farmem") for o in f.operands) or \
+        (f.map == 0 and f.opc in (0xCA, 0xCB))
 
 
 def make_forms(page, cfg):
@@ -294,7 +319,8 @@ def make_forms(page, cfg):
         elif f.mnem[-1] in SUFFIX and f.mnem[:-1] in cfg.get("suffixed", ()):
             f.hints["osz"] = SUFFIX[f.mnem[-1]]
         sz = operand_size(f)
-        if cfg.get("class") == "f64":
+        far = is_far(f)
+        if cfg.get("class") == "f64" and not far:
             sz = 64             # near branches: 64-bit operand size, 66h ignored
         if sz is None:
             sz = 64 if cfg.get("class") in ("d64", "f64") else 32
@@ -337,7 +363,15 @@ def make_forms(page, cfg):
         if (f.map, f.opc) == (0, 0x90):
             # 90h is NOP/PAUSE without REX.B and XCHG with a register otherwise
             f.hints["sub90"] = 0 if f.plus_r else 1
-        if ok64:
+        if ok64 and is_far(f) and operand_size(f) is None:
+            # RET far (CB, CA iw): one row for every size -- 66h 16, the
+            # default 32, REX.W 64
+            for sz in (16, 32, 64):
+                g = Form(**{**f.__dict__, "operands": [Operand(**o.__dict__) for o in f.operands],
+                            "imm": list(f.imm), "hints": dict(f.hints), "spec": {}})
+                g.osz = sz
+                forms.append(g)
+        elif ok64:
             forms.append(f)
         if okleg and not f.rexw:
             # 16- and 32-bit code (real mode, 16-bit and 32-bit protected/compatibility
@@ -379,10 +413,12 @@ def assign_classes(forms, cfg_of):
             if any(f.osz == 64 and not f.rexw for f in fs64 if f.osz != 8):
                 cls = "d64"
         for f in fs:
-            f.vclass = cls
+            # a far JMP/CALL (m16:16/32/64) has the default operand size 32 in
+            # 64-bit mode, whatever the page's near forms do (Vol. 2A JMP/CALL)
+            f.vclass = "d32" if cls == "f64" and is_far(f) else cls
             if f.osz == 8 or "crnum" in f.hints or "sreg" in f.hints or cfg_of(f).get("anyosz"):
                 f.okey = "any"          # MOV CRn ignores the operand size
-            elif cls == "f64" and f.mode == 3:
+            elif f.vclass == "f64" and f.mode == 3:
                 f.okey = "any"
             else:
                 f.okey = str(f.osz)
@@ -404,6 +440,8 @@ def specialize(forms, cfg_of):
                 g = Form(**{**f.__dict__, "operands": list(f.operands), "imm": list(f.imm),
                             "hints": dict(f.hints), "spec": dict(f.spec)})
                 g.mem = mem
+                if mem and len(g.operands) > 1 and g.operands[1].kind == "sreg":
+                    g.okey = "any"      # MOV m16, Sreg: a 16-bit store at any operand size
                 variants.append(g)
         elif any(o.kind == "mem" for o in f.operands) or cfg_of(f).get("memonly"):
             f.mem = True

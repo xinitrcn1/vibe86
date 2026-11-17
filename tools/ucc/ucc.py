@@ -76,7 +76,7 @@ def read_isa(path):
                     cfg[k] = {a: int(b) for a, b in (x.split(":") for x in v.split(","))}
                 elif k in ("rep", "suffixed"):
                     cfg[k] = v.split(",")
-                elif k in ("memonly", "immz", "cc", "sreg", "crreg", "anymod", "anyosz",
+                elif k in ("memonly", "immz", "cc", "sreg", "crreg", "anymod", "anyosz", "oszsrc",
                            "immnotsize"):
                     cfg[k] = True
                 else:
@@ -259,10 +259,12 @@ def sv_tables(forms, image, cfg_of):
             immz = any(cfg_of(f).get("immz") for f in gfs)
             plus_r = any(f.plus_r for f in gfs)
             moffs = any(f.hints.get("moffs") for f in gfs)
+            p66 = any(f.prefix_key() == "66" for f in gfs)
             dbits = "???" if dg is None else format(dg, "03b")
             out.append(f"    14'b{int(m64)}_{m:02b}_{o:08b}_{dbits}: d = '{{valid: 1'b1, "
                        f"modrm: 1'b{int(modrm)}, imm: 4'd{ik}, immz: 1'b{int(immz)}, cls: 2'd{cls}, "
-                       f"pfx_sens: 1'b{int(sens)}, plus_r: 1'b{int(plus_r)}, moffs: 1'b{int(moffs)}}};")
+                       f"pfx_sens: 1'b{int(sens)}, plus_r: 1'b{int(plus_r)}, moffs: 1'b{int(moffs)}, "
+                       f"p66: 1'b{int(p66)}}};")
     out.append("    default: d = '0;")
     out.append("  endcase")
     out.append("  return d;")
@@ -294,6 +296,12 @@ def sv_tables(forms, image, cfg_of):
         dg = "???" if f.digit is None else format(f.digit, "03b")
         pk = {None: "00", "F3": "01", "F2": "10", "66": "11"}[f.prefix_key()]
         oz = {"any": "??", "16": "01", "32": "10", "64": "11"}[f.okey]
+        if f.prefix_key() == "66" and f.okey in ("16", "32"):
+            # a mandatory 66h still flips the decoder's operand size: the
+            # row's (32-bit) form answers to the flipped size of the mode
+            oz = "10" if f.mode in (0, 1) else "01"
+        elif f.prefix_key() == "66" and f.okey == "64" and not f.rexw:
+            oz = "?1"       # a default-64 form (INVPCID r64): 66h gives 16, REX.W 64
         mm = "?" if f.mem is None or f.hints.get("anymod") else str(int(f.mem))
         az = ASZ_CODE[f.spec["AddressSize"]] if "AddressSize" in f.spec else "??"
         sz = {16: "0", 32: "1"}[f.spec["StackAddrSize"]] if "StackAddrSize" in f.spec else "?"
@@ -446,6 +454,7 @@ def main():
            "  typedef struct packed {",
            "    logic valid; logic modrm; logic [3:0] imm; logic immz; logic [1:0] cls;",
            "    logic pfx_sens; logic plus_r; logic moffs;",
+           "    logic p66;  // a form has 66h as its mandatory prefix (66h selects it, not osz)",
            "  } dattr_t;",
            f"  localparam logic [UOP_W-1:0] UROM [UROM_N] = '{{"]
     out.append(",\n".join(f"    {U.WIDTH}'h{w:0{(U.WIDTH + 3) // 4}x}" for w in words))

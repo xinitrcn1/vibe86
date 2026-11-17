@@ -157,6 +157,28 @@ class Routine:
         self.code.append(u)
 
 
+def assigned_names(node, out=None):
+    """The variable names a pseudocode tree assigns to (DEST := ...)."""
+    if out is None:
+        out = set()
+    if isinstance(node, list):
+        for n in node:
+            assigned_names(n, out)
+        return out
+    if isinstance(node, Assign):
+        d = node.dst
+        while isinstance(d, (Slice, Index)) and not isinstance(d, Name):
+            d = getattr(d, "e", None)
+        if isinstance(d, Name):
+            out.add(d.n)
+    if hasattr(node, "__dataclass_fields__"):
+        for k in node.__dataclass_fields__:
+            v = getattr(node, k)
+            if isinstance(v, (list,)) or hasattr(v, "__dataclass_fields__"):
+                assigned_names(v, out)
+    return out
+
+
 class Lowerer:
     def __init__(self, form, page, ast, flags, library, name=None):
         self.f = form
@@ -733,6 +755,11 @@ class Lowerer:
                 seg = self.seg_of(idx.seg)
                 idx = idx.addr
             addr = self.eval(idx, 64)
+            if kind == "Memory" and isinstance(idx, Name) and addr.kind == "mem":
+                # Memory[DEST] with DEST a memory operand (m16:32): that
+                # operand, not a load through its value (far JMP/CALL and
+                # LxS read their offset twice until tests/isa/decode64)
+                return V("mem", w, addr=addr.addr, seg=addr.seg)
             return V("mem", w, addr=self.as_addr(addr), seg=seg)
         raise LowerError(f"index {e}")
 
@@ -788,7 +815,9 @@ class Lowerer:
         # an operand's width is the context for the other one's SignExtend /
         # ZeroExtend ('SRC1 - SignExtend(SRC2)' is at SRC1's width)
         a = self.eval(e.a, want)
-        sib = want or (a.w if a.kind == "sel" and not a.adapt else None)
+        # (a memory operand too: 'CMP m8, r8' compared at 64 bits, its SF and
+        # OF from bit 63, until tests/diff found it)
+        sib = want or (a.w if a.kind in ("sel", "mem") and not a.adapt else None)
         b = self.eval(e.b, sib)
         if want is None and isinstance(e.a, Call) and e.a.f in ("SignExtend", "ZeroExtend") \
                 and b.kind == "sel" and not b.adapt:
@@ -1084,6 +1113,15 @@ class Lowerer:
             for t in ([v.hi, v.lo] if v.kind == "pair" else [v]):
                 if t is not None and t.kind == "sel":
                     self.protected.add(t.sel)
+        # parameters are passed by value: a parameter the body assigns gets
+        # its own copy when the argument is a caller's variable (or one of
+        # its enclosing callers'), which would otherwise be overwritten
+        written = assigned_names(body)
+        for i, (p, v) in enumerate(argv):
+            if p in written and v.kind == "sel" and v.sel in self.protected:
+                t = self.tmp(keep=True)
+                self.E("MOV", opsize(v.w), dst=t, a=v.sel)
+                argv[i] = (p, V("sel", v.w, sel=t))
         saved_live = (self.pos, self.last, getattr(self, "_inlining", 0))
         self.vars = dict(argv)
         if fname not in self.lib_live:

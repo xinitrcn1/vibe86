@@ -60,7 +60,17 @@ IF CR0.PE = 0
         target := (lo AND FFFFH) OR (SHR(lo, 32) AND FFFF0000H) OR SHL(hi, 32);
         sel := SHR(lo, 16) AND FFFFH;
         ist := SHR(lo, 32) AND 7;
+        (* the handler's code segment (Vol. 3A 6.12.1.1, 6.14.1): a present
+           code segment with DPL <= CPL, a 64-bit one in IA-32e mode; else
+           #GP/#NP with the selector and EXT (a TSS selector in the gate
+           was loaded as CS until tests/system/df-classes) *)
+        IF (sel AND FFFCH) = 0 THEN #GP(1 - soft); FI;
+        IF (sel OR 7) > GDTR_LIMIT THEN #GP((sel AND FFFCH) OR (1 - soft)); FI;
         desc := Linear64[GDTR_BASE + (sel AND FFF8H)];
+        IF (SHR(desc, 43) AND 3) != 3 THEN #GP((sel AND FFFCH) OR (1 - soft)); FI;
+        IF (SHR(desc, 45) AND 3) > oldcpl THEN #GP((sel AND FFFCH) OR (1 - soft)); FI;
+        IF (SHR(desc, 53) AND 3) != 1 THEN #GP((sel AND FFFCH) OR (1 - soft)); FI;
+        IF (SHR(desc, 47) AND 1) = 0 THEN #NP((sel AND FFFCH) OR (1 - soft)); FI;
         newcpl := SHR(desc, 45) AND 3;
         IF (SHR(desc, 42) AND 1) = 1 THEN newcpl := oldcpl; FI;
         WriteSpecial(CS_SEL, (sel AND FFFCH) OR newcpl);
@@ -112,7 +122,12 @@ IF CR0.PE = 0
             ELSE
         target := (g AND FFFFH) OR (SHR(g, 32) AND FFFF0000H);
         sel := SHR(g, 16) AND FFFFH;
+        IF (sel AND FFFCH) = 0 THEN #GP(1 - soft); FI;
+        IF (sel OR 7) > GDTR_LIMIT THEN #GP((sel AND FFFCH) OR (1 - soft)); FI;
         desc := Linear64[GDTR_BASE + (sel AND FFF8H)];
+        IF (SHR(desc, 43) AND 3) != 3 THEN #GP((sel AND FFFCH) OR (1 - soft)); FI;
+        IF (SHR(desc, 45) AND 3) > oldcpl THEN #GP((sel AND FFFCH) OR (1 - soft)); FI;
+        IF (SHR(desc, 47) AND 1) = 0 THEN #NP((sel AND FFFCH) OR (1 - soft)); FI;
         newcpl := SHR(desc, 45) AND 3;
         IF (SHR(desc, 42) AND 1) = 1 THEN newcpl := oldcpl; FI;
         fromvm := SHR(oldflags, 17) AND 1;
