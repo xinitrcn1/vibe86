@@ -1,19 +1,17 @@
 # The vibe86 package and its pinout (D-019)
 
-The processor is a **two-die package** in an LGA socket: a **compute die**
-(CCD: the cores, their caches and local APICs, the JTAG TAP and debug
-module, the trace encoder) and an **I/O die** (IOD: the memory controllers
-and the memory init engine, the address fabric and host bridge, the system
-link to the chipset, the inter-socket links, and the system management
-unit). The two dies talk over the **die-to-die link** inside the package.
-Only the IOD and the debug/trace balls reach the socket.
+The processor is **one die** in an LGA socket: the cores with their
+caches and local APICs, the JTAG TAP and debug module, the trace encoder,
+the DDR5 memory controllers and the memory init engine, the address fabric
+and host bridge, the system link to the chipset, the inter-socket links
+and the system management unit (SMU), all on the same die (D-014's
+monolithic die, kept: the user decided against a compute/I-O die split
+before the pinout was frozen).
 
-This replaces D-014's single die. What it keeps: DDR5 at the pin level,
-memory ready before the core, the flit link to the chipset (`sim/iod.c`).
-What it changes: the memory controllers move to the IOD, the interrupt
-and machine-check sideband pins become link messages, and the package gets
-the pins a server part needs to be powered, sequenced, cooled, managed
-and identified.
+What this adds to D-014: DDR5 balls for eight channels, interrupts and
+machine checks as system-link messages instead of sideband pins, and the
+balls a server part needs to be powered, sequenced, cooled, managed and
+identified.
 
 The ball map is `rtl/common/package.toml`: every ball group, its count,
 its rail or the signals it carries. The logic signals are
@@ -53,7 +51,7 @@ docs/die-interface.md describes the signals: per subchannel DQ/CB 40,
 DQS_t/DQS_c 10 (five ×8 byte lanes), CA[13:0] 14, CS_n 4 (two DIMMs × two
 ranks), CK_t/CK_c 4 (one pair per DIMM): 72; per channel 2 × 72 plus
 RESET_n and ALERT_n. Eight channels are the server class (AMD's SP5 has
-twelve, Intel's LGA-4677 eight). The v1 IOD implements channels 0 and 1; the
+twelve, Intel's LGA-4677 eight). The v1 die implements channels 0 and 1; the
 balls of channels 2–7 are assigned and reserved: their outputs idle (CS_n
 high, CA and DQ undriven, RESET_n low) and their inputs are ignored. The
 SPD buses follow the DDR5 SPD hub's address space: 50h–57h is eight
@@ -93,7 +91,8 @@ SPD pins.
 | PWROK | in | the board's power-good: every package rail is in regulation. Low holds the whole package in reset |
 | RESET_L | in | the platform reset (`rst_n`): held low for ≥ 1 ms after PWROK on a real board |
 
-The system management unit (SMU, on the IOD, powered from VDD_18_S5)
+The system management unit (SMU, on the die's standby domain, powered from
+VDD_18_S5)
 sequences the package:
 
 1. **Off**: PWROK low. Everything but the SMU's standby logic is in reset;
@@ -104,7 +103,7 @@ sequences the package:
    never settles leaves the package here, with POST code E5h and
    ERROR_L[2] asserted (a fatal error).
 3. **Reset**: rails good, waiting for RESET_L to go high.
-4. **Memory init**: the IOD's memory init engine (D-014) trains DRAM.
+4. **Memory init**: the memory init engine (D-014) trains DRAM.
 5. **Run**: the cores leave reset.
 
 PWROK falling at any point goes back to 1 at once; RESET_L falling goes
@@ -137,10 +136,10 @@ register: 00h status, 01h output current in A, 02h temperature in °C,
 
 | Ball | Dir | Meaning |
 |---|---|---|
-| THERMTRIP_L | out (open drain) | the compute die reached its trip temperature (115 °C): the package stops at once (cores and memory controllers held in reset) and keeps THERMTRIP_L low until PWROK falls. The board must cut the main rails |
-| PROCHOT_L | inout (open drain) | out: the compute die is at or above its control limit (100 °C); in: the board (typically a VR's VR_HOT) demands throttling. Either way the cores throttle: they start one instruction in eight cycles until it is released |
+| THERMTRIP_L | out (open drain) | the die reached its trip temperature (115 °C): the package stops at once (cores and memory controllers held in reset) and keeps THERMTRIP_L low until PWROK falls. The board must cut the main rails |
+| PROCHOT_L | inout (open drain) | out: the die is at or above its control limit (100 °C); in: the board (typically a VR's VR_HOT) demands throttling. Either way the cores throttle: they start one instruction in eight cycles until it is released |
 
-The temperature is the compute die's thermal sensor. Temperature is the
+The temperature is the die's thermal sensor (at the cores' hot spot). Temperature is the
 physical world, so the simulator supplies it (a model input, not a ball:
 `tsense`, in units of 1/8 °C; vsim `-Z` sets it, default 45 °C); the
 sensor, its comparisons, the trip latch and the throttle are RTL.
@@ -155,9 +154,9 @@ sensor, its comparisons, the trip latch and the throttle are RTL.
 | ERROR_L[1] | out (open drain) | an uncorrected, recoverable error was logged: pulsed |
 | ERROR_L[2] | out (open drain) | a fatal error: held until reset (an uncorrectable error the core couldn't take as #MC, a power-sequencing failure) |
 
-Machine checks reach the cores as die-to-die messages, no longer pins: the
-IOD's memory controllers report ECC errors to the core whose access saw
-them, and the chipset can report one over the system link (MCE message).
+Machine checks are no longer pins: the memory controllers report ECC
+errors to the core whose access saw them on the die, and the chipset can
+report one over the system link (an MCE message).
 
 ### Sideband management bus (to a BMC)
 
@@ -172,7 +171,7 @@ power, so a BMC reads it with the host off; the balls are I3C-ready (MIPI
 I3C Basic 1.1.1 is backward compatible: an I3C controller talks to it as a
 legacy I2C target). Two target addresses, after AMD's APML split:
 
-- **4Ch, temperature interface** (like SB-TSI): 01h/10h the CCD
+- **4Ch, temperature interface** (like SB-TSI): 01h/10h the die's
   temperature (integer °C, eighths in 7:5), 02h status (bit 0 PROCHOT,
   1 THERMTRIP, 2 above the high limit, 3 below the low limit), 07h/08h
   high/low limits, 09h configuration (bit 7: mask the alert).
@@ -189,7 +188,7 @@ legacy I2C target). Two target addresses, after AMD's APML split:
 | Ball | Dir | Meaning |
 |---|---|---|
 | SOCKET_ID[2:0] | in (strap) | the socket's number on the board: the cores' APIC IDs are `socket × 16 + core`; socket 0's core 0 is the bootstrap processor |
-| PKG_TYPE[3:0] | out | the package type, wired in the package (1 = this LGA-4096 two-die package). Also CPUID Fn8000_0001_EBX[31:28] PkgType (AMD APM Vol. 3, Appendix E) |
+| PKG_TYPE[3:0] | out | the package type, wired in the package (1 = this LGA-4096 package). Also CPUID Fn8000_0001_EBX[31:28] PkgType (AMD APM Vol. 3, Appendix E) |
 | PKG_VER[3:0] | out | the pinout's version, wired in the package (1 = this document). A board checks it before PWROK |
 | SKT_OCC_L | out | socket occupied: tied to VSS in the package |
 
@@ -200,11 +199,11 @@ model, stepping, PkgType) and the SMU's registers.
 ### JTAG and trace
 
 JTAG (IEEE 1149.1): TCK, TMS, TDI, TDO, TRST_L, unchanged (docs/jtag.md);
-the TAP is on the compute die.
+the TAP is on the die as before.
 
 The **trace port** streams the cores' execution for an external trace
 probe: TRACECLK (= the core clock), TRACECTL (high: TRACEDATA carries a
-packet unit) and TRACEDATA[15:0]. The compute die's trace encoder turns
+packet unit) and TRACEDATA[15:0]. The die's trace encoder turns
 retirement into packets (a branch-trace format after Intel PT's: a PSB
 sync every 4096 bytes, TIP with the target of every taken branch,
 exception/interrupt packets with vector and RIP, an overflow packet when
@@ -215,31 +214,12 @@ The retirement and event ports vsim's harness uses (`rt_*`, `ev_*`,
 `shutdown`, `halted`, `shutdown_rip`) are **simulation observation
 ports**, not balls: pins.toml marks them `sim = true`.
 
-## The die-to-die link
-
-Inside the package, CCD ↔ IOD: two unidirectional 256-bit flit channels,
-valid/ready (on-package wires: no balls, no SerDes). A header flit carries
-the opcode, tag, size and address and up to 16 bytes of data; data flits
-carry 32 bytes, so a 64-byte line is a header and two data flits.
-
-| Opcode | Direction | Meaning |
-|---|---|---|
-| MRD, MWR, IORD, IOWR, CPL, CPLE | either | as on the system link (docs/die-interface.md) |
-| INV | IOD → CCD | a line changed in DRAM by someone else (DMA, another die): the caches drop it (D-018's snoop) |
-| APIC | either | an interrupt message: MSIs, the I/O APIC's messages, IPIs between dies, and the chipset's virtual wires (ExtINT with its vector, NMI, SMI, INIT) |
-| EOI | CCD → IOD | the end of a level-triggered interrupt: the IOD forwards it to the I/O APIC |
-| INTA | CCD → IOD | a core took the 8259's ExtINT (the virtual wire's acknowledge) |
-| MCE | IOD → CCD | a machine check for a core: bank status and address |
-| MCERR | CCD → IOD | a core signalled a machine check, or shut down during one (drives MCERR_L, CATERR_L) |
-| THERM | CCD → IOD | the CCD's temperature sensor reading, every 1024 clocks |
-| THROT | IOD → CCD | throttle on/off (PROCHOT) |
-
-### Interrupts on the system link
+## Interrupts on the system link
 
 The chipset's interrupt wires become messages, as HyperTransport carried
 them (HyperTransport I/O Link Specification 3.10, 8.5 interrupts, 8.6
 system management): a VW (virtual wire) message for INTR (asserted,
 with the 8259's vector, or deasserted), NMI, SMI and INIT; INTA back to the
 chipset when a core took the ExtINT; MSIs stay memory writes to
-FEEx_xxxxh. The IOD turns them into APIC messages on the die-to-die
-link. The die no longer has INTR/NMI/SMI/MCE pins.
+FEEx_xxxxh. The fabric turns them into messages on the die's APIC bus
+(D-017). The die no longer has INTR/NMI/SMI/MCE pins.

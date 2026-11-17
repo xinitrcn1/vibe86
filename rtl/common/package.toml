@@ -8,7 +8,7 @@
 # group that exists here.
 
 [package]
-name = "vibe86 LGA-4096 two-die package"
+name = "vibe86 LGA-4096 package (one die)"
 balls = 4096
 amps_per_ball = 0.5          # design rule: per LGA contact at EDC
 type = 1                     # PKG_TYPE[3:0] and CPUID Fn8000_0001_EBX[31:28]
@@ -116,7 +116,7 @@ kind = "power"
 volts = "0.60-1.20 (SVID address 0)"
 edc_amps = 450
 balls = 900
-desc = "the compute die's cores"
+desc = "the cores (their own SVID-controlled domain)"
 
 [[group]]
 name = "VDDCR_SOC"
@@ -124,7 +124,7 @@ kind = "power"
 volts = "0.75-1.05 (SVID address 1)"
 edc_amps = 120
 balls = 240
-desc = "the I/O die"
+desc = "the uncore: fabric, memory controllers, links"
 
 [[group]]
 name = "VDDIO_MEM"

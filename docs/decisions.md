@@ -247,42 +247,35 @@ Not yet: write-back (it needs the fabric to snoop device reads), MTRR/PAT
 memory types and CR0.CD, set associativity, an L2. The CPUID cache
 description (Fn8000_001Dh) comes with TOPOEXT.
 
-## D-019: a two-die package with a frozen pinout: memory on an I/O die, management balls
+## D-019: the frozen pinout: eight DDR5 channels, interrupts as messages, management balls
 
 Before the external pinout is frozen, the user asked for a server-class
 package (docs/package.md has the pinout; `rtl/common/package.toml` the
-ball map, checked by `tools/gen/package.py`):
+ball map, checked by `tools/gen/package.py`). The die stays one die
+(D-014): a compute/I-O die split was drafted and then dropped at the
+user's request before the pinout froze.
 
-- **Two dies.** A compute die (cores, caches, local APICs, JTAG, trace)
-  and an I/O die (DDR5 controllers and memory init, the address fabric and
-  host bridge, the system link, the inter-socket links, the system
-  management unit), joined by an on-package die-to-die link of 256-bit
-  flits that carries line reads and writes, I/O, cache invalidations,
-  interrupt messages, machine checks and thermal/throttle messages, as
-  chiplet servers do (AMD's CCD/IOD with Infinity Fabric). D-014's
-  pin-level DDR5 and memory-before-core move to the I/O die unchanged.
 - **Eight DDR5 channels' balls**, two implemented; the rest reserved and
   idle. Two SPD buses (the SPD hub's eight addresses per bus).
 - **Interrupts are messages.** No INTR/NMI/SMI/MCE pins: the chipset
-  sends virtual wires (INTR with its vector, NMI, SMI, INIT) and INTA
-  comes back, as HyperTransport did (HT I/O Link Spec 3.10, 8.5); MSIs
-  stay memory writes. Inside the package they are die-to-die APIC
-  messages. Machine checks are die-to-die MCE messages.
+  sends virtual wires (INTR with its vector, NMI, SMI, INIT) over the
+  system link and INTA goes back, as HyperTransport did (HT I/O Link Spec
+  3.10, 8.5); MSIs stay memory writes. On the die they are APIC-bus
+  messages (D-017). Machine checks from the chipset are MCE messages.
 - **Inter-socket links**: two x16 links' balls, reserved.
 - **Management balls**: PWROK and RESET_L with a sequencer in the SMU
-  (rails → reset → memory init → run); a three-wire VR control bus after
+  (rails -> reset -> memory init -> run); a three-wire VR control bus after
   SVID/SVI (our own protocol, specified in docs/package.md, since both are
   closed) with a VR model in vsim; THERMTRIP_L and bidirectional
-  PROCHOT_L on a CCD temperature sensor whose physical input the
-  simulator supplies; MCERR_L, CATERR_L, ERROR_L[2:0]; an SMBus 3.x
-  sideband target for a BMC (temperature and management interfaces after
-  AMD's APML split; I3C-compatible balls); SOCKET_ID straps (APIC IDs
-  socket × 16 + core), PKG_TYPE and PKG_VER wired in the package,
-  SKT_OCC_L; JTAG kept; a trace port (16-bit, branch-trace packets after
-  Intel PT's) next to it.
-- **Power**: five rails, at most 0.5 A per contact at EDC and at least as
-  many VSS balls as supply balls, in an LGA-4096 budget with 126
-  reserved balls.
+  PROCHOT_L on a temperature sensor whose physical input the simulator
+  supplies; MCERR_L, CATERR_L, ERROR_L[2:0]; an SMBus 3.x sideband target
+  for a BMC (temperature and management interfaces after AMD's APML
+  split; I3C-compatible balls); SOCKET_ID straps (APIC IDs socket x 16 +
+  core), PKG_TYPE and PKG_VER wired in the package, SKT_OCC_L; JTAG kept;
+  a trace port (16-bit, branch-trace packets after Intel PT's) next to it.
+- **Power**: five rails (cores and uncore on separate SVID-controlled
+  domains), at most 0.5 A per contact at EDC and at least as many VSS balls
+  as supply balls, in an LGA-4096 budget with 126 reserved balls.
 
 vsim's harness ports (retirement, events, shutdown) stay, marked as
 simulation observation, not balls.
