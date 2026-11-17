@@ -1,0 +1,16 @@
+// uefi-mikeos: MikeOS (work/mikeos.flp, the user's 1.44 MB floppy image)
+// boots from the USB floppy through the firmware's own CSM (milestone 5 of
+// fw/README.md): with no UEFI loader on the floppy the boot manager falls
+// through to "Legacy: vibe86 USB Floppy", the CSM loads the boot sector at
+// 0:7C00h, and MikeOS's boot sector and kernel read the disk through INT 13h
+// and draw their welcome dialog through INT 10h on the VGA text screen.
+// On the die (DDR5 behind the core's caches) the dialog is up well within
+// 200 M cycles.
+// requires: ${WORK}/mikeos.flp
+// ctest-labels: slow
+// vsim-args: -b test -U ${WORK}/mikeos.flp,ro -c 200000000
+// expect-exit: 3   (the cycle limit: MikeOS waits for a key)
+// expect-vga: Welcome to MikeOS
+// expect-vga: Thanks for trying out MikeOS!
+// expect-vga: Please select an interface: OK for the
+// expect-vga: Version 4.5
