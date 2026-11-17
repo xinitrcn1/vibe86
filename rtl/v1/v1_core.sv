@@ -281,6 +281,147 @@ module v1_core
   assign vc = rd(u.c);
   assign vd = rd(u.dst);
 
+  // ------------------------------------------------------------------ vectors (D-015)
+
+  // a vector selector to its register-file entry: the decoder-relative
+  // names, and x87 ST(i) = R[(TOP + i) mod 8] (FSW bits 13:11)
+  function automatic logic [6:0] vphys(input logic [6:0] s);
+    case (s)
+      V_VREG:  return {3'b0, dreg};
+      V_VRM:   return {3'b0, drm};
+      V_VVVV:  return 7'd0;                       // VEX/EVEX.vvvv: with the VEX decoder
+      V_VIS4:  return {3'b0, imm_r[7:4]};
+      V_KREG:  return 7'd56 + 7'(modrm[5:3]);
+      V_KRM:   return 7'd56 + 7'(modrm[2:0]);
+      V_KVVVV: return 7'd56;
+      V_KAAA:  return 7'd56;
+      default:
+        if (s >= V_ST0 && s <= V_ST7)
+          return V_ST0 + 7'(3'(s - V_ST0) + sp[SP_FSW[7:0]][13:11]);
+        else return s;
+    endcase
+  endfunction
+
+  logic [511:0] vrda, vwd, vwm;
+  logic         vwe, vcommit, vrollback;
+  logic [6:0]   vwa;
+  v1_vrf vrf (.clk, .rst_n, .ra(vphys(u.op == U_VGET ? u.b : u.a)), .rda(vrda),
+              .we(vwe), .wa(vwa), .wd(vwd), .wm(vwm),
+              .commit(vcommit), .rollback(vrollback));
+
+  // the write of this clock's vector micro-op (one clock: VSET, VZUP, VMOVR)
+  always_comb begin
+    logic [9:0] off;
+    vwe = 1'b0;
+    vwa = vphys(u.dst);
+    vwd = '0;
+    vwm = '0;
+    off = 10'(vb + 64'(u.imm));
+    if (st == S_EXEC && !is_mem) begin
+      case (u.op)
+        U_VSET: begin
+          vwe = 1'b1;
+          vwd = {448'b0, va} << off;
+          vwm = {448'b0, szmask(u.sz)} << off;
+        end
+        U_VZUP: begin
+          vwe = 1'b1;
+          vwm = ~((512'd1 << u.imm[9:0]) - 512'd1);
+          if (u.imm[9]) vwm = '0;                 // imm = 512: nothing above
+        end
+        U_VMOVR: begin
+          vwe = 1'b1;
+          vwd = vrda;
+          vwm = '1;
+        end
+        default: ;
+      endcase
+    end
+  end
+
+  // ------------------------------------------------------------------ SSE/AVX floating point
+  // one scalar operation per micro-op (lane-serial vectors, D-015) on
+  // v1_fp_pkg; exceptions of the instruction accumulate in fpx until FPCHK
+  logic [63:0] fp_res;
+  logic [5:0]  fp_x;
+  logic [5:0]  fpx;                               // this instruction's MXCSR exceptions
+  logic [2:0]  comi_zpc;                          // (U)COMIS: ZF, PF, CF
+  always_comb begin
+    logic [1:0] rm;
+    logic daz, ftz;
+    v1_fp_pkg::fres_t r;
+    logic [5:0] cx;
+    logic c;
+    logic [3:0] op;
+    logic un, lt, eq;
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic [5:0] dx;                               // the UNORD/EQ probes' flags: unused
+    /* verilator lint_on UNUSEDSIGNAL */
+    op = '0;
+    c = 1'b0;
+    un = 1'b0;
+    lt = 1'b0;
+    eq = 1'b0;
+    dx = '0;
+    rm = (u.rnd < 3'd4) ? u.rnd[1:0] : sp[SP_MXCSR[7:0]][14:13];
+    daz = sp[SP_MXCSR[7:0]][6];
+    ftz = sp[SP_MXCSR[7:0]][15];
+    r = '0;
+    cx = '0;
+    comi_zpc = '0;
+    fp_res = '0;
+    fp_x = '0;
+    if (u.op inside {U_FADD, U_FSUB, U_FMUL, U_FDIV, U_FSQRT, U_FMA, U_FMIN, U_FMAX}) begin
+      case (u.op)
+        U_FADD: op = 4'd0;
+        U_FSUB: op = 4'd1;
+        U_FMUL: op = 4'd2;
+        U_FDIV: op = 4'd3;
+        U_FSQRT: op = 4'd4;
+        U_FMA: op = 4'd5;
+        U_FMIN: op = 4'd6;
+        default: op = 4'd7;
+      endcase
+      r = v1_fp_pkg::fp_arith(op, {16'b0, va}, {16'b0, vb}, {16'b0, vc}, u.et, rm, daz, ftz, 0,
+                              u.x[1:0]);
+      fp_res = r.v[63:0];
+      fp_x = r.x;
+    end else if (u.op == U_FCMP && u.x == 4'd0) begin
+      c = v1_fp_pkg::fp_cmp({16'b0, va}, {16'b0, vb}, u.et, u.imm[4:0], daz, cx);
+      fp_res = {63'b0, c};
+      fp_x = cx;
+    end else if (u.op == U_FCMP) begin
+      // COMISS/COMISD (x = 1, signaling: QNaN raises IE) and UCOMISS/UCOMISD
+      // (x = 2, quiet): unordered ZF PF CF = 111, < 001, = 100, > 000
+      un = v1_fp_pkg::fp_cmp({16'b0, va}, {16'b0, vb}, u.et, 5'd3, daz, dx);
+      eq = v1_fp_pkg::fp_cmp({16'b0, va}, {16'b0, vb}, u.et, 5'd0, daz, dx);
+      lt = v1_fp_pkg::fp_cmp({16'b0, va}, {16'b0, vb}, u.et, u.x == 4'd1 ? 5'd1 : 5'd17, daz, cx);
+      comi_zpc = un ? 3'b111 : lt ? 3'b001 : eq ? 3'b100 : 3'b000;
+      fp_x = cx;
+    end else if (u.op == U_FCVT) begin
+      r = v1_fp_pkg::fp_convert({16'b0, va}, u.x, u.et, rm, daz, ftz, 0);
+      fp_res = r.v[63:0];
+      fp_x = r.x;
+    end else if (u.op == U_FCVTI || u.op == U_FCVTIT) begin
+      // float (et) -> integer of size sz; x[0]: unsigned
+      r = v1_fp_pkg::fp_to_int({16'b0, va}, u.et, 8 << u.sz, !u.x[0],
+                               u.op == U_FCVTIT ? 2'd3 : rm, daz);
+      fp_res = r.v[63:0];
+      fp_x = r.x;
+    end else if (u.op == U_ICVTF) begin
+      // integer of size sz (x[0]: unsigned) -> float (et)
+      r = v1_fp_pkg::fp_from_int(va, 8 << u.sz, !u.x[0], u.et, rm, 0);
+      fp_res = r.v[63:0];
+      fp_x = r.x;
+    end else if (u.op == U_FRND) begin
+      // imm[2]: MXCSR.RC, else imm[1:0]; imm[3]: suppress precision (ROUNDPS)
+      r = v1_fp_pkg::fp_round_int({16'b0, va}, u.et, u.imm[2] ? sp[SP_MXCSR[7:0]][14:13] : u.imm[1:0],
+                                  u.imm[3], daz);
+      fp_res = r.v[63:0];
+      fp_x = r.x;
+    end
+  end
+
   v1_alu alu (
     .op(u.op), .sz(u.sz), .a(va), .b(vb), .c(vc), .dst_old(vd), .hi_in(hi_r), .imm(u.imm),
     .cc(u.cc), .x(u.x), .flags_in(w_flags), .res(alu_res), .hi_out(alu_hi),
@@ -525,6 +666,7 @@ module v1_core
   task automatic commit();
     for (int i = 0; i < 16; i++) a_gpr[i] <= w_gpr[i];
     a_flags <= w_flags;
+    vcommit <= 1'b1;
   endtask
 
   // exception classes for #DF (Intel SDM Vol. 3A, 7.15, Table 7-4)
@@ -561,6 +703,7 @@ module v1_core
     if (!keep) begin
       for (int i = 0; i < 16; i++) w_gpr[i] <= a_gpr[i];
       w_flags <= a_flags;
+      vrollback <= 1'b1;
     end
     sp[SP_FAULT_VEC[7:0]] <= {53'b0, ext, swi, he, v};
     sp[SP_FAULT_ERR[7:0]] <= {32'b0, ec};
@@ -696,6 +839,7 @@ module v1_core
 
   task automatic start_decode();
     idx <= '0;
+    fpx <= '0;
     p66 <= 1'b0; p67 <= 1'b0; prep <= 2'd0; pseg <= 3'd7;
     rex_v <= 1'b0; rex <= '0;
     dmap <= '0;
@@ -710,6 +854,9 @@ module v1_core
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
+      vcommit <= 1'b0;
+      vrollback <= 1'b0;
+      fpx <= '0;
       reset_state();
       bus_req <= 1'b0;
       rt_valid <= 1'b0;
@@ -723,6 +870,8 @@ module v1_core
       dbg_resume_halt <= 1'b0;
       start_decode();
     end else begin
+      vcommit <= 1'b0;
+      vrollback <= 1'b0;
       rt_valid <= 1'b0;
       ev_valid <= 1'b0;
       intr_ack <= 1'b0;
@@ -1182,6 +1331,38 @@ module v1_core
                 w_flags[7] <= 1'b0; w_flags[11] <= 1'b0;
               end
               U_CRC32: wr(u.dst, 2'd2, alu_res);
+              // ---- vectors (D-015): the writes go through the register file's port
+              U_VGET: begin
+                logic [63:0] x;
+                x = 64'(vrda >> 10'(va + 64'(u.imm)));
+                wr(u.dst, u.sz, x & szmask(u.sz));
+              end
+              U_VSET, U_VZUP, U_VMOVR: ;
+              U_FADD, U_FSUB, U_FMUL, U_FDIV, U_FSQRT, U_FMA, U_FMIN, U_FMAX, U_FCVT, U_FCVTI,
+              U_FCVTIT, U_ICVTF, U_FRND: begin
+                wr(u.dst, u.sz, fp_res & szmask(u.sz));
+                fpx <= fpx | fp_x;
+              end
+              U_FCMP: begin
+                if (u.x == 4'd0) wr(u.dst, u.sz, fp_res);
+                else begin
+                  w_flags[6] <= comi_zpc[2];
+                  w_flags[2] <= comi_zpc[1];
+                  w_flags[0] <= comi_zpc[0];
+                  w_flags[11] <= 1'b0; w_flags[7] <= 1'b0; w_flags[4] <= 1'b0;
+                end
+                fpx <= fpx | fp_x;
+              end
+              U_FPCHK: begin
+                // the instruction's exceptions against MXCSR's masks (bits 12:7)
+                // (the flags are set either way: Intel SDM Vol. 1 11.5.2)
+                sp[SP_MXCSR[7:0]] <= sp[SP_MXCSR[7:0]] | {58'b0, fpx};
+                if ((fpx & ~sp[SP_MXCSR[7:0]][12:7]) != 6'd0) begin
+                  raise(sp[SP_CR4[7:0]][10] ? 8'd19 : 8'd6, 1'b0, 32'd0, 1'b0, 1'b0, 1'b0);
+                  hold = 1'b1;
+                end
+                fpx <= '0;
+              end
               U_CPUID: begin
                 // rtl/common/cpuid.toml (vibe86_cpuid_pkg) plus the dynamic fields
                 logic [127:0] r;

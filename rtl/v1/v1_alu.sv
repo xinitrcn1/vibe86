@@ -369,6 +369,50 @@ module v1_alu
       end
       U_KHI: res = {imm, dst_old[31:0]};
       U_SEL: res = c[0] ? a : b;
+      // ---- element operations of the lane-serial vector unit (D-015), at sz
+      U_MIN, U_MAX: begin
+        logic lt;
+        lt = $signed(sext(am, sz)) < $signed(sext(bm, sz));
+        res = ((op == U_MIN) == lt) ? am : bm;
+      end
+      U_MINU, U_MAXU: res = ((op == U_MINU) == (am < bm)) ? am : bm;
+      U_ABS: res = msb(am, sz) ? (64'd0 - am) & m : am;
+      U_AVGU: res = 64'(({1'b0, am} + {1'b0, bm} + 65'd1) >> 1) & m;   // PAVGB/PAVGW
+      U_ADDS, U_SUBS: begin
+        // signed saturation (PADDSB/W, PSUBSB/W)
+        logic signed [65:0] sr, lo, hi;
+        sr = (op == U_ADDS) ? 66'($signed(sext(am, sz))) + 66'($signed(sext(bm, sz)))
+                            : 66'($signed(sext(am, sz))) - 66'($signed(sext(bm, sz)));
+        hi = 66'(sext(m >> 1, 2'd3));
+        lo = -hi - 66'sd1;
+        res = (sr > hi) ? (m >> 1) : (sr < lo) ? ((m >> 1) + 64'd1) : 64'(sr) & m;
+      end
+      U_ADDUS, U_SUBUS: begin
+        // unsigned saturation (PADDUSB/W, PSUBUSB/W)
+        logic [64:0] ur;
+        ur = (op == U_ADDUS) ? {1'b0, am} + {1'b0, bm} : {1'b0, am} - {1'b0, bm};
+        res = (op == U_ADDUS) ? ((ur > {1'b0, m}) ? m : ur[63:0]) : (bm > am ? 64'd0 : ur[63:0]);
+      end
+      U_PACKSS, U_PACKUS: begin
+        // a (signed, sz) narrowed to half its width with saturation: signed
+        // (PACKSSWB/DW) or unsigned (PACKUSWB/DW)
+        logic signed [63:0] v, lo, hi;
+        v = $signed(sext(am, sz));
+        if (op == U_PACKSS) begin
+          hi = $signed(64'(szmask(sz - 2'd1) >> 1));
+          lo = -hi - 64'sd1;
+        end else begin
+          hi = $signed(64'(szmask(sz - 2'd1)));
+          lo = 64'sd0;
+        end
+        res = 64'((v > hi) ? hi : (v < lo) ? lo : v) & szmask(sz - 2'd1);
+      end
+      U_MULH: begin
+        // the high half of a * b at sz: x[0] signed (PMULHW) or unsigned (PMULHUW)
+        logic [127:0] p;
+        p = x[0] ? 128'($signed(sext(am, sz)) * $signed(sext(bm, sz))) : 128'(am) * 128'(bm);
+        res = 64'(p >> nbits(sz)) & m;
+      end
       default: res = am;
     endcase
     // SF, ZF, PF of the result for the ops that define them "according to the result"
