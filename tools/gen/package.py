@@ -10,7 +10,7 @@ Checks, failing with a message per problem:
   - every pin of pins.toml is a simulation observation port (sim = true)
     or names a ball group that exists (group = "...");
   - every signal group has a pin (a group without one is a typo or
-    something the RTL doesn't model: reserved groups say implemented = []).
+    something the RTL doesn't model), but analog ones (logic = false).
 --table prints the ball budget as a Markdown table (docs/package.md).
 """
 
@@ -53,7 +53,7 @@ def check(pkg, pins):
         else:
             used.add(g)
     for g in pkg["group"]:
-        if g["kind"] == "signal" and g["name"] not in used:
+        if g["kind"] == "signal" and g.get("logic", True) and g["name"] not in used:
             errs.append(f"signal group {g['name']} carries no pin of pins.toml")
     return errs
 

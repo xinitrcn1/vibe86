@@ -14,6 +14,8 @@ Reads cpuid.toml, reset.toml, platform.toml and pins.toml and writes, into
     vibe86_platform_pkg.sv  PLAT_<SECTION>_<KEY>, MSR_<NAME>_ADDR/_DEFAULT
     vibe86_die_pkg.sv       DIE_<PIN>_W
     vibe86_die_ports.svh    the die's port list, included by each core module
+    vibe86_die_reserved.svh the reserved pins' tie-offs (outputs at their idle
+                            value, inputs waived), included by each die top
     vibe86_platform.h       the platform constants for vsim (C)
     vibe86_die.h            the die's pins for vsim (C++), die_in()/die_out()
 
@@ -291,12 +293,15 @@ def expand(pins):
         g = c.split("[#].")[0]
         if counts.setdefault(g, len(inst)) != len(inst):
             die(f"pins.toml: group {g} has pins with different instance counts")
+        impl = p.get("implemented", inst)
         for k, i in enumerate(inst):
             q = dict(p)
+            q["reserved"] = i not in impl
             q["name"] = p["name"].replace("{i}", i)
             q["c"] = c.replace("[#]", f"[{k}]")
             q["_inst"] = (g, c.split("[#].")[1])
             del q["instances"]
+            q.pop("implemented", None)
             out.append(q)
     return out, counts
 
@@ -316,6 +321,30 @@ def gen_die_sv(pins):
         ports.append(f"  {d} logic {rng}{p['name']}{comma}".ljust(44) + f"// {p['desc']}")
     ports.append("")
     return "\n".join(pkg), "\n".join(ports)
+
+
+def gen_reserved_sv(pins):
+    """The reserved pins (D-019: balls assigned, no logic yet): each output
+    driven at its idle value, the inputs read by nothing."""
+    out = [f"// {HEADER.format(src='pins.toml')}",
+           "// The reserved pins: `include it in a die top's body."]
+    ins = []
+    for p in pins:
+        if not p.get("reserved"):
+            continue
+        if p["dir"] == "out":
+            if "idle" not in p:
+                die(f"pins.toml: reserved output {p['name']} needs idle = ...")
+            out.append(f"  assign {p['name']} = {p['idle']};")
+        else:
+            ins.append(p["name"])
+    if ins:
+        out.append("  /* verilator lint_off UNUSEDSIGNAL */")
+        for i in range(0, len(ins), 6):
+            out.append(f"  wire reserved_in_{i // 6} = ^{{{', '.join(ins[i:i + 6])}}};")
+        out.append("  /* verilator lint_on UNUSEDSIGNAL */")
+    out.append("")
+    return "\n".join(out)
 
 
 def gen_die_h(pins, structs, maxcores):
@@ -456,6 +485,7 @@ def main():
     pkg, ports = gen_die_sv(pins["pin"])
     write(o("vibe86_die_pkg.sv"), tables(pkg))
     write(o("vibe86_die_ports.svh"), ports)
+    write(o("vibe86_die_reserved.svh"), gen_reserved_sv(pins["pin"]))
     write(o("vibe86_die.h"), gen_die_h(pins["pin"], pins.get("structs", {}),
                                        plat["socket"]["max_cores"]))
     return 0

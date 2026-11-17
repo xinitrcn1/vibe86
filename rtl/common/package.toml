@@ -51,6 +51,7 @@ desc = "inter-socket link: 16 TX + 16 RX pairs"
 name = "xsl_refclk"
 kind = "signal"
 implemented = []
+logic = false                # an analog clock pair: no logic signal in the model
 balls = 2
 desc = "the inter-socket links' reference clock pair"
 

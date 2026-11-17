@@ -15,126 +15,180 @@
 # instanced group), route (an input that goes to one core: the C++ member
 # naming that core), instances (copies of the pin: '{i}' in the name takes
 # each value), desc. The pins themselves: docs/die-interface.md (D-014).
+#
+# The package (D-019, docs/package.md): group names the pin's ball group in
+# package.toml; sim = true marks a simulation observation port (no ball).
+# Reserved pins have balls but no logic yet: implemented lists the
+# instances that have it (the rest are reserved), reserved = true a whole
+# pin; a reserved output is driven at idle (vibe86_die_reserved.svh).
 
 [structs]                                 # C++ structs: member -> type name
 ev = "event"                              # per core
 rt = "retire"                             # per core
 ddr = "ddr5_subchannel"                   # per DDR5 subchannel (instances)
 ddrch = "ddr5_channel"                    # per DDR5 channel (instances)
+spd = "spd_bus"                           # per SPD bus (instances)
+xsl = "xsl_link"                          # per inter-socket link (instances)
 
 [[pin]]
 name = "clk"
+group = "clock_reset"
 dir = "in"
 width = 1
 desc = "core clock"
 
 [[pin]]
 name = "rst_n"
+group = "clock_reset"
 dir = "in"
 width = 1
 desc = "RESET# (active low): cold and warm reset"
 
 [[pin]]
 name = "meminit_fast"
+group = "test"
 dir = "in"
 width = 1
 desc = "strap (simulation): JEDEC init waits scaled down by 1024"
 
-# --- DDR5: 2 channels x 2 subchannels, the DRAMs' host interface
+# --- DDR5: 8 channels x 2 subchannels (channels 0-1 implemented), the DRAMs' host interface
 #     (Micron DDR5 core data sheet Table 140; docs/die-interface.md)
 [[pin]]
 name = "ddr{i}_cs_n"
-instances = ["0a", "0b", "1a", "1b"]
+instances = ["0a", "0b", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b"]
+implemented = ["0a", "0b", "1a", "1b"]
 c = "ddr[#].cs_n"
+group = "ddr5"
+idle = "'1"
 dir = "out"
 width = 4
 desc = "CS_n: DIMM 0 rank 0/1, DIMM 1 rank 0/1 (active low)"
 
 [[pin]]
 name = "ddr{i}_ca"
-instances = ["0a", "0b", "1a", "1b"]
+instances = ["0a", "0b", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b"]
+implemented = ["0a", "0b", "1a", "1b"]
 c = "ddr[#].ca"
+group = "ddr5"
+idle = "'0"
 dir = "out"
 width = 14
 desc = "CA[13:0], sampled on the CK rising edge"
 
 [[pin]]
 name = "ddr{i}_dq_o"
-instances = ["0a", "0b", "1a", "1b"]
+instances = ["0a", "0b", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b"]
+implemented = ["0a", "0b", "1a", "1b"]
 c = "ddr[#].dq_o"
+group = "ddr5"
+idle = "'0"
 dir = "out"
 width = 80
 desc = "write data: beat 0 in 39:0, beat 1 in 79:40 (DQ[31:0] + CB[7:0] each)"
 
 [[pin]]
 name = "ddr{i}_dq_oe"
-instances = ["0a", "0b", "1a", "1b"]
+instances = ["0a", "0b", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b"]
+implemented = ["0a", "0b", "1a", "1b"]
 c = "ddr[#].dq_oe"
+group = "ddr5"
+idle = "1'b0"
 dir = "out"
 width = 1
 desc = "the die drives DQ (writes)"
 
 [[pin]]
 name = "ddr{i}_dqs_o"
-instances = ["0a", "0b", "1a", "1b"]
+instances = ["0a", "0b", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b"]
+implemented = ["0a", "0b", "1a", "1b"]
 c = "ddr[#].dqs_o"
+group = "ddr5"
+idle = "'0"
 dir = "out"
 width = 2
 desc = "write strobe DQS_t, one bit per beat"
 
 [[pin]]
 name = "ddr{i}_dq_i"
-instances = ["0a", "0b", "1a", "1b"]
+instances = ["0a", "0b", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b"]
+implemented = ["0a", "0b", "1a", "1b"]
 c = "ddr[#].dq_i"
+group = "ddr5"
 dir = "in"
 width = 80
 desc = "read data, as dq_o"
 
 [[pin]]
 name = "ddr{i}_dqs_i"
-instances = ["0a", "0b", "1a", "1b"]
+instances = ["0a", "0b", "1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b", "5a", "5b", "6a", "6b", "7a", "7b"]
+implemented = ["0a", "0b", "1a", "1b"]
 c = "ddr[#].dqs_i"
+group = "ddr5"
 dir = "in"
 width = 2
 desc = "read strobe from the DRAMs, one bit per beat"
 
 [[pin]]
 name = "ddr{i}_reset_n"
-instances = ["0", "1"]
+instances = ["0", "1", "2", "3", "4", "5", "6", "7"]
+implemented = ["0", "1"]
 c = "ddrch[#].reset_n"
+group = "ddr5"
+idle = "1'b0"
 dir = "out"
 width = 1
 desc = "the channel's DRAM RESET_n"
 
 [[pin]]
 name = "ddr{i}_alert_n"
-instances = ["0", "1"]
+instances = ["0", "1", "2", "3", "4", "5", "6", "7"]
+implemented = ["0", "1"]
 c = "ddrch[#].alert_n"
+group = "ddr5"
 dir = "in"
 width = 1
 desc = "ALERT_n (wired-OR across the channel)"
 
-# --- SPD sideband (SMBus, open drain)
+# --- SPD buses (SMBus / I3C Basic, open drain): bus 0 channels 0-3, bus 1
+#     channels 4-7 (reserved)
 [[pin]]
-name = "spd_scl_o"
+name = "spd{i}_scl_o"
+instances = ["0", "1"]
+implemented = ["0"]
+c = "spd[#].scl_o"
+group = "spd"
+idle = "1'b1"
 dir = "out"
 width = 1
 desc = "0 pulls SCL low"
 
 [[pin]]
-name = "spd_sda_o"
+name = "spd{i}_sda_o"
+instances = ["0", "1"]
+implemented = ["0"]
+c = "spd[#].sda_o"
+group = "spd"
+idle = "1'b1"
 dir = "out"
 width = 1
 desc = "0 pulls SDA low"
 
 [[pin]]
-name = "spd_scl_i"
+name = "spd{i}_scl_i"
+instances = ["0", "1"]
+implemented = ["0"]
+c = "spd[#].scl_i"
+group = "spd"
 dir = "in"
 width = 1
 desc = "the SCL level"
 
 [[pin]]
-name = "spd_sda_i"
+name = "spd{i}_sda_i"
+instances = ["0", "1"]
+implemented = ["0"]
+c = "spd[#].sda_i"
+group = "spd"
 dir = "in"
 width = 1
 desc = "the SDA level"
@@ -142,67 +196,143 @@ desc = "the SDA level"
 # --- the I/O link: 64-bit flits, valid/ready, both directions
 [[pin]]
 name = "iol_tx_valid"
+group = "syslink"
 dir = "out"
 width = 1
 desc = "die -> I/O die: a flit is offered"
 
 [[pin]]
 name = "iol_tx_flit"
+group = "syslink"
 dir = "out"
 width = 64
 desc = "die -> I/O die flit"
 
 [[pin]]
 name = "iol_tx_ready"
+group = "syslink"
 dir = "in"
 width = 1
 desc = "the I/O die takes the flit"
 
 [[pin]]
 name = "iol_rx_valid"
+group = "syslink"
 dir = "in"
 width = 1
 desc = "I/O die -> die: a flit is offered"
 
 [[pin]]
 name = "iol_rx_flit"
+group = "syslink"
 dir = "in"
 width = 64
 desc = "I/O die -> die flit"
 
 [[pin]]
 name = "iol_rx_ready"
+group = "syslink"
 dir = "out"
 width = 1
 desc = "the die takes the flit"
 
+# --- inter-socket links (reserved, D-019): x16 each, at the flit level like
+#     the system link
+[[pin]]
+name = "xsl{i}_tx_valid"
+instances = ["0", "1"]
+implemented = []
+c = "xsl[#].tx_valid"
+group = "xsl"
+idle = "1'b0"
+dir = "out"
+width = 1
+desc = "a flit is offered to the other socket"
+
+[[pin]]
+name = "xsl{i}_tx_flit"
+instances = ["0", "1"]
+implemented = []
+c = "xsl[#].tx_flit"
+group = "xsl"
+idle = "'0"
+dir = "out"
+width = 64
+desc = "the flit"
+
+[[pin]]
+name = "xsl{i}_tx_ready"
+instances = ["0", "1"]
+implemented = []
+c = "xsl[#].tx_ready"
+group = "xsl"
+dir = "in"
+width = 1
+desc = "the other socket takes it"
+
+[[pin]]
+name = "xsl{i}_rx_valid"
+instances = ["0", "1"]
+implemented = []
+c = "xsl[#].rx_valid"
+group = "xsl"
+dir = "in"
+width = 1
+desc = "the other socket offers a flit"
+
+[[pin]]
+name = "xsl{i}_rx_flit"
+instances = ["0", "1"]
+implemented = []
+c = "xsl[#].rx_flit"
+group = "xsl"
+dir = "in"
+width = 64
+desc = "its flit"
+
+[[pin]]
+name = "xsl{i}_rx_ready"
+instances = ["0", "1"]
+implemented = []
+c = "xsl[#].rx_ready"
+group = "xsl"
+idle = "1'b0"
+dir = "out"
+width = 1
+desc = "this socket takes it"
+
 # --- JTAG (IEEE 1149.1)
 [[pin]]
 name = "tck"
+group = "jtag"
 dir = "in"
 width = 1
 desc = "JTAG test clock"
 
 [[pin]]
 name = "tms"
+group = "jtag"
 dir = "in"
 width = 1
 desc = "JTAG test mode select"
 
 [[pin]]
 name = "tdi"
+group = "jtag"
 dir = "in"
 width = 1
 desc = "JTAG test data in"
 
 [[pin]]
 name = "trst_n"
+group = "jtag"
 dir = "in"
 width = 1
 desc = "JTAG test reset (active low)"
 
 [[pin]]
 name = "tdo"
+group = "jtag"
 dir = "out"
 width = 1
 desc = "JTAG test data out"
@@ -261,9 +391,10 @@ dir = "in"
 width = 64
 desc = "the machine check's physical address"
 
-# --- trace (debug port): retirement and events, per core
+# --- simulation observation (no balls, D-019): retirement and events, per core
 [[pin]]
 name = "rt_valid"
+sim = true
 dir = "out"
 width = 1
 c = "rt[].valid"
@@ -271,6 +402,7 @@ desc = "an instruction retired"
 
 [[pin]]
 name = "rt_rip"
+sim = true
 dir = "out"
 width = 64
 c = "rt[].rip"
@@ -278,6 +410,7 @@ desc = "its RIP"
 
 [[pin]]
 name = "rt_len"
+sim = true
 dir = "out"
 width = 4
 c = "rt[].len"
@@ -285,6 +418,7 @@ desc = "its length (1..15)"
 
 [[pin]]
 name = "rt_bytes"
+sim = true
 dir = "out"
 width = 128
 c = "rt[].bytes"
@@ -293,6 +427,7 @@ desc = "its bytes"
 
 [[pin]]
 name = "rt_uops"
+sim = true
 dir = "out"
 width = 8
 c = "rt[].uops"
@@ -300,6 +435,7 @@ desc = "micro-ops it took"
 
 [[pin]]
 name = "ev_valid"
+sim = true
 dir = "out"
 width = 1
 c = "ev[].valid"
@@ -307,6 +443,7 @@ desc = "an exception or interrupt was delivered"
 
 [[pin]]
 name = "ev_vector"
+sim = true
 dir = "out"
 width = 8
 c = "ev[].vector"
@@ -314,6 +451,7 @@ desc = "its vector"
 
 [[pin]]
 name = "ev_has_error"
+sim = true
 dir = "out"
 width = 1
 c = "ev[].has_error"
@@ -321,6 +459,7 @@ desc = "it pushed an error code"
 
 [[pin]]
 name = "ev_error"
+sim = true
 dir = "out"
 width = 32
 c = "ev[].error"
@@ -328,6 +467,7 @@ desc = "the error code"
 
 [[pin]]
 name = "ev_rip"
+sim = true
 dir = "out"
 width = 64
 c = "ev[].rip"
@@ -335,6 +475,7 @@ desc = "RIP of the faulting or interrupted instruction"
 
 [[pin]]
 name = "shutdown"
+sim = true
 dir = "out"
 width = 1
 c = "shutdown[]"
@@ -342,6 +483,7 @@ desc = "shut down (triple fault) until reset"
 
 [[pin]]
 name = "halted"
+sim = true
 dir = "out"
 width = 1
 c = "halted[]"
@@ -349,6 +491,7 @@ desc = "halted (HLT)"
 
 [[pin]]
 name = "shutdown_rip"
+sim = true
 dir = "out"
 width = 64
 c = "shutdown_rip[]"

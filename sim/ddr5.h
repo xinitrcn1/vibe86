@@ -168,8 +168,8 @@ ddr5_eval_pins(ddr5_mem *m, die_pins &p, uint64_t cycle)
 	}
 	for (unsigned c = 0; c < DDR5_CHANNELS; c++)
 		in.reset_n[c] = p.ddrch[c].reset_n;
-	in.spd_scl_o = p.spd_scl_o;
-	in.spd_sda_o = p.spd_sda_o;
+	in.spd_scl_o = p.spd[0].scl_o;	/* SPD bus 0: channels 0-3 (D-019) */
+	in.spd_sda_o = p.spd[0].sda_o;
 	ddr5_eval(m, &in, &out, cycle);
 	for (unsigned s = 0; s < DDR5_SUBS; s++) {
 		for (unsigned w = 0; w < 3; w++)
@@ -178,8 +178,10 @@ ddr5_eval_pins(ddr5_mem *m, die_pins &p, uint64_t cycle)
 	}
 	for (unsigned c = 0; c < DDR5_CHANNELS; c++)
 		p.ddrch[c].alert_n = out.alert_n[c];
-	p.spd_scl_i = out.spd_scl_i;
-	p.spd_sda_i = out.spd_sda_i;
+	p.spd[0].scl_i = out.spd_scl_i;
+	p.spd[0].sda_i = out.spd_sda_i;
+	p.spd[1].scl_i = 1;		/* bus 1 (channels 4-7): only its pull-ups */
+	p.spd[1].sda_i = 1;
 }
 #endif
 #endif

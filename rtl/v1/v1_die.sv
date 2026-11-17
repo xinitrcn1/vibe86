@@ -1,7 +1,8 @@
 // v1_die: the v1 die — the v1 core and the uncore (rtl/uncore): the address
-// fabric, the memory init engine, four DDR5 subchannel controllers and the
-// I/O link endpoint. Its ports are the die interface (rtl/common/pins.toml,
-// docs/die-interface.md, D-014). The core leaves reset when DRAM is ready.
+// fabric, the memory init engine, four DDR5 subchannel controllers (channels
+// 0 and 1 of eight) and the I/O link endpoint. Its ports are the die
+// interface (rtl/common/pins.toml, docs/die-interface.md, D-014) and the
+// package's balls (docs/package.md, D-019). The core leaves reset when DRAM is ready.
 module v1_die
   import apic_pkg::*;
 (
@@ -11,6 +12,10 @@ module v1_die
   // core needs the fabric's N-master arbitration and LOCKed accesses, see
   // docs/decisions.md D-017)
   localparam int NCORE = 1;
+
+  // the reserved balls (D-019): DDR5 channels 2-7, SPD bus 1, the
+  // inter-socket links -- outputs idle, inputs unused
+`include "vibe86_die_reserved.svh"
 
   // ------------------------------------------------------------ memory init
   logic        dram_ready, two_ch;
@@ -22,7 +27,7 @@ module v1_die
 
   meminit u_meminit (
     .clk, .rst_n, .fast(meminit_fast),
-    .scl_o(spd_scl_o), .sda_o(spd_sda_o), .scl_i(spd_scl_i), .sda_i(spd_sda_i),
+    .scl_o(spd0_scl_o), .sda_o(spd0_sda_o), .scl_i(spd0_scl_i), .sda_i(spd0_sda_i),
     .ddr_reset_n({ddr1_reset_n, ddr0_reset_n}),
     .sub_in_reset, .sub_start, .sub_pop, .sub_two_rank, .sub_ready,
     .dram_ready, .two_ch, .dram_size,
