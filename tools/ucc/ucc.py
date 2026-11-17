@@ -238,7 +238,8 @@ def sv_tables(forms, image, cfg_of):
     for f in forms:
         groups.setdefault((f.mode == 3, f.map, f.opc), []).append(f)
     out.append("// decoder attributes per (64-bit mode, map, opcode[, ModRM.reg])")
-    out.append("function automatic dattr_t dec_attr(input logic m64, input logic [1:0] map, "
+    out.append("// map: 0 one-byte, 1 0F, 2 0F38, 3 0F3A; VEX maps 5 0F, 6 0F38, 7 0F3A")
+    out.append("function automatic dattr_t dec_attr(input logic m64, input logic [2:0] map, "
                "input logic [7:0] opc, input logic [2:0] digit);")
     out.append("  dattr_t d;")
     out.append("  d = '0;")
@@ -260,33 +261,36 @@ def sv_tables(forms, image, cfg_of):
             plus_r = any(f.plus_r for f in gfs)
             moffs = any(f.hints.get("moffs") for f in gfs)
             p66 = any(f.prefix_key() == "66" for f in gfs)
+            # VEX forms without a vvvv operand: VEX.vvvv must be 1111b (#UD)
+            vvvv0 = all(f.vex and not any(op.kind == "vvvv" for op in f.operands) for f in gfs)
             dbits = "???" if dg is None else format(dg, "03b")
-            out.append(f"    14'b{int(m64)}_{m:02b}_{o:08b}_{dbits}: d = '{{valid: 1'b1, "
+            out.append(f"    15'b{int(m64)}_{m:03b}_{o:08b}_{dbits}: d = '{{valid: 1'b1, "
                        f"modrm: 1'b{int(modrm)}, imm: 4'd{ik}, immz: 1'b{int(immz)}, cls: 2'd{cls}, "
                        f"pfx_sens: 1'b{int(sens)}, plus_r: 1'b{int(plus_r)}, moffs: 1'b{int(moffs)}, "
-                       f"p66: 1'b{int(p66)}}};")
+                       f"p66: 1'b{int(p66)}, vvvv0: 1'b{int(vvvv0)}}};")
     out.append("    default: d = '0;")
     out.append("  endcase")
     out.append("  return d;")
     out.append("endfunction")
     out.append("")
     out.append("// has a ModRM byte (looked up before ModRM.reg is known)")
-    out.append("function automatic logic dec_modrm(input logic m64, input logic [1:0] map, "
+    out.append("function automatic logic dec_modrm(input logic m64, input logic [2:0] map, "
                "input logic [7:0] opc);")
     out.append("  casez ({m64, map, opc})")
     for (m64, m, o), fs in sorted(groups.items()):
         if any(f.modrm for f in fs):
-            out.append(f"    11'b{int(m64)}_{m:02b}_{o:08b}: return 1'b1;")
+            out.append(f"    12'b{int(m64)}_{m:03b}_{o:08b}: return 1'b1;")
     out.append("    default: return 1'b0;")
     out.append("  endcase")
     out.append("endfunction")
     out.append("")
-    out.append("// microcode entry point: {sub90, mode, map, opc, digit, pfx, osz, mem, asz, ssz}")
+    out.append("// microcode entry point: {sub90, mode, map, vl, opc, digit, pfx, osz, mem, asz, ssz}")
+    out.append("// (vl: VEX.L; pfx: the mandatory prefix, or VEX.pp for VEX maps)")
     out.append("function automatic logic [UADDR_W-1:0] uentry(input logic sub90, "
-               "input logic [1:0] mode, input logic [1:0] map, input logic [7:0] opc, "
+               "input logic [1:0] mode, input logic [2:0] map, input logic vl, input logic [7:0] opc, "
                "input logic [2:0] digit, input logic [1:0] pfx, input logic [1:0] osz, "
                "input logic mem, input logic [1:0] asz, input logic ssz);")
-    out.append("  casez ({sub90, mode, map, opc, digit, pfx, osz, mem, asz, ssz})")
+    out.append("  casez ({sub90, mode, map, vl, opc, digit, pfx, osz, mem, asz, ssz})")
     order = sorted(forms, key=lambda f: (f.mode, f.map, f.opc, f.digit is None, f.digit or 0,
                                          f.prefix_key() is None, f.okey == "any",
                                          len(f.spec) == 0))
@@ -296,16 +300,17 @@ def sv_tables(forms, image, cfg_of):
         dg = "???" if f.digit is None else format(f.digit, "03b")
         pk = {None: "00", "F3": "01", "F2": "10", "66": "11"}[f.prefix_key()]
         oz = {"any": "??", "16": "01", "32": "10", "64": "11"}[f.okey]
-        if f.prefix_key() == "66" and f.okey in ("16", "32"):
+        if f.prefix_key() == "66" and f.okey in ("16", "32") and not f.vex:
             # a mandatory 66h still flips the decoder's operand size: the
             # row's (32-bit) form answers to the flipped size of the mode
             oz = "10" if f.mode in (0, 1) else "01"
-        elif f.prefix_key() == "66" and f.okey == "64" and not f.rexw:
+        elif f.prefix_key() == "66" and f.okey == "64" and not f.rexw and not f.vex:
             oz = "?1"       # a default-64 form (INVPCID r64): 66h gives 16, REX.W 64
         mm = "?" if f.mem is None or f.hints.get("anymod") else str(int(f.mem))
         az = ASZ_CODE[f.spec["AddressSize"]] if "AddressSize" in f.spec else "??"
         sz = {16: "0", 32: "1"}[f.spec["StackAddrSize"]] if "StackAddrSize" in f.spec else "?"
-        out.append(f"    24'b{sub}_{f.mode:02b}_{f.map:02b}_{f.opc:08b}_{dg}_{pk}_{oz}_{mm}_{az}_{sz}: "
+        vl = "?" if f.vl is None or not f.vex else str(f.vl)
+        out.append(f"    26'b{sub}_{f.mode:02b}_{f.map:03b}_{vl}_{f.opc:08b}_{dg}_{pk}_{oz}_{mm}_{az}_{sz}: "
                    f"return {U.UADDR_W}'d{image.addr[f.routine]};  // {f.name}")
     out.append(f"    default: return {U.UADDR_W}'d{image.addr['UD']};")
     out.append("  endcase")
@@ -458,6 +463,7 @@ def main():
            "    logic valid; logic modrm; logic [3:0] imm; logic immz; logic [1:0] cls;",
            "    logic pfx_sens; logic plus_r; logic moffs;",
            "    logic p66;  // a form has 66h as its mandatory prefix (66h selects it, not osz)",
+           "    logic vvvv0;  // VEX without a vvvv operand: VEX.vvvv must be 1111b",
            "  } dattr_t;",
            f"  localparam logic [UOP_W-1:0] UROM [UROM_N] = '{{"]
     out.append(",\n".join(f"    {U.WIDTH}'h{w:0{(U.WIDTH + 3) // 4}x}" for w in words))

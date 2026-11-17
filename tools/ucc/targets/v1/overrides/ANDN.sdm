@@ -1,0 +1,9 @@
+# ANDN -- override (BMI: Intel SDM Vol. 2, ANDN)
+# The manual's Operation is written bit by bit (loops, variable bit ranges);
+# v1's ALU computes it in one operation (rtl/v1/v1_alu.sv, U_ANDN), with the
+# flags of the page's Flags Affected section (restated below in the words the
+# flags oracle reads: the ALU produces the cleared ones as 0).
+@operation
+DEST := AluOp(ANDN, SRC1, SRC2);
+@flags
+The CF, ZF, SF and OF flags are set according to the result. The AF and PF flags are undefined.

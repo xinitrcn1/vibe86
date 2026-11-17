@@ -74,7 +74,7 @@ module v1_core
 
   typedef enum logic [2:0] {S_FETCH, S_EXEC, S_HALT, S_SHUTDOWN, S_DEBUG} state_e;
   typedef enum logic [3:0] {D_PFX, D_ESC, D_OPC3, D_OPC2, D_MODRM, D_SIB, D_DISP, D_IMM, D_FINISH,
-                            D_BUS} dstate_e;
+                            D_BUS, D_VEX1, D_VEX2} dstate_e;
 
   state_e  st;
   dstate_e ds;
@@ -98,7 +98,15 @@ module v1_core
   logic [2:0]  pseg;            // segment override: 0-5, 7 none
   logic        rex_v;
   logic [3:0]  rex;             // W R X B
-  logic [1:0]  dmap;
+  logic [2:0]  dmap;            // 0 one-byte, 1 0F, 2 0F38, 3 0F3A; VEX: 5 0F, 6 0F38, 7 0F3A
+  // VEX (Intel SDM Vol. 2A 2.3 "Intel Advanced Vector Extensions (Intel AVX)"):
+  // the minimal decoder the VEX-encoded GPR instructions (BMI1, BMI2) need;
+  // C4h/C5h are VEX in protected and long mode (not virtual-8086), and in
+  // 16/32-bit code only with ModRM.mod = 11b (else LES/LDS). VEX.R/X/B/W go
+  // to the REX state, VEX.pp is the form's mandatory prefix (not osz).
+  logic        vex, vl, vex_bad, plock_seen;
+  logic [3:0]  vvvv;
+  logic [1:0]  vpp;             // 0 none, 1 66, 2 F3, 3 F2
   logic [7:0]  dopc;
   logic [7:0]  modrm, sib;
   logic        has_modrm, has_sib;
@@ -252,6 +260,7 @@ module v1_core
     case (s)
       S_REG:   return reg_hi8 ? {56'b0, w_gpr[{2'b0, dreg[1:0]}][15:8]} : w_gpr[dreg];
       S_RM:    return rm_hi8 ? {56'b0, w_gpr[{2'b0, drm[1:0]}][15:8]} : w_gpr[drm];
+      S_VVVV:  return w_gpr[vvvv];
       S_IMM:   return imm_r;
       S_IMM2:  return imm2_r;
       S_EA:    return ea;
@@ -407,6 +416,7 @@ module v1_core
                    sp[8'(9 + i)] == fetch_la;
   // decode states that consume the next instruction byte
   wire need_byte = ds == D_PFX || ds == D_ESC || ds == D_OPC3 || ds == D_MODRM || ds == D_SIB ||
+                   ds == D_VEX1 || ds == D_VEX2 ||
                    (ds == D_DISP && disp_i != disp_n) || (ds == D_IMM && imm_i != imm_n);
 
   // opcodes with a register in their low 3 bits (50+rd, B8+rd, ...) are in
@@ -600,10 +610,10 @@ module v1_core
   task automatic wr(input logic [6:0] s, input logic [1:0] sz, input logic [63:0] v);
     logic [63:0] m;
     m = szmask(sz);
-    if (s < 7'd16 || s == S_REG || s == S_RM) begin
+    if (s < 7'd16 || s == S_REG || s == S_RM || s == S_VVVV) begin
       logic [3:0] i;
       logic hi8;
-      i = (s == S_REG) ? dreg : (s == S_RM) ? drm : s[3:0];
+      i = (s == S_REG) ? dreg : (s == S_RM) ? drm : (s == S_VVVV) ? vvvv : s[3:0];
       hi8 = (s == S_REG) ? reg_hi8 : (s == S_RM) ? rm_hi8 : 1'b0;
       if (hi8) w_gpr[{2'b0, i[1:0]}][15:8] <= v[7:0];
       else case (sz)
@@ -699,6 +709,7 @@ module v1_core
     p66 <= 1'b0; p67 <= 1'b0; prep <= 2'd0; pseg <= 3'd7;
     rex_v <= 1'b0; rex <= '0;
     dmap <= '0;
+    vex <= 1'b0; vl <= 1'b0; vex_bad <= 1'b0; plock_seen <= 1'b0; vvvv <= '0; vpp <= '0;
     has_modrm <= 1'b0; has_sib <= 1'b0;
     disp <= '0; disp_n <= '0; disp_i <= '0;
     imm_r <= '0; imm2_r <= '0; imm_n <= '0; imm_i <= '0;
@@ -779,7 +790,7 @@ module v1_core
                   case (b)
                     8'h66: p66 <= 1'b1;
                     8'h67: p67 <= 1'b1;
-                    8'hF0: ;
+                    8'hF0: plock_seen <= 1'b1;
                     8'hF2: prep <= 2'd2;
                     8'hF3: prep <= 2'd1;
                     8'h26: pseg <= 3'd0;
@@ -795,12 +806,17 @@ module v1_core
                   rex_v <= 1'b1;
                   rex <= b[3:0];
                   idx <= idx + 1;
+                end else if ((b == 8'hC4 || b == 8'hC5) && cr0_pe && !rf_vm) begin
+                  // a VEX prefix, or LES/LDS (decided by the next byte)
+                  dopc <= b;
+                  idx <= idx + 1;
+                  ds <= D_VEX1;
                 end else if (b == 8'h0F) begin
-                  dmap <= 2'd1;
+                  dmap <= 3'd1;
                   idx <= idx + 1;
                   ds <= D_ESC;
                 end else begin
-                  dmap <= 2'd0;
+                  dmap <= 3'd0;
                   dopc <= b;
                   idx <= idx + 1;
                   ds <= D_OPC2;
@@ -808,9 +824,46 @@ module v1_core
               end
               D_ESC: begin
                 idx <= idx + 1;
-                if (b == 8'h38) begin dmap <= 2'd2; ds <= D_OPC3; end
-                else if (b == 8'h3A) begin dmap <= 2'd3; ds <= D_OPC3; end
+                if (b == 8'h38) begin dmap <= 3'd2; ds <= D_OPC3; end
+                else if (b == 8'h3A) begin dmap <= 3'd3; ds <= D_OPC3; end
                 else begin dopc <= b; ds <= D_OPC2; end
+              end
+              D_VEX1: begin
+                if (!m64 && b[7:6] != 2'b11) begin
+                  // LES/LDS: this byte is their ModRM (not consumed here)
+                  dmap <= 3'd0;
+                  ds <= D_OPC2;
+                end else begin
+                  // VEX with a 66h/F2h/F3h/REX/LOCK prefix before it is #UD
+                  // (SDM Vol. 2A 2.3.2); R/X/B/vvvv are inverted
+                  vex <= 1'b1;
+                  vex_bad <= p66 || prep != 2'd0 || rex_v || plock_seen;
+                  rex_v <= 1'b1;
+                  idx <= idx + 1;
+                  if (dopc == 8'hC5) begin
+                    rex <= {1'b0, m64 & ~b[7], 2'b00};
+                    vvvv <= ~b[6:3] & {m64, 3'b111};
+                    vl <= b[2];
+                    vpp <= b[1:0];
+                    dmap <= 3'd5;
+                    ds <= D_OPC3;
+                  end else begin
+                    rex <= {1'b0, m64 & ~b[7], m64 & ~b[6], m64 & ~b[5]};
+                    if (b[4:0] == 5'd1) dmap <= 3'd5;
+                    else if (b[4:0] == 5'd2) dmap <= 3'd6;
+                    else if (b[4:0] == 5'd3) dmap <= 3'd7;
+                    else vex_bad <= 1'b1;          // a reserved map
+                    ds <= D_VEX2;
+                  end
+                end
+              end
+              D_VEX2: begin
+                rex[3] <= m64 & b[7];              // VEX.W (ignored outside 64-bit mode)
+                vvvv <= ~b[6:3] & {m64, 3'b111};
+                vl <= b[2];
+                vpp <= b[1:0];
+                idx <= idx + 1;
+                ds <= D_OPC3;
               end
               D_OPC3: begin
                 dopc <= b;
@@ -931,9 +984,11 @@ module v1_core
                 // F3/F2 select the form; a 66h selects it only where a form has
                 // 66h as its mandatory prefix (ADCX, CLWB...), else it is osz
                 pk = !attr.pfx_sens ? 2'd0 : (prep != 2'd0) ? prep : (attr.p66 && p66) ? 2'd3 : 2'd0;
-                if (!attr.valid) upc <= UADDR_UD;
-                else upc <= uentry(dmap == 2'd0 && dopc == 8'h90 && !(rex_v && rex[0]),
-                                   mode, dmap, plus_base(dopc),
+                // VEX.pp is the mandatory prefix: 01 66h, 10 F3h, 11 F2h
+                if (vex) pk = (vpp == 2'd1) ? 2'd3 : (vpp == 2'd2) ? 2'd1 : (vpp == 2'd3) ? 2'd2 : 2'd0;
+                if (!attr.valid || vex_bad || (vex && attr.vvvv0 && vvvv != 4'd0)) upc <= UADDR_UD;
+                else upc <= uentry(dmap == 3'd0 && dopc == 8'h90 && !(rex_v && rex[0]),
+                                   mode, dmap, vl, plus_base(dopc),
                                    modrm[5:3], pk, dosz, (has_modrm && modrm[7:6] != 2'd3) || attr.moffs,
                                    dasz, ssz);
                 st <= S_EXEC;
@@ -1211,6 +1266,7 @@ module v1_core
                                  U_SHR, U_SAR, U_ROL, U_ROR, U_RCL, U_RCR, U_NEG, U_NOT, U_MOV,
                                  U_MULU, U_MULS, U_IMULT, U_ZEXT, U_SEXT, U_SETCC, U_BSF, U_BSR,
                                  U_TZCNT, U_LZCNT, U_POPCNT, U_BSWAP, U_SZP, U_GETF, U_SLICE,
+                                 U_PDEP, U_PEXT, U_BEXTR, U_BZHI, U_BLSI, U_BLSMSK, U_BLSR,
                                  U_INSERT, U_KHI, U_SEL}) begin
                   logic [5:0] wm;
                   logic [63:0] f;

@@ -57,6 +57,8 @@ class Form:
     hints: dict = field(default_factory=dict)
     cfg: dict = field(default_factory=dict)  # the .isa line's options
     mode: int = 3            # decode mode: 0 real, 1 16-bit protected/v86, 2 32-bit, 3 64-bit
+    vex: bool = False        # VEX-encoded: map is 4 + the VEX map (5 0F, 6 0F38, 7 0F3A)
+    vl: int = None           # VEX.L the row requires (0: LZ/L0/128, 1: 256), None: LIG
     spec: dict = field(default_factory=dict) # on-demand specializations (AddressSize, ...)
     routine: str = ""        # the (possibly shared) routine this form runs
 
@@ -75,7 +77,7 @@ class Form:
 
     def key(self):
         return (self.mode, self.map, self.opc, self.digit, self.prefix_key(), self.okey, self.mem,
-                tuple(sorted(self.spec.items())), self.hints.get("sub90"))
+                tuple(sorted(self.spec.items())), self.hints.get("sub90"), self.vl)
 
     def prefix_key(self):
         if self.mprefix in ("F3", "F2", "66"):
@@ -99,9 +101,37 @@ def parse_opcode(f, col):
     s = re.sub(r"\+\s*(r[bwdo])\b", r"+\1", s)   # 'B8+ rd' -> 'B8+rd'
     s = re.sub(r"([0-9A-F]{2})\s*\+r", r"\1 +r", s)
     s = re.sub(r"/(\d|r)", r" /\1", s)
+    s = re.sub(r"(VEX\.\S*)\.\s+(\S)", r"\1.\2", s)   # 'VEX.LZ. 0F38.W1': a stray space
     toks = s.split()
     bytes_ = []
+    vmap = None
     for t in toks:
+        if t.startswith("VEX."):
+            # VEX.L.pp.mmmmm.W (Intel SDM Vol. 2A 3.1.1.2 "Opcode Column in the
+            # Instruction Summary Table (Instructions with VEX prefix)")
+            f.vex = True
+            for fld in t.split(".")[1:]:
+                if fld in ("LZ", "L0", "128"):
+                    f.vl = 0
+                elif fld in ("L1", "256"):
+                    f.vl = 1
+                elif fld == "LIG":
+                    f.vl = None
+                elif fld in ("66", "F2", "F3"):
+                    f.mprefix = fld
+                elif fld in ("0F", "0F38", "0F3A"):
+                    vmap = {"0F": 1, "0F38": 2, "0F3A": 3}[fld]
+                elif fld == "W1":
+                    f.rexw = True
+                elif fld == "W0":
+                    f.hints["w0"] = True
+                elif fld == "WIG":
+                    pass
+                else:
+                    raise FormError(f"VEX field '{fld}' in '{col}'")
+            if vmap is None:
+                raise FormError(f"no VEX map in '{col}'")
+            continue
         if t == "REX.W":
             f.rexw = True
         elif t in ("REX", "REX.R"):
@@ -144,6 +174,11 @@ def parse_opcode(f, col):
         bytes_ = bytes_[1:]
     if not bytes_:
         raise FormError(f"no opcode in '{col}'")
+    if f.vex:
+        if len(bytes_) != 1:
+            raise FormError(f"VEX opcode '{col}' isn't one byte")
+        f.map, f.opc = 4 + vmap, bytes_[0]
+        return
     if bytes_[0] == 0x0F:
         if len(bytes_) >= 2 and bytes_[1] == 0x38:
             f.map, rest = 2, bytes_[2:]
@@ -184,6 +219,8 @@ def parse_operands(f, enc):
     ins = re.sub(r"\br(16|32|64)/m16\d?\b", "r/m16", ins)
     # 'MOVDIR64B r16/r32/r64, m512': a register of the address size
     ins = ins.replace("r16/r32/r64", "rasz")
+    # 'PDEP r32a, r32b, r/m32': two registers of one size, told apart by letter
+    ins = re.sub(r"\br(32|64)[ab]\b", r"r\1", ins)
     parts = ins.split(None, 1)
     f.mnem = parts[0]
     ops = [o.strip() for o in parts[1].split(",")] if len(parts) > 1 else []
@@ -197,6 +234,8 @@ def parse_operands(f, enc):
             k, sz = m.group(1), int(m.group(2))
             if k == "r":
                 kind = "opreg" if "opcode" in role else "reg"
+                if "VEX.vvvv" in role or "EVEX.vvvv" in role:
+                    kind = "vvvv"
                 if "r/m" in role:
                     kind = "rm"
                 if f.plus_r and not f.modrm:
@@ -383,7 +422,9 @@ def make_forms(page, cfg):
                     if o.kind in ("imm", "rel") and o.text.endswith(("16", "32")):
                         lsz = int(o.text[-2:])
             sizes = [lsz] if lsz in (8, 16, 32) else ([16, 32] if lsz is None else [])
-            for mode in (0, 1, 2):
+            # VEX: protected and long mode only; the BMI forms' 32-bit operand
+            # size doesn't follow a 16-bit default (16-bit protected mode is left out)
+            for mode in ((2,) if f.vex else (0, 1, 2)):
                 for sz in sizes:
                     g = Form(**{**f.__dict__, "operands": [Operand(**o.__dict__) for o in f.operands],
                                 "imm": list(f.imm), "hints": dict(f.hints), "spec": {}})

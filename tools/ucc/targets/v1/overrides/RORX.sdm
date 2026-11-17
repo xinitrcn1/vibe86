@@ -1,0 +1,5 @@
+# RORX -- override (BMI2: Intel SDM Vol. 2, RORX)
+# 'y := imm8 AND 1FH/3FH; DEST := ROR(SRC, y)' without touching the flags:
+# v1's rotator masks the count the same way.
+@operation
+DEST := AluOp(ROR, SRC, imm8);
