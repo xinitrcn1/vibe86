@@ -162,8 +162,27 @@ package v1_fp_pkg;
     s = sig << lz;
     e = exp - 20'(lz);
     st = sticky;
-    // subnormal: shift right so the exponent is emin
+    // tininess after rounding (IEEE 754-2008 7.5; x86): the result rounded to
+    // p bits *with an unbounded exponent* is below 2^emin. Only a value just
+    // under 2^emin whose p-bit rounding carries out isn't tiny. (Rounding
+    // at the subnormal precision instead, as v1 did, missed UE and FTZ for
+    // results that round up to the smallest normal: rtl/v1/tb/tb_fpu_ref.)
     tiny = 1'b0;
+    if (e < 20'(emin)) begin
+      logic [127:0] k0, r0, h0;
+      logic u0;
+      k0 = s >> (128 - p);
+      r0 = s & ((128'd1 << (128 - p)) - 1);
+      h0 = 128'd1 << (127 - p);
+      case (rm)
+        2'd0: u0 = r0 > h0 || (r0 == h0 && (st || k0[0]));
+        2'd1: u0 = sign && (r0 != 0 || st);
+        2'd2: u0 = !sign && (r0 != 0 || st);
+        default: u0 = 1'b0;
+      endcase
+      tiny = !(e == 20'(emin) - 1 && u0 && k0 == (128'd1 << p) - 1);
+    end
+    // subnormal: shift right so the exponent is emin
     if (e < 20'(emin)) begin
       sh = int'(20'(emin) - e);
       if (sh > 127) begin
@@ -174,7 +193,6 @@ package v1_fp_pkg;
         s = s >> sh;
       end
       e = 20'(emin);
-      tiny = 1'b1;
     end
     // keep the top p bits
     keep = s >> (128 - p);
@@ -193,8 +211,6 @@ package v1_fp_pkg;
       m = m >> 1;
       e = e + 1;
     end
-    // after rounding: still below the normal range? (x86 detects tininess after rounding)
-    if (tiny && m[p - 1]) tiny = 1'b0;
     if (tiny && ftz) begin                               // flush to zero (MXCSR.FZ)
       r.v = 80'(sign) << (width(f) - 1);
       r.x[XUE] = 1'b1;
@@ -241,7 +257,22 @@ package v1_fp_pkg;
   endfunction
 
   // op: 0 add, 1 sub, 2 mul, 3 div, 4 sqrt, 5 fma (a*b + c), 6 min, 7 max
+  // the SIMD (SSE/AVX) exception precedence (Intel SDM Vol. 1 11.5.2,
+  // "SIMD Floating-Point Exception Conditions"): an invalid operation or a
+  // divide-by-zero hides a denormal operand (DE); found against the host's
+  // SSE by rtl/v1/tb/tb_fpu_ref. (x87 reports #D ahead of #Z: F80 keeps it.)
   function automatic fres_t fp_arith(input logic [3:0] op, input logic [79:0] av,
+                                     input logic [79:0] bv, input logic [79:0] cv,
+                                     input logic [3:0] f, input logic [1:0] rm,
+                                     input logic daz, input logic ftz, input int prec,
+                                     input logic [1:0] neg);
+    fres_t r;
+    r = fp_arith_raw(op, av, bv, cv, f, rm, daz, ftz, prec, neg);
+    if (f != FMT_F80 && (r.x[XIE] || r.x[XZE])) r.x[XDE] = 1'b0;
+    return r;
+  endfunction
+
+  function automatic fres_t fp_arith_raw(input logic [3:0] op, input logic [79:0] av,
                                      input logic [79:0] bv, input logic [79:0] cv,
                                      input logic [3:0] f, input logic [1:0] rm,
                                      input logic daz, input logic ftz, input int prec,
@@ -259,14 +290,18 @@ package v1_fp_pkg;
     if (op == 4'd6 || op == 4'd7) begin
       // MINSS/MAXSS: if either is NaN, or both are zero, the second source
       logic lt;
+      logic [79:0] ad, bd;
+      // a denormal taken as zero (DAZ) comes back as that zero
+      ad = a.zero ? 80'(a.sign) << (width(f) - 1) : av;
+      bd = (b.zero && !b.nan) ? 80'(b.sign) << (width(f) - 1) : bv;
       if (a.nan || b.nan) begin
-        r.v = bv;
+        r.v = bd;
         r.x[XIE] = 1'b1;
         return r;
       end
       lt = cmp_lt(a, b);
-      r.v = (op == 4'd6) ? ((lt) ? av : bv) : ((cmp_lt(b, a)) ? av : bv);
-      if (a.zero && b.zero) r.v = bv;
+      r.v = (op == 4'd6) ? ((lt) ? ad : bd) : ((cmp_lt(b, a)) ? ad : bd);
+      if (a.zero && b.zero) r.v = bd;
       r.x[XDE] = a.denorm || b.denorm;
       return r;
     end
@@ -348,7 +383,8 @@ package v1_fp_pkg;
       end
       4'd4: begin
         if (a.zero) begin
-          r.v = av;
+          // +-0 (a denormal under DAZ too: not the input's bits)
+          r.v = 80'(a.sign) << (width(f) - 1);
           return r;
         end
         if (a.sign) begin
