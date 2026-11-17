@@ -388,6 +388,7 @@ module v1_core
   function automatic logic [3:0] imm_bytes(input logic [3:0] k, input logic [1:0] osz);
     case (k)
       4'd8: return (osz == 2'd1) ? 4'd4 : 4'd6;     // far pointer: offset, selector
+      4'd9: return (asz_now == 2'd0) ? 4'd2 : (asz_now == 2'd1 ? 4'd4 : 4'd8);   // moffs
       4'd0: return 4'd0;
       4'd1: return 4'd1;
       4'd2: return 4'd2;
@@ -843,6 +844,8 @@ module v1_core
                     v = imm_r;
                   end else if (attr.imm == 4'd8) begin
                     // the offset, zero-extended
+                  end else if (attr.imm == 4'd9) begin
+                    // moffs: an unsigned offset
                   end else if (imm_i + 1 == imm_n && !attr.immz) begin
                     case (imm_n)
                       4'd1: v = {{56{v[7]}}, v[7:0]};
@@ -868,6 +871,10 @@ module v1_core
                 nrip <= nr;
                 `ifdef V1_DEBUG $display("finish map=%0d opc=%h mode=%0d osz=%0d idx=%0d ds=%0d", dmap, dopc, mode, dosz, idx, ds); `endif
                 e = calc_ea(nr, dseg);
+                if (attr.moffs) begin
+                  e = imm_r;
+                  dseg = 3'd3;
+                end
                 ea <= e;
                 easeg <= (pseg != 3'd7 && !(m64 && pseg < 3'd4)) ? pseg : dseg;
                 rr = {rex_v & rex[2], modrm[5:3]};
@@ -878,7 +885,7 @@ module v1_core
                 if (!attr.valid) upc <= UADDR_UD;
                 else upc <= uentry(dmap == 2'd0 && dopc == 8'h90 && !(rex_v && rex[0]),
                                    mode, dmap, plus_base(dopc),
-                                   modrm[5:3], pk, dosz, has_modrm && modrm[7:6] != 2'd3,
+                                   modrm[5:3], pk, dosz, (has_modrm && modrm[7:6] != 2'd3) || attr.moffs,
                                    dasz, ssz);
                 st <= S_EXEC;
               end

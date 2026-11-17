@@ -23,7 +23,7 @@ IMUL
 DIV
 IDIV
 # data movement
-MOV                 skip='moffs|r16/r32/m16|r64/m16'  sreg
+MOV                 skip='r16/r32/m16|r64/m16'  sreg
 MOVZX
 MOVSX_MOVSXD        skip='MOVSXD r16'
 LEA                 memonly
@@ -39,7 +39,7 @@ CMPXCHG
 PUSH                class=d64
 POP                 class=d64  skip='POP CS'
 CALL                class=f64
-RET                 class=f64  immz
+RET                 class=f64  immz  immnotsize   # imm16 is a byte count, not the operand size
 JMP                 class=f64
 Jcc                 skip='CXZ'               class=f64
 LEAVE               class=d64
@@ -77,8 +77,8 @@ SCAS_SCASB_SCASW_SCASD         rep=F3,F2  suffixed=SCAS  only='SCAS[BWDQ]$'
 # system
 IN                  immz
 OUT                 immz
-PUSHF_PUSHFD_PUSHFQ only='PUSHFQ|^9C.*PUSHF$'  class=d64  osz=PUSHF:16,PUSHFQ:64
-POPF_POPFD_POPFQ    only='POPFQ|^9D.*POPF$'    class=d64  osz=POPF:16,POPFQ:64
+PUSHF_PUSHFD_PUSHFQ class=d64  osz=PUSHF:16,PUSHFD:32,PUSHFQ:64
+POPF_POPFD_POPFQ    class=d64  osz=POPF:16,POPFD:32,POPFQ:64
 CLI
 STI
 INT_n_INTO_INT3_INT1 skip='INTO'  immz

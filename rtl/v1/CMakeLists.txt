@@ -6,6 +6,7 @@ vibe86_ucode(v1)
 set(V1_RTL
   ${v1_UOP_PKG}
   ${v1_UCODE_PKG}
+  ${CMAKE_CURRENT_SOURCE_DIR}/v1_fpu.sv
   ${CMAKE_CURRENT_SOURCE_DIR}/v1_alu.sv
   ${CMAKE_CURRENT_SOURCE_DIR}/v1_core.sv)
 set_source_files_properties(${v1_UOP_PKG} ${v1_UCODE_PKG} PROPERTIES GENERATED TRUE)

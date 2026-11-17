@@ -69,7 +69,9 @@ FI;
 # JMP's Operation, "IF far jump and ... PE = 1 ... code segment" branches,
 # and Vol. 3A 5.8.1 "Direct Calls or Jumps to Code Segments". RPL is the
 # privilege the new CS takes (CPL for JMP/CALL, the selector's RPL for
-# returns). Sets CPL.
+# returns). ISRETURN: 0 a direct far JMP/CALL, 1 a return (RET, IRET),
+# 2 the target of a call gate (its privilege rules were checked already).
+# Sets CPL.
 @subroutine LoadCodeSegment(SELECTOR, NEWCPL, ISRETURN)
 s := SELECTOR AND FFFFH;
 IF CR0.PE = 0 OR RFLAGS.VM = 1
@@ -91,6 +93,7 @@ IF CR0.PE = 0 OR RFLAGS.VM = 1
                 IF dpl > NEWCPL THEN #GP(s AND FFFCH); FI;
             ELSE
                 IF ISRETURN = 0 AND (rpl > CPL OR dpl != CPL) THEN #GP(s AND FFFCH); FI;
+                IF ISRETURN = 2 AND dpl != NEWCPL THEN #GP(s AND FFFCH); FI;
                 IF ISRETURN = 1 AND dpl != rpl THEN #GP(s AND FFFCH); FI;
         FI;
         IF (SHR(d, 47) AND 1) = 0 THEN #NP(s AND FFFCH); FI;
@@ -274,13 +277,13 @@ IF ISCALL = 1 AND (SHR(cd, 42) AND 1) = 0 AND cdpl < oldcpl
                 RSP := Linear64[TR_BASE + 4 + SHL(cdpl, 3)];
                 WriteSpecial(SS_SEL, cdpl);
                 WriteSpecial(SS_BASE, 0);
-                LoadCodeSegment(csel, cdpl, 0);
+                LoadCodeSegment(csel, cdpl, 2);
             ELSE
                 nss := Linear16[TR_BASE + 8 + SHL(cdpl, 3)];
                 nsp := Linear32[TR_BASE + 4 + SHL(cdpl, 3)];
                 ossb := SS_BASE;
                 pcount := SHR(GD, 32) AND 1FH;
-                LoadCodeSegment(csel, cdpl, 0);
+                LoadCodeSegment(csel, cdpl, 2);
                 LoadSegment(2, nss);
                 ESP := nsp;
         FI;
@@ -300,7 +303,7 @@ IF ISCALL = 1 AND (SHR(cd, 42) AND 1) = 0 AND cdpl < oldcpl
         FI;
     ELSE
         IF (SHR(cd, 42) AND 1) = 0 AND cdpl != oldcpl THEN #GP(csel AND FFFCH); FI;
-        LoadCodeSegment(csel, oldcpl, 0);
+        LoadCodeSegment(csel, oldcpl, 2);
 FI;
 IF ISCALL = 1 THEN
     PushW(oldcs, gw);

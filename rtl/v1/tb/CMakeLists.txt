@@ -15,3 +15,4 @@ function(v1_testbench name)
 endfunction()
 
 v1_testbench(tb_alu)
+v1_testbench(tb_fpu)

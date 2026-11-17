@@ -76,7 +76,8 @@ def read_isa(path):
                     cfg[k] = {a: int(b) for a, b in (x.split(":") for x in v.split(","))}
                 elif k in ("rep", "suffixed"):
                     cfg[k] = v.split(",")
-                elif k in ("memonly", "immz", "cc", "sreg", "crreg", "anymod", "anyosz"):
+                elif k in ("memonly", "immz", "cc", "sreg", "crreg", "anymod", "anyosz",
+                           "immnotsize"):
                     cfg[k] = True
                 else:
                     cfg[k] = v
@@ -205,6 +206,8 @@ def routine_signature(r):
 
 def imm_kind(fs):
     """Immediate length class of one (map, opc, digit) from its rows."""
+    if any(f.hints.get("moffs") for f in fs):
+        return 9                    # moffs: an offset of the address size
     by = {}
     for f in fs:
         by.setdefault(f.okey, set()).add(sum(f.imm))
@@ -255,10 +258,11 @@ def sv_tables(forms, image, cfg_of):
             sens = any(f.prefix_key() for f in fs)
             immz = any(cfg_of(f).get("immz") for f in gfs)
             plus_r = any(f.plus_r for f in gfs)
+            moffs = any(f.hints.get("moffs") for f in gfs)
             dbits = "???" if dg is None else format(dg, "03b")
             out.append(f"    14'b{int(m64)}_{m:02b}_{o:08b}_{dbits}: d = '{{valid: 1'b1, "
                        f"modrm: 1'b{int(modrm)}, imm: 4'd{ik}, immz: 1'b{int(immz)}, cls: 2'd{cls}, "
-                       f"pfx_sens: 1'b{int(sens)}, plus_r: 1'b{int(plus_r)}}};")
+                       f"pfx_sens: 1'b{int(sens)}, plus_r: 1'b{int(plus_r)}, moffs: 1'b{int(moffs)}}};")
     out.append("    default: d = '0;")
     out.append("  endcase")
     out.append("  return d;")
@@ -436,11 +440,12 @@ def main():
            f"  localparam logic [UADDR_W-1:0] UADDR_DELIVER = {image.addr['DELIVER']};",
            f"  localparam logic [UADDR_W-1:0] UADDR_WALK = {image.addr['WALK']};",
            "  // decoder attributes: imm 0 none, 1/2/3/4 bytes, 5 iw/id (z), 6 iw/id/io (v), 7 8 bytes,",
-           "  //   8 a far pointer (z bytes of offset into IMM, then a 2-byte selector into IMM2);",
+           "  //   8 a far pointer (z bytes of offset into IMM, then a 2-byte selector into IMM2),",
+           "  //   9 a memory offset of the address size (moffs: it is the effective address);",
            "  // cls 0 default 32-bit operands, 1 default 64 (66h -> 16), 2 always 64",
            "  typedef struct packed {",
            "    logic valid; logic modrm; logic [3:0] imm; logic immz; logic [1:0] cls;",
-           "    logic pfx_sens; logic plus_r;",
+           "    logic pfx_sens; logic plus_r; logic moffs;",
            "  } dattr_t;",
            f"  localparam logic [UOP_W-1:0] UROM [UROM_N] = '{{"]
     out.append(",\n".join(f"    {U.WIDTH}'h{w:0{(U.WIDTH + 3) // 4}x}" for w in words))

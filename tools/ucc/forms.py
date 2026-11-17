@@ -171,11 +171,12 @@ def parse_operands(f, enc):
     ins = f.text.replace(" ,", ",")
     # footnote marks on operands: 'MOV Sreg, r/m162', 'MOV r64/m16, Sreg2'
     ins = re.sub(r"\b(Sreg|r/m16|r/m64|r/m32)\d\b", r"\1", ins)
+    ins = re.sub(r"\bmoffs(8|16|64)3\b", r"moffs\1", ins)
     parts = ins.split(None, 1)
     f.mnem = parts[0]
     ops = [o.strip() for o in parts[1].split(",")] if len(parts) > 1 else []
     # description text pdftotext ran into the column ('JB rel32, -bit mode.')
-    ops = [o for o in ops if not re.search(r"[a-z]{3,}", o.replace("imm", "").replace("rel", "").replace("ptr", "").replace("Sreg", ""))]
+    ops = [o for o in ops if not re.search(r"[a-z]{3,}", o.replace("imm", "").replace("rel", "").replace("ptr", "").replace("Sreg", "").replace("moffs", ""))]
     roles = enc.get(f.open, [])
     for i, o in enumerate(ops):
         role = roles[i] if i < len(roles) else ""
@@ -194,6 +195,10 @@ def parse_operands(f, enc):
                 kind = "imm"
             elif k == "rel":
                 kind = "rel"
+            elif k == "moffs":
+                # a memory operand whose offset is the immediate (A0-A3)
+                kind = "mem"
+                f.hints["moffs"] = True
             else:
                 raise FormError(f"operand '{o}'")
             f.operands.append(Operand(kind, sz, text=o))
@@ -234,7 +239,7 @@ def operand_size(f):
         if o.kind in ("farptr", "farmem"):
             return min(o.size, 64)
     for o in f.operands:
-        if o.kind in ("imm", "rel") and o.size == 16:
+        if o.kind in ("imm", "rel") and o.size == 16 and not f.cfg.get("immnotsize"):
             return 16
     if "osz" in f.hints:
         return f.hints["osz"]
@@ -324,7 +329,7 @@ def make_forms(page, cfg):
             # mode): operand size from the row, or every legal size for rows that
             # don't say (RET, PUSHF, Jcc rel32 is 32-bit, rel16 16-bit)
             lsz = operand_size(f)
-            if lsz is None:
+            if lsz is None and not cfg.get("immnotsize"):
                 for o in f.operands:
                     if o.kind in ("imm", "rel") and o.text.endswith(("16", "32")):
                         lsz = int(o.text[-2:])

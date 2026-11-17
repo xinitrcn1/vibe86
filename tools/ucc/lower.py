@@ -633,6 +633,11 @@ class Lowerer:
             st = self.static(e.n)
             if st is not None:
                 return K(st)
+            if e.n == "IOPL":
+                # the two-bit I/O privilege level, RFLAGS[13:12]
+                t = self.tmp()
+                self.E("SLICE", 64, dst=t, a="FLAGS", imm=12 | (2 << 8))
+                return V("sel", 8, sel=t)
             if e.n in FLAG or e.n == "INTF":
                 t = self.tmp()
                 self.E("GETF", 8, dst=t, imm=FLAG[{"INTF": "IF"}.get(e.n, e.n)])
