@@ -1,0 +1,226 @@
+# vibe86 die interface: the pins of a processor die (one or more cores) that
+# face the rest of the package and the system. Every core version
+# (rtl/<version>) has exactly these ports, so vsim and any other harness
+# drive all versions the same way (docs/platform.md, "The core-uncore bus").
+#
+# tools/gen/rtlgen.py generates from this (build tree, not git):
+#   vibe86_die_pkg.sv     widths as localparams (DIE_<NAME>_W)
+#   vibe86_die_ports.svh  the module port list a core includes
+#   vibe86_die.h          the C++ pin struct for vsim (sim/cpu.h) and
+#                         die_in()/die_out() copying it to/from a Verilated
+#                         model for one core
+#
+# Fields: dir (in/out), width, c (the C++ member: 'x' for a die-wide pin,
+# 'ev[].vector' for a per-core array of structs), route (an input that goes
+# to one core: the C++ member naming that core), desc.
+
+[structs]                                 # C++ per-core structs: member -> type name
+ev = "event"
+rt = "retire"
+
+[[pin]]
+name = "clk"
+dir = "in"
+width = 1
+desc = "core clock"
+
+[[pin]]
+name = "rst_n"
+dir = "in"
+width = 1
+desc = "RESET# (active low): cold and warm reset"
+
+# --- the core-uncore bus: one transaction at a time, held until acknowledged
+[[pin]]
+name = "bus_req"
+dir = "out"
+width = 1
+desc = "a transaction is requested"
+
+[[pin]]
+name = "bus_we"
+dir = "out"
+width = 1
+desc = "write (else read)"
+
+[[pin]]
+name = "bus_io"
+dir = "out"
+width = 1
+desc = "I/O space (IN/OUT): bus_addr is the port"
+
+[[pin]]
+name = "bus_addr"
+dir = "out"
+width = 64
+desc = "physical address or I/O port"
+
+[[pin]]
+name = "bus_size"
+dir = "out"
+width = 3
+desc = "log2 bytes: 0..4, 6 for a 64-byte line"
+
+[[pin]]
+name = "bus_wdata"
+dir = "out"
+width = 512
+desc = "write data, byte 0 = the lowest address"
+
+[[pin]]
+name = "bus_ack"
+dir = "in"
+width = 1
+desc = "the transaction completed"
+
+[[pin]]
+name = "bus_err"
+dir = "in"
+width = 1
+desc = "with bus_ack: nothing decoded the address"
+
+[[pin]]
+name = "bus_rdata"
+dir = "in"
+width = 512
+desc = "read data, byte 0 = the lowest address"
+
+# --- interrupts and machine checks from the uncore
+[[pin]]
+name = "intr_valid"
+dir = "in"
+width = 1
+route = "intr_core"
+desc = "a maskable interrupt request (level) with its vector"
+
+[[pin]]
+name = "intr_vector"
+dir = "in"
+width = 8
+desc = "the interrupt's vector"
+
+[[pin]]
+name = "intr_ack"
+dir = "out"
+width = 1
+c = "intr_ack[]"
+desc = "the core took the maskable interrupt (the INTA cycle, one pulse)"
+
+[[pin]]
+name = "nmi"
+dir = "in"
+width = 1
+route = "nmi_core"
+desc = "NMI (one-cycle pulse)"
+
+[[pin]]
+name = "mce_valid"
+dir = "in"
+width = 1
+route = "mce_core"
+desc = "a machine check (one-cycle pulse)"
+
+[[pin]]
+name = "mce_type"
+dir = "in"
+width = 2
+desc = "1 corrected, 2 uncorrected"
+
+[[pin]]
+name = "mce_addr"
+dir = "in"
+width = 64
+desc = "the machine check's physical address"
+
+# --- trace (debug port): retirement and events, per core
+[[pin]]
+name = "rt_valid"
+dir = "out"
+width = 1
+c = "rt[].valid"
+desc = "an instruction retired"
+
+[[pin]]
+name = "rt_rip"
+dir = "out"
+width = 64
+c = "rt[].rip"
+desc = "its RIP"
+
+[[pin]]
+name = "rt_len"
+dir = "out"
+width = 4
+c = "rt[].len"
+desc = "its length (1..15)"
+
+[[pin]]
+name = "rt_bytes"
+dir = "out"
+width = 128
+c = "rt[].bytes"
+ctype = "bytes"
+desc = "its bytes"
+
+[[pin]]
+name = "rt_uops"
+dir = "out"
+width = 8
+c = "rt[].uops"
+desc = "micro-ops it took"
+
+[[pin]]
+name = "ev_valid"
+dir = "out"
+width = 1
+c = "ev[].valid"
+desc = "an exception or interrupt was delivered"
+
+[[pin]]
+name = "ev_vector"
+dir = "out"
+width = 8
+c = "ev[].vector"
+desc = "its vector"
+
+[[pin]]
+name = "ev_has_error"
+dir = "out"
+width = 1
+c = "ev[].has_error"
+desc = "it pushed an error code"
+
+[[pin]]
+name = "ev_error"
+dir = "out"
+width = 32
+c = "ev[].error"
+desc = "the error code"
+
+[[pin]]
+name = "ev_rip"
+dir = "out"
+width = 64
+c = "ev[].rip"
+desc = "RIP of the faulting or interrupted instruction"
+
+[[pin]]
+name = "shutdown"
+dir = "out"
+width = 1
+c = "shutdown[]"
+desc = "shut down (triple fault) until reset"
+
+[[pin]]
+name = "halted"
+dir = "out"
+width = 1
+c = "halted[]"
+desc = "halted (HLT)"
+
+[[pin]]
+name = "shutdown_rip"
+dir = "out"
+width = 64
+c = "shutdown_rip[]"
+desc = "RIP at the shutdown"

@@ -1,0 +1,163 @@
+# vibe86 CPUID: the processor's identity and its feature bits.
+#
+# tools/gen/rtlgen.py turns this into rtl/common's vibe86_cpuid_pkg (in the
+# build tree, not in git): per core version, a function cpuid_<version>(leaf,
+# subleaf) returning {EDX, ECX, EBX, EAX}, and the reset signature (EDX after
+# reset = CPUID.1:EAX). The core ORs in the fields that depend on state
+# (marked 'dynamic' below).
+#
+# The feature baseline is the target ISA (docs/decisions.md D-007): AMD EPYC
+# "Venice" (Zen 6) as QEMU's EPYC-Venice CPU model defines it (qemu-devel,
+# "[PATCH v2 0/4] Add Support for AMD EPYC Zen 6 CPU Model", 25 Aug 2026:
+# EPYC-Turin plus AVX512-FP16, AVX-IFMA, AVX-NE-CONVERT, AVX-VNNI-INT8,
+# AVX512-BMM, ERAPS, TSC_ADJUST and CET_SS). Bit positions: Intel SDM Vol. 2A,
+# CPUID (leaves 1, 6, 7, 0Dh) and AMD64 Architecture Programmer's Manual
+# Vol. 3 (pub. 24594), appendix E (leaves 8000_00xxh). 'verify' marks
+# AMD-defined positions taken from QEMU's target/i386/cpu.h.
+#
+# A feature is reported by the core versions from 'since' on; one without
+# 'since' is in the target but not implemented yet (CPUID reports 0), so
+# software never sees a feature the core would #UD on. When every feature
+# has a 'since', CPUID reports the full Venice baseline.
+
+# Feature bits: leaf, subleaf (default 0), register, bit, name, since.
+feature = [
+  { leaf = 0x1, reg = "ecx", bit = 0,  name = "SSE3" },
+  { leaf = 0x1, reg = "ecx", bit = 1,  name = "PCLMULQDQ" },
+  { leaf = 0x1, reg = "ecx", bit = 3,  name = "MONITOR", since = "v1" },
+  { leaf = 0x1, reg = "ecx", bit = 9,  name = "SSSE3" },
+  { leaf = 0x1, reg = "ecx", bit = 12, name = "FMA" },
+  { leaf = 0x1, reg = "ecx", bit = 13, name = "CX16", since = "v1" },
+  { leaf = 0x1, reg = "ecx", bit = 17, name = "PCID" },
+  { leaf = 0x1, reg = "ecx", bit = 19, name = "SSE4_1" },
+  { leaf = 0x1, reg = "ecx", bit = 20, name = "SSE4_2" },
+  { leaf = 0x1, reg = "ecx", bit = 22, name = "MOVBE", since = "v1" },
+  { leaf = 0x1, reg = "ecx", bit = 23, name = "POPCNT", since = "v1" },
+  { leaf = 0x1, reg = "ecx", bit = 25, name = "AES" },
+  { leaf = 0x1, reg = "ecx", bit = 26, name = "XSAVE" },
+  { leaf = 0x1, reg = "ecx", bit = 28, name = "AVX" },
+  { leaf = 0x1, reg = "ecx", bit = 29, name = "F16C" },
+  { leaf = 0x1, reg = "ecx", bit = 30, name = "RDRAND", since = "v1" },
+  { leaf = 0x1, reg = "edx", bit = 0,  name = "FPU" },
+  { leaf = 0x1, reg = "edx", bit = 1,  name = "VME" },
+  { leaf = 0x1, reg = "edx", bit = 2,  name = "DE" },
+  { leaf = 0x1, reg = "edx", bit = 3,  name = "PSE", since = "v1" },
+  { leaf = 0x1, reg = "edx", bit = 4,  name = "TSC", since = "v1" },
+  { leaf = 0x1, reg = "edx", bit = 5,  name = "MSR", since = "v1" },
+  { leaf = 0x1, reg = "edx", bit = 6,  name = "PAE", since = "v1" },
+  { leaf = 0x1, reg = "edx", bit = 7,  name = "MCE" },
+  { leaf = 0x1, reg = "edx", bit = 8,  name = "CX8", since = "v1" },
+  { leaf = 0x1, reg = "edx", bit = 9,  name = "APIC" },
+  { leaf = 0x1, reg = "edx", bit = 11, name = "SEP", since = "v1" },
+  { leaf = 0x1, reg = "edx", bit = 12, name = "MTRR" },
+  { leaf = 0x1, reg = "edx", bit = 13, name = "PGE", since = "v1" },
+  { leaf = 0x1, reg = "edx", bit = 14, name = "MCA" },
+  { leaf = 0x1, reg = "edx", bit = 15, name = "CMOV", since = "v1" },
+  { leaf = 0x1, reg = "edx", bit = 16, name = "PAT", since = "v1" },
+  { leaf = 0x1, reg = "edx", bit = 17, name = "PSE36" },
+  { leaf = 0x1, reg = "edx", bit = 19, name = "CLFSH", since = "v1" },
+  { leaf = 0x1, reg = "edx", bit = 23, name = "MMX" },
+  { leaf = 0x1, reg = "edx", bit = 24, name = "FXSR" },
+  { leaf = 0x1, reg = "edx", bit = 25, name = "SSE" },
+  { leaf = 0x1, reg = "edx", bit = 26, name = "SSE2" },
+  { leaf = 0x6, reg = "eax", bit = 2,  name = "ARAT" },
+  { leaf = 0x7, reg = "ebx", bit = 0,  name = "FSGSBASE", since = "v1" },
+  { leaf = 0x7, reg = "ebx", bit = 1,  name = "TSC_ADJUST" },
+  { leaf = 0x7, reg = "ebx", bit = 3,  name = "BMI1", since = "v1" },
+  { leaf = 0x7, reg = "ebx", bit = 5,  name = "AVX2" },
+  { leaf = 0x7, reg = "ebx", bit = 7,  name = "SMEP", since = "v1" },
+  { leaf = 0x7, reg = "ebx", bit = 8,  name = "BMI2" },
+  { leaf = 0x7, reg = "ebx", bit = 9,  name = "ERMS" },
+  { leaf = 0x7, reg = "ebx", bit = 10, name = "INVPCID", since = "v1" },
+  { leaf = 0x7, reg = "ebx", bit = 16, name = "AVX512F" },
+  { leaf = 0x7, reg = "ebx", bit = 17, name = "AVX512DQ" },
+  { leaf = 0x7, reg = "ebx", bit = 18, name = "RDSEED", since = "v1" },
+  { leaf = 0x7, reg = "ebx", bit = 19, name = "ADX", since = "v1" },
+  { leaf = 0x7, reg = "ebx", bit = 20, name = "SMAP", since = "v1" },
+  { leaf = 0x7, reg = "ebx", bit = 21, name = "AVX512IFMA" },
+  { leaf = 0x7, reg = "ebx", bit = 23, name = "CLFLUSHOPT", since = "v1" },
+  { leaf = 0x7, reg = "ebx", bit = 24, name = "CLWB", since = "v1" },
+  { leaf = 0x7, reg = "ebx", bit = 28, name = "AVX512CD" },
+  { leaf = 0x7, reg = "ebx", bit = 29, name = "SHA" },
+  { leaf = 0x7, reg = "ebx", bit = 30, name = "AVX512BW" },
+  { leaf = 0x7, reg = "ebx", bit = 31, name = "AVX512VL" },
+  { leaf = 0x7, reg = "ecx", bit = 1,  name = "AVX512_VBMI" },
+  { leaf = 0x7, reg = "ecx", bit = 2,  name = "UMIP" },
+  { leaf = 0x7, reg = "ecx", bit = 3,  name = "PKU" },
+  { leaf = 0x7, reg = "ecx", bit = 6,  name = "AVX512_VBMI2" },
+  { leaf = 0x7, reg = "ecx", bit = 7,  name = "CET_SS" },
+  { leaf = 0x7, reg = "ecx", bit = 8,  name = "GFNI" },
+  { leaf = 0x7, reg = "ecx", bit = 9,  name = "VAES" },
+  { leaf = 0x7, reg = "ecx", bit = 10, name = "VPCLMULQDQ" },
+  { leaf = 0x7, reg = "ecx", bit = 11, name = "AVX512_VNNI" },
+  { leaf = 0x7, reg = "ecx", bit = 12, name = "AVX512_BITALG" },
+  { leaf = 0x7, reg = "ecx", bit = 14, name = "AVX512_VPOPCNTDQ" },
+  { leaf = 0x7, reg = "ecx", bit = 16, name = "LA57", since = "v1" },
+  { leaf = 0x7, reg = "ecx", bit = 22, name = "RDPID", since = "v1" },
+  { leaf = 0x7, reg = "ecx", bit = 27, name = "MOVDIRI", since = "v1" },
+  { leaf = 0x7, reg = "ecx", bit = 28, name = "MOVDIR64B", since = "v1" },
+  { leaf = 0x7, reg = "edx", bit = 4,  name = "FSRM" },
+  { leaf = 0x7, reg = "edx", bit = 8,  name = "AVX512_VP2INTERSECT" },
+  { leaf = 0x7, reg = "edx", bit = 23, name = "AVX512_FP16" },
+  { leaf = 0x7, sub = 1, reg = "eax", bit = 5,  name = "AVX512_BF16" },
+  { leaf = 0x7, sub = 1, reg = "eax", bit = 23, name = "AVX_IFMA" },
+  { leaf = 0x7, sub = 1, reg = "edx", bit = 4,  name = "AVX_VNNI_INT8" },
+  { leaf = 0x7, sub = 1, reg = "edx", bit = 5,  name = "AVX_NE_CONVERT" },
+  { leaf = 0x8000_0001, reg = "ecx", bit = 0,  name = "LAHF_LM", since = "v1" },
+  { leaf = 0x8000_0001, reg = "ecx", bit = 2,  name = "SVM" },
+  { leaf = 0x8000_0001, reg = "ecx", bit = 4,  name = "CR8LEG" },
+  { leaf = 0x8000_0001, reg = "ecx", bit = 5,  name = "ABM", since = "v1" },
+  { leaf = 0x8000_0001, reg = "ecx", bit = 6,  name = "SSE4A" },
+  { leaf = 0x8000_0001, reg = "ecx", bit = 7,  name = "MISALIGNSSE" },
+  { leaf = 0x8000_0001, reg = "ecx", bit = 8,  name = "3DNOWPREFETCH" },
+  { leaf = 0x8000_0001, reg = "ecx", bit = 9,  name = "OSVW" },
+  { leaf = 0x8000_0001, reg = "ecx", bit = 22, name = "TOPOEXT" },
+  { leaf = 0x8000_0001, reg = "ecx", bit = 23, name = "PERFCORE" },
+  { leaf = 0x8000_0001, reg = "edx", bit = 11, name = "SYSCALL", since = "v1" },
+  { leaf = 0x8000_0001, reg = "edx", bit = 20, name = "NX", since = "v1" },
+  { leaf = 0x8000_0001, reg = "edx", bit = 22, name = "MMXEXT" },
+  { leaf = 0x8000_0001, reg = "edx", bit = 25, name = "FFXSR" },
+  { leaf = 0x8000_0001, reg = "edx", bit = 26, name = "PDPE1GB", since = "v1" },
+  { leaf = 0x8000_0001, reg = "edx", bit = 27, name = "RDTSCP", since = "v1" },
+  { leaf = 0x8000_0001, reg = "edx", bit = 29, name = "LM", since = "v1" },
+  { leaf = 0x8000_0008, reg = "ebx", bit = 0,  name = "CLZERO" },
+  { leaf = 0x8000_0021, reg = "eax", bit = 23, name = "AVX512_BMM", verify = true },
+  { leaf = 0x8000_0021, reg = "eax", bit = 24, name = "ERAPS", verify = true },
+]
+
+[identity]
+vendor = "VibingVibing"                  # leaf 0: EBX, EDX, ECX (12 characters)
+family = 0x1A                            # AMD Zen 5/Zen 6 family (base 0Fh + extended 0Bh)
+model = 0x00                             # vibe86's own: no AMD model number
+stepping = 1
+brand = "vibe86 Venice-class microcoded processor"   # leaves 8000_0002h-8000_0004h (<= 48 bytes)
+clflush_line = 64                        # CPUID.1:EBX[15:8] x 8 bytes
+phys_addr_bits = 52                      # CPUID.8000_0008h:EAX[7:0] (the walk keeps PTE bits 51:12)
+lin_addr_bits = 57                       # CPUID.8000_0008h:EAX[15:8] (5-level paging)
+
+# leaf 1 EBX[31:24] (initial APIC ID) and ECX[27] (OSXSAVE = CR4.OSXSAVE) are
+# dynamic; leaf 7.0 EAX (max subleaf) and the max leaves are computed.
+
+# Leaves that only hold constants beyond the feature bits.
+[[leaf]]
+leaf = 0x6
+eax = 0x4                                # ARAT is a feature bit below; nothing else
+
+[[leaf]]
+leaf = 0x7
+sub = 0
+eax = 1                                  # subleaves 0..1
+
+[[leaf]]
+leaf = 0xD                               # XSAVE enumeration: zeros until XSAVE is implemented
+sub = 0
+
+[[leaf]]
+leaf = 0x8000_0021
+
+# Not yet positioned (AMD-defined; check the APM): 8000_0007 EBX
+# OVERFLOW_RECOV/SUCCOR, 8000_0008 EBX XSAVEERPTR/WBNOINVD/IBPB/IBRS/STIBP/
+# STIBP_ALWAYS_ON/AMD_SSBD/AMD_PSFD, 8000_0021 EAX NO_NESTED_DATA_BP/
+# FS_GS_BASE_NS/LFENCE_ALWAYS_SERIALIZING/NULL_SEL_CLR_BASE/AUTO_IBRS/
+# PREFETCHI/SBPB/IBPB_BRTYPE/SRSO_USER_KERNEL_NO, 8000_0022 EAX PERFMON_V2,
+# leaf 0Dh XSAVEOPT/XSAVEC/XGETBV1/XSAVES, the SVM leaf 8000_000Ah.

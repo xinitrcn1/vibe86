@@ -13,46 +13,17 @@
 //            a TLB whose misses trap to the WALK microcode routine (D-008);
 //   events   exceptions and interrupts enter the DELIVER routine.
 //
-// Reset state: Intel SDM Vol. 3A, 10.1.1 "Processor State After Reset"
-// (Table 10-1): real mode, CS.base FFFF_0000H, IP FFF0H.
+// Reset state: rtl/common/reset.toml (vibe86_reset_pkg, generated), after
+// Intel SDM Vol. 3A 10.1.1 (Table 10-1) and AMD APM Vol. 2 Table 14-1. The
+// ports are the die interface, rtl/common/pins.toml (vibe86_die_ports.svh);
+// v1 uses 128 of the bus's 512 data bits.
 module v1_core
   import v1_uop_pkg::*;
   import v1_ucode_pkg::*;
+  import vibe86_reset_pkg::*;
+  import vibe86_cpuid_pkg::*;
 (
-  input  logic         clk,
-  input  logic         rst_n,
-  // core-uncore bus
-  output logic         bus_req,
-  output logic         bus_we,
-  output logic         bus_io,
-  output logic [63:0]  bus_addr,
-  output logic [2:0]   bus_size,
-  output logic [127:0] bus_wdata,
-  input  logic         bus_ack,
-  input  logic         bus_err,
-  input  logic [127:0] bus_rdata,
-  // events from the uncore
-  input  logic         intr_valid,      // a maskable interrupt request (level), and its vector
-  input  logic [7:0]   intr_vector,
-  output logic         intr_ack,        // taken: the INTA cycle (one pulse)
-  input  logic         nmi,
-  input  logic         mce_valid,
-  input  logic [1:0]   mce_type,
-  input  logic [63:0]  mce_addr,
-  // trace
-  output logic         rt_valid,
-  output logic [63:0]  rt_rip,
-  output logic [3:0]   rt_len,
-  output logic [127:0] rt_bytes,
-  output logic [7:0]   rt_uops,
-  output logic         ev_valid,
-  output logic [7:0]   ev_vector,
-  output logic         ev_has_error,
-  output logic [31:0]  ev_error,
-  output logic [63:0]  ev_rip,
-  output logic         shutdown,
-  output logic         halted,
-  output logic [63:0]  shutdown_rip
+`include "vibe86_die_ports.svh"
 );
 
   // ------------------------------------------------------------------ state
@@ -608,41 +579,24 @@ module v1_core
   endtask
 
   task automatic reset_state();
+    // architectural state: rtl/common/reset.toml
     for (int i = 0; i < 16; i++) begin
-      a_gpr[i] <= '0;
-      w_gpr[i] <= '0;
+      a_gpr[i] <= RESET_GPR[i];
+      w_gpr[i] <= RESET_GPR[i];
     end
-    a_gpr[2] <= 64'h0000_0601;  // EDX: the processor signature (CPUID.1:EAX)
-    w_gpr[2] <= 64'h0000_0601;
-    a_flags <= 64'h2;
-    w_flags <= 64'h2;
-    rip <= 64'hFFF0;
-    nrip <= 64'hFFF0;
+    a_flags <= RESET_RFLAGS;
+    w_flags <= RESET_RFLAGS;
+    rip <= RESET_RIP;
+    nrip <= RESET_RIP;
     for (int i = 0; i < 256; i++) sp[i] <= '0;
-    sp[SP_CR0[7:0]] <= 64'h6000_0010;
-    for (int s = 0; s < 6; s++) begin
-      sp[segi(s, 0)] <= 64'h0;
-      sp[segi(s, 1)] <= 64'h0;
-      sp[segi(s, 2)] <= 64'hFFFF;
-      sp[segi(s, 3)] <= 64'h93;           // present, read/write, accessed
+`include "vibe86_reset_apply.svh"
+    for (int s = 0; s < 8; s++) begin
+      sp[segi(s, 0)] <= RESET_SEG_SEL[s];
+      sp[segi(s, 1)] <= RESET_SEG_BASE[s];
+      sp[segi(s, 2)] <= RESET_SEG_LIMIT[s];
+      sp[segi(s, 3)] <= RESET_SEG_ATTR[s];
     end
-    sp[segi(1, 0)] <= 64'hF000;
-    sp[segi(1, 1)] <= 64'hFFFF_0000;
-    sp[segi(1, 3)] <= 64'h9B;             // present, execute/read, accessed
-    sp[segi(6, 2)] <= 64'hFFFF;
-    sp[segi(6, 3)] <= 64'h82;             // LDTR
-    sp[segi(7, 2)] <= 64'hFFFF;
-    sp[segi(7, 3)] <= 64'h8B;             // TR: busy 32-bit TSS
-    sp[SP_GDTR_LIMIT[7:0]] <= 64'hFFFF;
-    sp[SP_IDTR_LIMIT[7:0]] <= 64'hFFFF;
-    sp[SP_MXCSR[7:0]] <= 64'h1F80;
-    sp[SP_FCW[7:0]] <= 64'h037F;
-    sp[SP_XCR0[7:0]] <= 64'h1;
-    sp[SP_PAT[7:0]] <= 64'h0007_0406_0007_0406;
-    sp[SP_APIC_BASE[7:0]] <= 64'hFEE0_0900;
-    sp[SP_DR6[7:0]] <= 64'hFFFF_0FF0;
     rng <= 64'h9E37_79B9_7F4A_7C15;
-    sp[SP_DR7[7:0]] <= 64'h400;
     udepth <= '0;
     db_data <= '0;
     deliv_vec <= '0;
@@ -707,7 +661,7 @@ module v1_core
               if (bus_err) raise(8'd13, 1'b1, 32'd0, 1'b0, 1'b0, 1'b0);
               else begin
                 lb_v <= 1'b1;
-                lb_data <= bus_rdata;
+                lb_data <= bus_rdata[127:0];
                 ds <= dstate_e'(mdata[3:0]);   // resume
               end
             end
@@ -1139,6 +1093,19 @@ module v1_core
                 w_flags[7] <= 1'b0; w_flags[11] <= 1'b0;
               end
               U_CRC32: wr(u.dst, 2'd2, alu_res);
+              U_CPUID: begin
+                // rtl/common/cpuid.toml (vibe86_cpuid_pkg) plus the dynamic fields
+                logic [127:0] r;
+                r = cpuid_v1(w_gpr[0][31:0], w_gpr[1][31:0]);
+                if (w_gpr[0][31:0] == 32'd1) begin
+                  r[63:56] = 8'd0;                          // EBX[31:24]: initial APIC ID
+                  r[64 + 27] = sp[SP_CR4[7:0]][18];         // ECX[27]: OSXSAVE
+                end
+                w_gpr[0] <= {32'b0, r[31:0]};
+                w_gpr[3] <= {32'b0, r[63:32]};
+                w_gpr[1] <= {32'b0, r[95:64]};
+                w_gpr[2] <= {32'b0, r[127:96]};
+              end
               U_SETF: if (u.imm[5:0] != 6'd1) w_flags[u.imm[5:0]] <= va[0];
               U_DIVU, U_DIVS: begin
                 if (alu_de) begin

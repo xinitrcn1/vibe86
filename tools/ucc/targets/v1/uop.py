@@ -126,6 +126,7 @@ OPS = [
     "EXC",                 # raise vector imm[7:0]; error code a if imm[8]; imm[9] trap; imm[10] vector from a
     "HLT", "SHUTDOWN",
     "RDRAND",              # dst := random; CF := valid
+    "CPUID",               # EAX, EBX, ECX, EDX := CPUID(EAX, ECX) (rtl/common/cpuid.toml)
     "SERIALIZE",
 ]
 OP = {n: i for i, n in enumerate(OPS)}

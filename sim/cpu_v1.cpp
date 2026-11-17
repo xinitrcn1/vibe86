@@ -13,46 +13,10 @@ struct cpu_v1 : cpu {
 
 	void eval() override
 	{
-		Vv1_core &v = *m;
-		v.clk = clk;
-		v.rst_n = rst_n;
-		v.bus_ack = bus_ack;
-		v.bus_err = bus_err;
-		for (int i = 0; i < 4; i++)	/* 128 bits */
-			v.bus_rdata[i] = bus_rdata[i];
-		v.intr_valid = intr_valid && intr_core == 0;
-		v.intr_vector = intr_vector & 0xFF;
-		v.nmi = nmi && nmi_core == 0;
-		v.mce_valid = mce_valid && mce_core == 0;
-		v.mce_type = mce_type & 3;
-		v.mce_addr = mce_addr;
-		v.eval();
-		bus_req = v.bus_req;
-		bus_we = v.bus_we;
-		bus_io = v.bus_io;
-		bus_addr = v.bus_addr;
-		bus_size = v.bus_size;
-		for (int i = 0; i < 4; i++)
-			bus_wdata[i] = v.bus_wdata[i];
-		for (int i = 4; i < 16; i++)
-			bus_wdata[i] = 0;
-		event &e = ev[0];
-		e.valid = v.ev_valid;
-		e.vector = v.ev_vector;
-		e.has_error = v.ev_has_error;
-		e.error = v.ev_error;
-		e.rip = v.ev_rip;
-		retire &r = rt[0];
-		r.valid = v.rt_valid;
-		r.rip = v.rt_rip;
-		r.len = v.rt_len;
-		r.uops = v.rt_uops;
-		for (int i = 0; i < 16; i++)
-			r.bytes[i] = (uint8_t)(v.rt_bytes[i / 4] >> (8 * (i % 4)));
-		intr_ack[0] = v.intr_ack;
-		shutdown[0] = v.shutdown;
-		halted[0] = v.halted;
-		shutdown_rip[0] = v.shutdown_rip;
+		/* the die interface (rtl/common/pins.toml): v1 is one core, core 0 */
+		die_in(*this, *m, 0);
+		m->eval();
+		die_out(*this, *m, 0);
 	}
 
 	void final() override { m->final(); }

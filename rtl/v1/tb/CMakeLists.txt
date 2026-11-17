@@ -5,7 +5,7 @@ function(v1_testbench name)
   set(out ${CMAKE_CURRENT_BINARY_DIR}/${name})
   add_custom_command(OUTPUT ${out}/V${name}
     COMMAND verilator --binary --timing -Wno-fatal -Wno-WIDTH -Wno-UNUSED -j 0
-            --top-module ${name} --Mdir ${out} -o V${name}
+            -I${VIBE86_COMMON_DIR} --top-module ${name} --Mdir ${out} -o V${name}
             ${V1_RTL} ${CMAKE_CURRENT_SOURCE_DIR}/${name}.sv
     DEPENDS ${V1_RTL} ${CMAKE_CURRENT_SOURCE_DIR}/${name}.sv ucode_v1
     COMMENT "testbench ${name}"

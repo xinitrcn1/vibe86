@@ -1677,7 +1677,7 @@ class Lowerer:
                 return
             if isinstance(e, Name) and e.n in ("SHUTDOWN", "HLT", "Halt", "Shutdown", "Commit",
                                                "COMMIT", "TrapReturn", "InhibitInterrupts",
-                                               "Done"):
+                                               "Done", "CpuidRead"):
                 if e.n == "Done":
                     # leave the routine: the rest of the Operation is skipped
                     self.E("JMP", imm=self.done_label)
@@ -1687,7 +1687,7 @@ class Lowerer:
                     return
                 self.E({"SHUTDOWN": "SHUTDOWN", "Shutdown": "SHUTDOWN", "HLT": "HLT",
                         "Halt": "HLT", "Commit": "COMMIT", "COMMIT": "COMMIT",
-                        "TrapReturn": "URET"}[e.n])
+                        "TrapReturn": "URET", "CpuidRead": "CPUID"}[e.n])
                 return
             if isinstance(e, Call) and e.f == "BREAK":
                 if not self.loop_ends:

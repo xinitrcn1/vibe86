@@ -1,6 +1,7 @@
 /* vsim board model: everything outside the core (docs/platform.md) */
 #ifndef BOARD_H
 #define BOARD_H
+#include "vibe86_platform.h"	/* rtl/common/platform.toml */
 
 #include <stddef.h>
 #include <stdint.h>
@@ -26,7 +27,7 @@ extern "C" {
  */
 #define SRAM_BASE	0x00000000ull	/* test board only */
 #define SRAM_SIZE	(2ull << 20)	/* the default; vsim -M sets board_ram_size */
-#define MMIO_BASE	0xFE000000ull	/* board / uncore register block */
+#define MMIO_BASE	PLAT_MAP_MMIO_BASE	/* board / uncore register block */
 #define UART0_BASE	0xFE000000ull	/* MMIO alias of COM1 */
 #define SYSCON_BASE	0xFE001000ull
 #define STRAPS_BASE	0xFE002000ull
@@ -35,19 +36,19 @@ extern "C" {
 #define QPORT_DEPTH	4
 #define NVRAM_BASE	0xFE00A000ull
 #define NVRAM_SIZE	4096
-#define MSI_BASE	0xFEE00000ull	/* MSI window: APIC id addr[19:12], vector data[7:0] */
-#define MSI_SIZE	0x100000ull
-#define EEPROM_SIZE	(16ull << 20)
-#define EEPROM_BASE	(0x100000000ull - EEPROM_SIZE)	/* 0xFF00_0000 */
-#define RESET_VECTOR	0xFFFFFFF0ull
+#define MSI_BASE	PLAT_MAP_MSI_BASE	/* MSI window: APIC id addr[19:12], vector data[7:0] */
+#define MSI_SIZE	PLAT_MAP_MSI_SIZE
+#define EEPROM_SIZE	PLAT_MAP_FLASH_SIZE
+#define EEPROM_BASE	PLAT_MAP_FLASH_BASE	/* 0xFF00_0000 */
+#define RESET_VECTOR	PLAT_MAP_RESET_VECTOR
 #define SYSCON_NMI	0xAAAAu
 #define SYSCON_MCE	0xBB00u		/* | type */
 /* server board only: SMB_BASE, MC_BASE and the DRAM window (dram.h) */
 
 /* I/O ports (IN/OUT) */
-#define PORT_POST	0x80		/* POST code */
-#define PORT_COM1	0x3F8		/* 16550, 8 registers */
-#define PORT_RST	0xCF9		/* reset control: bit 2 resets */
+#define PORT_POST	PLAT_PORTS_POST		/* POST code */
+#define PORT_COM1	PLAT_PORTS_COM1		/* 16550, 8 registers */
+#define PORT_RST	PLAT_PORTS_RESET		/* reset control: bit 2 resets */
 #define PORT_PWR	0x604		/* power control: 2000h off, 3333h|code<<16 fail */
 
 #define STRAP_ECC_SKIP	0x1u	/* jumper: skip the cold-boot ECC check */

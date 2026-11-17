@@ -2,6 +2,7 @@
  * endpoint (docs/platform.md "PCIe") */
 #ifndef PCIE_H
 #define PCIE_H
+#include "vibe86_platform.h"	/* rtl/common/platform.toml */
 
 #include <stdint.h>
 
@@ -11,12 +12,12 @@
 extern "C" {
 #endif
 
-#define ECAM_BASE	0xE0000000ull	/* 256 buses x 1 MiB */
-#define ECAM_SIZE	0x10000000ull
-#define PCI_MEM32_BASE	0xC0000000ull	/* 32-bit BAR window */
-#define PCI_MEM32_SIZE	0x20000000ull
-#define PCI_MEM64_BASE	0x20000000000ull	/* 64-bit BAR window */
-#define PCI_MEM64_SIZE	(64ull << 30)
+#define ECAM_BASE	PLAT_MAP_ECAM_BASE	/* 256 buses x 1 MiB */
+#define ECAM_SIZE	PLAT_MAP_ECAM_SIZE
+#define PCI_MEM32_BASE	PLAT_MAP_PCI_MEM32_BASE	/* 32-bit BAR window */
+#define PCI_MEM32_SIZE	PLAT_MAP_PCI_MEM32_SIZE
+#define PCI_MEM64_BASE	PLAT_MAP_PCI_MEM64_BASE	/* 64-bit BAR window */
+#define PCI_MEM64_SIZE	PLAT_MAP_PCI_MEM64_SIZE
 #define PCI_SLOTS	8
 #define PCI_VENDOR	0x7663		/* placeholder, not PCI-SIG assigned */
 #define PCI_DEV_HOST	0x0001

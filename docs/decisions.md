@@ -70,8 +70,9 @@ The feature list is the EPYC-Venice CPU model in QEMU's
 `target/i386/cpu.c` (patch series "[PATCH v2 0/4] Add Support for AMD EPYC
 Zen 6 CPU Model", qemu-devel, 25 Aug 2026), which is EPYC-Turin plus
 AVX512-FP16, AVX-IFMA, AVX-NE-CONVERT, AVX-VNNI-INT8, AVX512-BMM, ERAPS,
-TSC_ADJUST and CET_SS. `tools/ucc/targets/<v>/features` lists it; CPUID
-reports exactly what a version implements, so partial versions stay honest.
+TSC_ADJUST and CET_SS. `rtl/common/cpuid.toml` lists it (D-013), each
+feature with the first core version that implements it; CPUID reports
+exactly what a version implements, so partial versions stay honest.
 
 SVM and AVX512-BMM are AMD-only: their semantics come from the AMD64
 Architecture Programmer's Manual (Vol. 2 "System Programming", Vol. 3/4
@@ -139,3 +140,29 @@ instruction breakpoints at decode and data breakpoints on memory micro-ops,
 and raises single-step traps (EFLAGS.TF) after an instruction, as Vol. 3A
 ch. 19 "Debug, Branch Profile, TSX, and Intel Resource Director
 Technology" describes.
+
+## D-013: shared descriptions in rtl/common, generated
+
+What every core version must agree on with the others and with the rest
+of the system is described once, as data, in `rtl/common/*.toml`, and
+`tools/gen/rtlgen.py` generates the SystemVerilog and C from it into the
+build tree (`build/rtl/common/`, not in git):
+
+| Description | What | Generated |
+|---|---|---|
+| `cpuid.toml` | identity (vendor `VibingVibing`, family 1Ah, brand, address sizes) and the Venice feature baseline, each bit with the version that first implements it | `vibe86_cpuid_pkg.sv`: `cpuid_<v>(leaf, subleaf)`, read by the `CPUID` micro-op |
+| `reset.toml` | architectural state after RESET# (Intel SDM Vol. 3A Table 10-1, AMD APM Vol. 2 Table 14-1) | `vibe86_reset_pkg.sv`, `vibe86_reset_apply.svh` |
+| `platform.toml` | clocks, socket pin groups and widths, the physical map (LAPIC, IOAPIC, HPET, MSI, ECAM, flash), legacy I/O ports, MSR addresses and defaults | `vibe86_platform_pkg.sv`, `vibe86_platform.h` (vsim's board), and the ACPI tables (`mktables.py --platform`) |
+| `pins.toml` | the die interface: every external pin of a core version, its direction, width and meaning | `vibe86_die_pkg.sv`, `vibe86_die_ports.svh` (each core's port list), `vibe86_die.h` (vsim's `struct cpu` and the copy to a Verilated model) |
+
+A core includes the generated port list and applies the reset include, so
+a description and a core can't drift apart: a register the core lacks or a
+pin it names differently fails the build. Generated SV and C come from the
+same file, so vsim's addresses, the firmware's ACPI tables and the RTL's
+agree by construction. This is the "single source of truth" register/
+interface description practice of hardware generators such as SystemRDL
+(Accellera, *SystemRDL 2.0 Register Description Language*, 2018) and
+Chisel's parameterized generators (J. Bachrach et al., "Chisel:
+Constructing Hardware in a Scala Embedded Language", DAC 2012,
+https://doi.org/10.1145/2228360.2228584), reduced to a TOML file and a
+small script.

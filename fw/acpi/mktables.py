@@ -32,7 +32,7 @@ OEMREV = 1
 CREATOR = b"VB86"
 CREATOR_REV = 1
 
-PM1A_EVT = 0x600
+PM1A_EVT = 0x600            # the defaults; --platform rtl/common/platform.toml sets them
 PM1A_CNT = 0x604
 PM_TMR = 0x608
 SCI_IRQ = 9
@@ -192,6 +192,18 @@ def main(argv):
     ncpus = 1
     if "--cpus" in argv:
         ncpus = int(argv[argv.index("--cpus") + 1])
+    if "--platform" in argv:
+        # the platform description (rtl/common/platform.toml) the RTL and vsim share
+        import tomllib
+        global PM1A_EVT, PM1A_CNT, PM_TMR, IOAPIC_BASE, LAPIC_BASE, ECAM_BASE
+        with open(argv[argv.index("--platform") + 1], "rb") as f:
+            plat = tomllib.load(f)
+        PM1A_EVT = plat["ports"]["pm1"]
+        PM1A_CNT = PM1A_EVT + 4
+        PM_TMR = PM1A_EVT + 8
+        IOAPIC_BASE = plat["map"]["ioapic_base"]
+        LAPIC_BASE = plat["map"]["lapic_base"]
+        ECAM_BASE = plat["map"]["ecam_base"]
     dsdt = open(argv[1], "rb").read()
     tables, rsdp, loader = build(dsdt, ncpus)
     os.makedirs(argv[2], exist_ok=True)

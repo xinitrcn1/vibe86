@@ -10,8 +10,9 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E make_directory ${ACPI_OUT}
   COMMAND ${IASL} -vs -p ${ACPI_OUT}/dsdt ${CMAKE_CURRENT_SOURCE_DIR}/acpi/dsdt.asl
   COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/acpi/mktables.py
-          ${ACPI_OUT}/dsdt.aml ${ACPI_OUT}
+          ${ACPI_OUT}/dsdt.aml ${ACPI_OUT} --platform ${VIBE86_PLATFORM_TOML}
   DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/acpi/dsdt.asl ${CMAKE_CURRENT_SOURCE_DIR}/acpi/mktables.py
+          ${VIBE86_PLATFORM_TOML}
   COMMENT "ACPI tables (iasl, mktables.py)"
   VERBATIM)
 add_custom_target(acpi ALL DEPENDS ${ACPI_OUT}/tables)

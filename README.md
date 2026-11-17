@@ -7,6 +7,7 @@ board model). Target ISA: AMD EPYC "Venice" (Zen 6) — see
 
 | Path | What |
 |---|---|
+| `rtl/common/` | descriptions every core version shares (D-013): CPUID identity and features, reset state, platform constants, the die's pins; `tools/gen/rtlgen.py` generates their SystemVerilog packages and vsim's C headers into the build tree |
 | `rtl/v1/` | **v1**, the first core: not pipelined, microcoded (`v1_core.sv`, `v1_alu.sv`); `tb/` its SystemVerilog testbenches |
 | `tools/sdm/` | `extract.py`: the instruction pages of the Intel SDM Vol. 2 as `.sdm` files (generated into the build tree from SDM 325383-093US) |
 | `tools/ucc/` | the microcode compiler: SDM pseudocode → micro-ops, decoder tables, entry points; `targets/<vN>/` is one core version's micro-op ISA, instruction list, overrides and routines (`--target`, default the latest) |

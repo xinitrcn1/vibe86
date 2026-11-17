@@ -1,0 +1,99 @@
+# vibe86 platform constants: the package (socket) and the PC-compatible
+# platform around the cores. One description for the RTL (vibe86_platform_pkg),
+# the simulator (vibe86_platform.h) and the firmware tables (fw/acpi).
+#
+# Addresses follow PC conventions where x86 software expects them
+# (docs/platform.md): the reset vector at the top of 4 GiB, the local APIC
+# and MSI window at FEE0_0000h (Intel SDM Vol. 3A 12.4.1, AMD APM Vol. 2
+# 16.3.1), the I/O APIC at FEC0_0000h (Intel 82093AA I/O APIC datasheet,
+# 1996), the HPET at FED0_0000h (IA-PC HPET Specification 1.0a, 2004).
+
+[clock]
+core_hz = 100_000_000                    # the core clock vsim models (CPUID/TSC)
+tsc_hz = 100_000_000                     # invariant TSC at the core clock
+pit_hz = 1_193_182                       # 8254 input clock
+pmtmr_hz = 3_579_545                     # ACPI PM timer
+
+# ---------------------------------------------------------------------------
+# The socket: pin groups and their widths (docs/platform.md "The socket").
+[socket]
+max_cores = 8                            # per package (die interface: core-indexed pins)
+ddr5_channels = 8
+ddr5_dimms_per_channel = 2
+ddr5_subchannels = 2                     # per channel (JESD79-5)
+ddr5_subchannel_bits = 32
+ddr5_ecc_bits = 8                        # per subchannel (side-band SECDED)
+pcie_root_ports = 8
+pcie_lanes_per_port = 16
+spd_segments = 2                         # SPD SMBus segments of 8 hubs
+
+# ---------------------------------------------------------------------------
+# Physical address map.
+[map]
+reset_vector = 0xFFFF_FFF0
+flash_base = 0xFF00_0000
+flash_size = 0x0100_0000                 # 16 MiB SPI EEPROM
+lapic_base = 0xFEE0_0000                 # each core's local APIC (xAPIC MMIO)
+msi_base = 0xFEE0_0000                   # MSI window: APIC id addr[19:12], vector data[7:0]
+msi_size = 0x0010_0000
+hpet_base = 0xFED0_0000
+ioapic_base = 0xFEC0_0000
+mmio_base = 0xFE00_0000                  # board/uncore register block
+ecam_base = 0xE000_0000                  # PCIe ECAM: 256 buses x 1 MiB
+ecam_size = 0x1000_0000
+pci_mem32_base = 0xC000_0000
+pci_mem32_size = 0x2000_0000
+pci_mem64_base = 0x200_0000_0000
+pci_mem64_size = 0x10_0000_0000
+dram_base = 0x1_0000_0000                # server board: DIMMs packed from here
+
+[lapic]
+version = 0x0006_0015                    # max LVT entry 6, version 15h (integrated APIC)
+x2apic = true
+timer_hz = 100_000_000                   # bus clock of the timer (divide config applies)
+
+[ioapic]
+id = 0
+version = 0x0017_0020                    # 24 redirection entries (max 17h), version 20h
+pins = 24
+gsi_base = 0
+
+# ---------------------------------------------------------------------------
+# Legacy I/O ports (the PC platform in sim/pc.c and board.c).
+[ports]
+pic1 = 0x20
+pit = 0x40
+sysb = 0x61
+rtc = 0x70
+post = 0x80
+a20 = 0x92
+pic2 = 0xA0
+com1 = 0x3F8
+debugcon = 0x402
+elcr = 0x4D0
+fwcfg = 0x510
+fwcfg_dma = 0x514
+pm1 = 0x600                              # PM1a event 600h, control 604h, timer 608h
+pci_cfg = 0xCF8
+reset = 0xCF9
+
+# ---------------------------------------------------------------------------
+# MSRs: address and default (reset) value. Names follow Intel SDM Vol. 4 /
+# AMD APM Vol. 2 appendix A.
+[msr]
+IA32_TSC         = { addr = 0x10,        default = 0 }
+IA32_APIC_BASE   = { addr = 0x1B,        default = 0xFEE0_0900 }   # BSP, xAPIC enabled
+IA32_MTRRCAP     = { addr = 0xFE,        default = 0 }             # no MTRRs (CPUID.MTRR = 0)
+IA32_SYSENTER_CS = { addr = 0x174,       default = 0 }
+IA32_SYSENTER_ESP = { addr = 0x175,      default = 0 }
+IA32_SYSENTER_EIP = { addr = 0x176,      default = 0 }
+IA32_PAT         = { addr = 0x277,       default = 0x0007_0406_0007_0406 }
+IA32_EFER        = { addr = 0xC000_0080, default = 0 }
+IA32_STAR        = { addr = 0xC000_0081, default = 0 }
+IA32_LSTAR       = { addr = 0xC000_0082, default = 0 }
+IA32_CSTAR       = { addr = 0xC000_0083, default = 0 }
+IA32_FMASK       = { addr = 0xC000_0084, default = 0 }
+IA32_FS_BASE     = { addr = 0xC000_0100, default = 0 }
+IA32_GS_BASE     = { addr = 0xC000_0101, default = 0 }
+IA32_KERNEL_GS_BASE = { addr = 0xC000_0102, default = 0 }
+IA32_TSC_AUX     = { addr = 0xC000_0103, default = 0 }

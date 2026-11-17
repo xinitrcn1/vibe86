@@ -38,7 +38,9 @@ board are C models.
 ### The core-uncore bus
 
 The core (vsim `-C`, `rtl/<version>`) reaches everything over one bus, one
-transaction at a time, held until acknowledged (`sim/cpu.h`):
+transaction at a time, held until acknowledged (the die interface,
+`rtl/common/pins.toml`, generated into each core's port list and vsim's
+`struct cpu`; D-013):
 
 - **memory**: 1–16 bytes (log2 size 0–4) at any address the target
   accepts, or a whole 64-byte line (size 6) of cacheable memory for a core

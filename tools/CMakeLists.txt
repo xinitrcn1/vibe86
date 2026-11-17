@@ -66,7 +66,16 @@ function(vibe86_ucode version)
   file(GLOB_RECURSE tfiles CONFIGURE_DEPENDS ${tdir}/*)
   # verilate() reads its sources when CMake configures: generate them now
   # once, and again at build time whenever an input changes
-  if(NOT EXISTS ${gen}/${version}_ucode_pkg.sv)
+  # (also when an input is newer than the outputs: configuring verilates the
+  # generated packages, so stale ones fail there before the build can redo them)
+  file(GLOB ucc_src ${PROJECT_SOURCE_DIR}/tools/ucc/*.py)
+  set(stale FALSE)
+  foreach(f IN LISTS tfiles ucc_src)
+    if(f IS_NEWER_THAN ${gen}/${version}_uop_pkg.sv)
+      set(stale TRUE)
+    endif()
+  endforeach()
+  if(NOT EXISTS ${gen}/${version}_ucode_pkg.sv OR stale)
     file(MAKE_DIRECTORY ${gen})
     execute_process(
       COMMAND ${Python3_EXECUTABLE} -B ${UCC} --target ${version} --sdm ${UCC_SDM}

@@ -6,6 +6,7 @@
  */
 #ifndef PC_H
 #define PC_H
+#include "vibe86_platform.h"	/* rtl/common/platform.toml */
 
 #include <stddef.h>
 #include <stdint.h>
@@ -15,21 +16,21 @@ extern "C" {
 #endif
 
 /* the core clock vsim's timers count in (one board_tick per core cycle) */
-#define CORE_HZ		100000000ull
-#define PIT_HZ		1193182ull
-#define PMTMR_HZ	3579545ull
+#define CORE_HZ		PLAT_CLOCK_CORE_HZ
+#define PIT_HZ		PLAT_CLOCK_PIT_HZ
+#define PMTMR_HZ	PLAT_CLOCK_PMTMR_HZ
 
-#define PORT_PIT	0x40
-#define PORT_PIC1	0x20
-#define PORT_PIC2	0xA0
-#define PORT_ELCR	0x4D0
-#define PORT_RTC	0x70
-#define PORT_SYSB	0x61		/* NMI status and control */
-#define PORT_A20	0x92		/* system control port A (fast A20, INIT) */
-#define PORT_DEBUGCON	0x402		/* QEMU-style debug console */
-#define PORT_FWCFG	0x510		/* selector (16-bit), data 0x511 */
-#define PORT_FWCFG_DMA	0x514		/* DMA address, big-endian, 0x514..0x51B */
-#define PORT_PM		0x600		/* ACPI PM1a event (0x600), control (0x604), timer (0x608) */
+#define PORT_PIT	PLAT_PORTS_PIT
+#define PORT_PIC1	PLAT_PORTS_PIC1
+#define PORT_PIC2	PLAT_PORTS_PIC2
+#define PORT_ELCR	PLAT_PORTS_ELCR
+#define PORT_RTC	PLAT_PORTS_RTC
+#define PORT_SYSB	PLAT_PORTS_SYSB		/* NMI status and control */
+#define PORT_A20	PLAT_PORTS_A20		/* system control port A (fast A20, INIT) */
+#define PORT_DEBUGCON	PLAT_PORTS_DEBUGCON		/* QEMU-style debug console */
+#define PORT_FWCFG	PLAT_PORTS_FWCFG		/* selector (16-bit), data 0x511 */
+#define PORT_FWCFG_DMA	PLAT_PORTS_FWCFG_DMA		/* DMA address, big-endian, 0x514..0x51B */
+#define PORT_PM		PLAT_PORTS_PM1		/* ACPI PM1a event (0x600), control (0x604), timer (0x608) */
 
 struct pit_ch {
 	uint16_t reload, count, latch;

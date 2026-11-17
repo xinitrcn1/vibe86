@@ -4,6 +4,7 @@
 vibe86_ucode(v1)
 
 set(V1_RTL
+  ${VIBE86_COMMON_SV}
   ${v1_UOP_PKG}
   ${v1_UCODE_PKG}
   ${CMAKE_CURRENT_SOURCE_DIR}/v1_fpu.sv
@@ -18,6 +19,7 @@ verilate(vibe86_v1
   SOURCES ${V1_RTL}
   TOP_MODULE v1_core
   PREFIX Vv1_core
+  INCLUDE_DIRS ${VIBE86_COMMON_DIR}
   VERILATOR_ARGS ${V1_DEBUG_ARGS} -Wno-fatal -Wno-WIDTH -Wno-UNUSED -O3 --x-assign fast --x-initial fast
                  --output-split 20000)
 

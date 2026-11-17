@@ -36,7 +36,7 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/tpm_debug_state.h
 add_library(vsim_board STATIC
   board.c dram.c vga.c pmc.c i2c.c tpm.c pcie.c iommu.c xhci.c pc.c
   ${CMAKE_CURRENT_BINARY_DIR}/tpm_debug_state.h)
-target_include_directories(vsim_board PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+target_include_directories(vsim_board PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${VIBE86_COMMON_DIR}
   PRIVATE ${TPMS_INCLUDE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_options(vsim_board PRIVATE ${VSIM_WARN})
 target_link_libraries(vsim_board PUBLIC ${TPMS_LIBRARY})

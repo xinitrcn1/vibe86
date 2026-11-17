@@ -27,6 +27,7 @@ set(VIBE86_LATEST v1 CACHE STRING "core version the tests/ suite runs on")
 enable_testing()
 
 add_subdirectory(tools)
+add_subdirectory(rtl/common)
 foreach(v IN LISTS VIBE86_VERSIONS)
   add_subdirectory(rtl/${v})
 endforeach()
