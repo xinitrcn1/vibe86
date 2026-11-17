@@ -1,0 +1,6 @@
+# PEXT -- override (BMI: Intel SDM Vol. 2, PEXT)
+# The manual's Operation is written bit by bit (loops, variable bit ranges);
+# v1's ALU computes it in one operation (rtl/v1/v1_alu.sv, U_PEXT), with the
+# flags of the page's Flags Affected section.
+@operation
+DEST := AluOp(PEXT, SRC1, SRC2);

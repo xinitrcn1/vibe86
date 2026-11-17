@@ -68,7 +68,7 @@ feature = [
   { leaf = 0x7, reg = "ebx", bit = 3,  name = "BMI1", since = "v1" },
   { leaf = 0x7, reg = "ebx", bit = 5,  name = "AVX2" },
   { leaf = 0x7, reg = "ebx", bit = 7,  name = "SMEP", since = "v1" },
-  { leaf = 0x7, reg = "ebx", bit = 8,  name = "BMI2" },
+  { leaf = 0x7, reg = "ebx", bit = 8,  name = "BMI2", since = "v1" },
   { leaf = 0x7, reg = "ebx", bit = 9,  name = "ERMS" },
   { leaf = 0x7, reg = "ebx", bit = 10, name = "INVPCID", since = "v1" },
   { leaf = 0x7, reg = "ebx", bit = 16, name = "AVX512F" },

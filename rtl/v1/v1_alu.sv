@@ -164,6 +164,52 @@ module v1_alu
         native = 6'h3F;            // OF = CF = 0 (AF: 0, the manual leaves it undefined)
       end
       U_NOT: res = ~am & m;
+      // BMI1/BMI2 (Intel SDM Vol. 2: PDEP, PEXT, BEXTR, BZHI, BLSI, BLSMSK,
+      // BLSR; flags per their Flags Affected sections; native: CF ZF SF OF)
+      U_PDEP, U_PEXT: begin
+        // PDEP: a's low bits go to b's set bit positions; PEXT: the bits of a
+        // at b's set positions are packed into the low bits
+        logic [6:0] k2;
+        k2 = '0;
+        for (int i = 0; i < 64; i++)
+          if (i < int'(n) && bm[i]) begin
+            if (op == U_PDEP) res[i] = am[k2[5:0]];
+            else res[k2[5:0]] = am[i];
+            k2 = k2 + 7'd1;
+          end
+      end
+      U_BEXTR: begin
+        // start b[7:0], length b[15:8]; ZF from the result, CF = OF = 0
+        logic [7:0] st, ln;
+        st = b[7:0];
+        ln = b[15:8];
+        res = (32'(st) < n) ? (am >> st) : 64'd0;
+        if (32'(ln) < n) res = res & ((64'd1 << ln) - 64'd1);
+        res = res & m;
+        fl[ZF] = res == 0;
+        native = 6'h29;
+      end
+      U_BZHI: begin
+        // zero the bits from index b[7:0] up; CF = the index is >= the size
+        logic [7:0] ix;
+        ix = b[7:0];
+        res = (32'(ix) < n) ? (am & ((64'd1 << ix) - 64'd1)) : am;
+        fl[CF] = 32'(ix) > n - 1;
+        fl[ZF] = res == 0;
+        fl[SF] = msb(res, sz);
+        native = 6'h39;
+      end
+      U_BLSI, U_BLSMSK, U_BLSR: begin
+        case (op)
+          U_BLSI:   res = (64'd0 - am) & am & m;
+          U_BLSMSK: res = ((am - 64'd1) ^ am) & m;
+          default:  res = (am - 64'd1) & am & m;
+        endcase
+        fl[CF] = (op == U_BLSI) ? am != 0 : am == 0;
+        fl[ZF] = (op == U_BLSMSK) ? 1'b0 : res == 0;
+        fl[SF] = msb(res, sz);
+        native = 6'h39;
+      end
       U_MOV: res = am;
       U_SHL, U_SHR, U_SAR: begin
         cnt = 7'(b & ((sz == 2'd3) ? 64'd63 : 64'd31));

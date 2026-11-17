@@ -1,0 +1,8 @@
+# SARX/SHLX/SHRX -- override (BMI2: Intel SDM Vol. 2)
+# The manual's Operation shifts bit by bit in a loop; v1's shifter masks the
+# count to 5/6 bits as countMASK does; the flags are unaffected.
+@operation
+IF Is_SHLX = 1 THEN DEST := AluOp(SHL, SRC1, SRC2);
+ELSE IF Is_SHRX = 1 THEN DEST := AluOp(SHR, SRC1, SRC2);
+ELSE DEST := AluOp(SAR, SRC1, SRC2);
+FI;

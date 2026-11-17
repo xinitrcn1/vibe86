@@ -1,0 +1,10 @@
+# MULX -- override (BMI2: Intel SDM Vol. 2, MULX)
+# 'DEST2 := (SRC1*SRC2)[low]; DEST1 := (SRC1*SRC2)[high]' with SRC1 = EDX/RDX,
+# DEST1 = ModRM:reg, DEST2 = VEX.vvvv; flags unaffected. The low half is
+# written first, so with DEST1 = DEST2 the register holds the high half (as
+# the manual's order of assignments gives).
+@operation
+IF OperandSize = 64 THEN t := RDX; ELSE t := EDX; FI;
+lo := AluOp(MULU, t, SRC2);
+DEST2 := lo;
+DEST1 := HighHalf();

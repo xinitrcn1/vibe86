@@ -365,6 +365,8 @@ class Lowerer:
             b["BitBase"] = 0
             b["BitOffset"] = 1
         if n == 3:
+            b["DEST1"] = 0
+            b["DEST2"] = 1
             b["COUNT"] = 2
             b["SRC1"] = 1
             b["SRC2"] = 2
@@ -546,6 +548,9 @@ class Lowerer:
             return {"LDS": 3, "LES": 0, "LFS": 4, "LGS": 5, "LSS": 2}.get(self.f.mnem)
         if n == "LoopKind":
             return {"LOOP": 0, "LOOPE": 1, "LOOPZ": 1, "LOOPNE": 2, "LOOPNZ": 2}.get(self.f.mnem)
+        if n.startswith("Is_"):
+            # Is_<MNEMONIC>: 1 in the form of that mnemonic (pages with several)
+            return int(self.f.mnem == n[3:])
         if n == "IsGS":
             return int(self.f.mnem in ("RDGSBASE", "WRGSBASE"))
         if n == "IsVERW":
@@ -586,6 +591,8 @@ class Lowerer:
             return V("sel", w, sel="REG")
         if o.kind == "opreg":
             return V("sel", w, sel="RM")
+        if o.kind == "vvvv":
+            return V("sel", w, sel="VVVV")
         if o.kind in ("imm", "rel"):
             return V("sel", self.f.osz if o.kind == "imm" else 64, sel="IMM", adapt=True)
         if o.kind == "fixed":
@@ -1055,6 +1062,23 @@ class Lowerer:
             t = self.tmp()
             m = self.result_mask_all()
             self.E(kind, w, dst=t, a=sd, b=ss, c=sc, fmask=m)
+            self.native_flags |= m
+            return V("sel", w, sel=t)
+        if f == "AluOp":
+            # AluOp(OP, a, b): one of the core's ALU operations (rtl/v1/v1_alu.sv)
+            # at the operand size; flags as the page's Flags Affected says
+            kind = e.args[0].n
+            a = self.eval(e.args[1])
+            b = self.eval(e.args[2])
+            if a.kind == "mem":
+                a = self.load(a)
+            if b.kind == "mem":
+                b = self.load(b)
+            w = self.f.osz
+            (sa, sb), imm = self.srcs(a, b, w=w)
+            t = self.tmp()
+            m = self.result_mask_all() | self.clear_mask()
+            self.E(kind, w, dst=t, a=sa, b=sb, imm=imm, fmask=m)
             self.native_flags |= m
             return V("sel", w, sel=t)
         if f in ("BitScan",):

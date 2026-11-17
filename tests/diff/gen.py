@@ -301,6 +301,31 @@ class Gen:
             src = reg(self.r(), sw) if self.rnd.random() < 0.7 else self.mem(sw)
             self.emit(f"crc32{SUF[sw]}\t{src}, {reg(self.r(), dw)}")
 
+    def bmi(self):
+        """BMI1 and BMI2 (VEX-encoded GPR instructions): AT&T order reverses
+        the SDM's (DEST, SRC1, SRC2) -> (SRC2, SRC1, DEST)"""
+        w = self.rnd.choice([32, 64])
+        s = SUF[w]
+        d, v = reg(self.r(), w), reg(self.r(), w)
+        rm = reg(self.r(), w) if self.rnd.random() < 0.7 else self.mem(w)
+        op = self.rnd.choice(["andn", "bextr", "bzhi", "blsi", "blsmsk", "blsr", "pdep", "pext",
+                              "mulx", "rorx", "sarx", "shlx", "shrx"])
+        if op == "andn":                      # ANDN dest, src1 (vvvv), src2 (r/m)
+            self.emit(f"andn{s}\t{rm}, {v}, {d}", mask=SF | ZF | OF | CF)
+        elif op in ("bextr", "bzhi"):         # dest, src1 (r/m), src2 (vvvv)
+            m = (ZF | CF | OF) if op == "bextr" else (CF | ZF | SF | OF)
+            self.emit(f"{op}{s}\t{v}, {rm}, {d}", mask=m)
+        elif op in ("blsi", "blsmsk", "blsr"):  # dest (vvvv), src (r/m)
+            self.emit(f"{op}{s}\t{rm}, {d}", mask=CF | ZF | SF | OF)
+        elif op in ("pdep", "pext"):          # dest, src1 (vvvv), src2 (r/m); flags unaffected
+            self.emit(f"{op}{s}\t{rm}, {v}, {d}")
+        elif op == "mulx":                    # dest1 (reg, high), dest2 (vvvv, low), src (r/m) * rDX
+            self.emit(f"mulx{s}\t{rm}, {v}, {d}")
+        elif op == "rorx":
+            self.emit(f"rorx{s}\t${self.rnd.randrange(256)}, {rm}, {d}")
+        else:                                 # SARX/SHLX/SHRX dest, src1 (r/m), src2 (vvvv)
+            self.emit(f"{op}{s}\t{v}, {rm}, {d}")
+
     def reload(self):
         r = self.r()
         self.emit(f"movabsq\t${self.val()}, %{r}")
@@ -312,7 +337,7 @@ class Gen:
         classes = [(self.alu, 20), (self.unary, 6), (self.shift, 12), (self.dshift, 5),
                    (self.mul, 6), (self.div, 6), (self.convert, 3), (self.movx, 4),
                    (self.bitscan, 5), (self.bt, 4), (self.misc, 12), (self.reload, 6),
-                   (self.flags, 2)]
+                   (self.flags, 2), (self.bmi, 8)]
         fns = [f for f, n in classes for _ in range(n)]
         for r in POOL:
             self.out.append(f"\tmovabsq\t${self.val()}, %{r}")
