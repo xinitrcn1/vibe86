@@ -45,7 +45,8 @@ pci_mem32_base = 0xC000_0000
 pci_mem32_size = 0x2000_0000
 pci_mem64_base = 0x200_0000_0000
 pci_mem64_size = 0x10_0000_0000
-dram_base = 0x1_0000_0000                # server board: DIMMs packed from here
+tolm = 0x8000_0000                       # top of low DRAM: DRAM [0, TOLM) and, hoisted, [4 GiB, 4 GiB + size - TOLM)
+hoist_base = 0x1_0000_0000               # where DRAM above TOLM appears (as AMD's DF "memory hoisting")
 
 [lapic]
 version = 0x0006_0015                    # max LVT entry 6, version 15h (integrated APIC)

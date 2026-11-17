@@ -72,7 +72,7 @@ module v1_core
 
   // ------------------------------------------------------------------ state
 
-  typedef enum logic [2:0] {S_FETCH, S_EXEC, S_HALT, S_SHUTDOWN} state_e;
+  typedef enum logic [2:0] {S_FETCH, S_EXEC, S_HALT, S_SHUTDOWN, S_DEBUG} state_e;
   typedef enum logic [3:0] {D_PFX, D_ESC, D_OPC3, D_OPC2, D_MODRM, D_SIB, D_DISP, D_IMM, D_FINISH,
                             D_BUS} dstate_e;
 
@@ -129,7 +129,12 @@ module v1_core
   logic [7:0]  ucount;
   logic        halt_req;
   logic        nmi_pend;
-  logic        smi_pend;        // SMI# latched until taken (outside SMM; AMD APM Vol. 2 10.3)
+  logic        smi_pend;
+  logic        mce_pend;        // a machine check from the uncore (MCERR): Intel SDM Vol. 3A 17.10
+  // debug (JTAG debug module): halted in S_DEBUG at an instruction boundary;
+  // a step runs one instruction (dbg_stepping) and halts after it retires
+  logic        dbg_stepping, dbg_stepped;
+  logic        dbg_resume_halt;   // S_DEBUG was entered from HLT: resume into HLT        // SMI# latched until taken (outside SMM; AMD APM Vol. 2 10.3)
   wire         in_smm = sp[SP_SMM[7:0]][0];
   logic [7:0]  deliv_vec;       // the event being delivered (for #DF)
   logic [3:0]  db_data;         // data breakpoints hit by this instruction (DR6.B0-B3)
@@ -182,6 +187,15 @@ module v1_core
   end
   wire ssz = (mode != 0) && sp[segi(2, 3)][10];
   assign bus_smm = sp[SP_SMM[7:0]][0];   // SMIACT#
+  assign dbg_halted = (st == S_DEBUG);
+  // debug register reads: the architectural (committed) state
+  always_comb begin
+    if (dbg_reg_sel < 8'd16) dbg_reg_rdata = a_gpr[dbg_reg_sel[3:0]];
+    else if (dbg_reg_sel == 8'd16) dbg_reg_rdata = rip;
+    else if (dbg_reg_sel == 8'd17) dbg_reg_rdata = a_flags;
+    else if (dbg_reg_sel[7]) dbg_reg_rdata = (dbg_reg_sel[6:0] == SP_CPL[6:0]) ? {62'b0, cpl} : sp[{1'b0, dbg_reg_sel[6:0]}];
+    else dbg_reg_rdata = '0;
+  end
   wire [1:0] cpl = (mode == 0) ? 2'd0 : sp[SP_CPL[7:0]][1:0];
 
   // ------------------------------------------------------------------ helpers
@@ -673,6 +687,7 @@ module v1_core
     halt_req <= 1'b0;
     nmi_pend <= 1'b0;
     smi_pend <= 1'b0;
+    mce_pend <= 1'b0;
     shadow_set <= 1'b0;
     int_shadow <= 1'b0;
     ucount <= '0;
@@ -703,6 +718,9 @@ module v1_core
       shutdown <= 1'b0;
       halted <= 1'b0;
       shutdown_rip <= '0;
+      dbg_stepping <= 1'b0;
+      dbg_stepped <= 1'b0;
+      dbg_resume_halt <= 1'b0;
       start_decode();
     end else begin
       rt_valid <= 1'b0;
@@ -711,6 +729,12 @@ module v1_core
       sp[SP_TSC[7:0]] <= sp[SP_TSC[7:0]] + 1;
       if (nmi) nmi_pend <= 1'b1;
       if (smi) smi_pend <= 1'b1;
+      if (mce_valid && mce_type == 2'd2) begin
+        // an uncorrected error (type 2); corrected ones (1) are only counted
+        // by the uncore. The address is kept for software (special MC_ADDR)
+        mce_pend <= 1'b1;
+        sp[SP_MC_ADDR[7:0]] <= mce_addr;
+      end
       shutdown <= (st == S_SHUTDOWN);
       halted <= (st == S_HALT);
 
@@ -952,7 +976,7 @@ module v1_core
                   bus_io <= 1'b0;
                   bus_addr <= pa;
                   bus_size <= (ms == M_BYTES) ? 3'd0 : 3'(u.sz);
-                  bus_wdata <= (ms == M_BYTES) ? {120'b0, mdata[{mb_i, 3'b0} +: 8]} : {64'b0, vb};
+                  bus_wdata <= (ms == M_BYTES) ? {120'b0, mdata[7'({mb_i, 3'b0}) +: 8]} : {64'b0, vb};
                   if (ms == M_IDLE) mdata <= '0;
                   ms <= M_BUS;
                   if (u.op == U_ST) lb_v <= 1'b0;   // self-modifying code: refetch
@@ -970,7 +994,7 @@ module v1_core
               end else begin
                 logic [63:0] acc;
                 acc = mdata[63:0];
-                if (u.op == U_LD) acc[{mb_i, 3'b0} +: 8] = bus_rdata[7:0];
+                if (u.op == U_LD) acc[6'({mb_i, 3'b0}) +: 8] = bus_rdata[7:0];
                 mdata[63:0] <= acc;
                 if (mb_i + 1 == mn) begin
                   if (u.op == U_LD) wr(u.dst, u.sz, acc);
@@ -1066,6 +1090,7 @@ module v1_core
                 `ifdef V1_DEBUG $display("end upc=%0d rip=%h nrip=%h", upc, rip, nrip); `endif
                 commit();
                 rip <= nrip;
+                if (dbg_stepping) dbg_stepped <= 1'b1;
                 if (!in_delivery) begin
                   rt_valid <= 1'b1;
                   rt_rip <= rip;
@@ -1221,6 +1246,38 @@ module v1_core
             st <= S_FETCH;
         end
 
+        // ------------------------------------------------------------ debug
+        // halted for the debug module (docs/jtag.md): registers are read and
+        // written through dbg_reg_*; dbg_step runs one instruction, dropping
+        // dbg_req resumes (into HLT if the core was halted when it stopped)
+        S_DEBUG: begin
+          if (dbg_reg_we) begin
+            if (dbg_reg_sel < 8'd16) begin
+              a_gpr[dbg_reg_sel[3:0]] <= dbg_reg_wdata;
+              w_gpr[dbg_reg_sel[3:0]] <= dbg_reg_wdata;
+            end else if (dbg_reg_sel == 8'd16) begin
+              rip <= dbg_reg_wdata;
+              nrip <= dbg_reg_wdata;
+            end else if (dbg_reg_sel == 8'd17) begin
+              a_flags <= (dbg_reg_wdata & 64'h0000_0000_003F_7FD5) | 64'h2;
+              w_flags <= (dbg_reg_wdata & 64'h0000_0000_003F_7FD5) | 64'h2;
+            end else if (dbg_reg_sel[7]) begin
+              wr_special(dbg_reg_sel & 8'h7F, dbg_reg_wdata);
+            end
+          end
+          if (dbg_step) begin
+            dbg_stepping <= 1'b1;
+            dbg_stepped <= 1'b0;
+            dbg_resume_halt <= 1'b0;
+            start_decode();
+            st <= S_FETCH;
+          end else if (!dbg_req) begin
+            start_decode();
+            st <= dbg_resume_halt ? S_HALT : S_FETCH;
+            dbg_resume_halt <= 1'b0;
+          end
+        end
+
         default: ;   // S_SHUTDOWN: until reset
       endcase
 
@@ -1228,7 +1285,24 @@ module v1_core
       // Among Concurrent Exceptions and Interrupts")
       if (((st == S_FETCH && ds == D_PFX && idx == 0 && !in_delivery && !bus_req) || st == S_HALT)
           && !int_shadow) begin
-        if (smi_pend && !in_smm) begin
+        if (mce_pend) begin
+          // machine check: an abort, above every other event. #MC (vector 18)
+          // with CR4.MCE set, else the processor shuts down (Intel SDM Vol. 3A
+          // 17.10 "Machine-Check Initialization", Table 7-2 priority 1)
+          mce_pend <= 1'b0;
+          if (sp[SP_CR4[7:0]][6]) raise(8'd18, 1'b0, 32'd0, 1'b0, 1'b0, 1'b1);
+          else begin
+            st <= S_SHUTDOWN;
+            shutdown_rip <= rip;
+          end
+        end else if (dbg_req && (!dbg_stepping || dbg_stepped)) begin
+          // the debug module's halt: above every other event; a step stops
+          // after its one instruction (events it took are delivered first)
+          dbg_resume_halt <= (st == S_HALT);
+          dbg_stepping <= 1'b0;
+          dbg_stepped <= 1'b0;
+          st <= S_DEBUG;
+        end else if (smi_pend && !in_smm) begin
           // SMI: above NMI and INTR (Intel SDM Vol. 3A Table 7-2: "external hardware
           // interventions"); SMIACT# on, then the SMI routine saves the state at
           // SMBASE + FE00h (AMD APM Vol. 2 10.3). bit 1: the processor was halted.

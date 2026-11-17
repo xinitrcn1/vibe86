@@ -2,14 +2,5 @@
 // Lint configuration for rtl/v1 (verilator -Wall): waivers that cannot
 // sit next to the code they cover.
 //
-// Die pins v1 doesn't use: the machine-check inputs (v1 has no machine-check
-// architecture yet: MCE/MCA are not reported in CPUID) and the upper 384 bits
-// of the 512-bit data bus (v1 moves at most 16 bytes per transaction).
-lint_off -rule UNUSEDSIGNAL -file "*/vibe86_die_ports.svh" -match "*'mce_*"
-lint_off -rule UNUSEDSIGNAL -file "*/vibe86_die_ports.svh" -match "*'bus_rdata'*511:128*"
-// The core-uncore bus logic (bus_wdata into the 512-bit pin, byte-wise
-// memory accesses through mdata) is being replaced by the die fabric (DDR5
-// and JTAG); its width waivers go with it.
-lint_off -rule WIDTHEXPAND -file "*/rtl/v1/v1_core.sv" -match "*expects 512 bits*"
-lint_off -rule WIDTHTRUNC -file "*/rtl/v1/v1_core.sv" -match "*127:0? requires 7 bit index, not 8 bits*"
-lint_off -rule WIDTHTRUNC -file "*/rtl/v1/v1_core.sv" -match "*63:0? requires 6 bit index, not 8 bits*"
+// (The core-uncore bus waivers went with the die fabric, D-014: v1_core's
+// bus is internal now and sized for what it carries.)
