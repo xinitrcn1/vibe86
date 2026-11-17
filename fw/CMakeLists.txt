@@ -132,6 +132,8 @@ fw_driver(RuntimeDxe RUNTIME SOURCES dxe/runtime/runtime.c)
 fw_driver(SerialDxe SOURCES dxe/serial/serial.c)
 fw_driver(VideoDxe SOURCES dxe/video/video.c)
 fw_driver(ConsoleDxe SOURCES dxe/console/console.c)
+fw_driver(PciDxe SOURCES dxe/pci/pci.c)
+fw_driver(UsbDxe SOURCES dxe/usb/main.c dxe/usb/xhci.c dxe/usb/hid.c dxe/usb/msc.c)
 fw_driver(BdsDxe SOURCES dxe/bds/bds.c dxe/bds/boot.c dxe/bds/menu.c dxe/bds/setup.c
           dxe/bds/settings.c dxe/bds/ui.c)
 
