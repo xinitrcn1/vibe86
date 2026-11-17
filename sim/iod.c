@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <setjmp.h>
 #include <ucontext.h>
 
 #include "board.h"
@@ -31,8 +32,13 @@ struct iod {
 	uint64_t q[TXQ];
 	unsigned qh, qn;
 	int offered;
-	/* the board's coroutine */
+	/* the board's coroutine: created once with makecontext/swapcontext,
+	   then switched with _setjmp/_longjmp, which don't save the signal mask
+	   (swapcontext's sigprocmask call per switch cost a syscall every
+	   cycle) -- the usual coroutine technique (R. S. Engelschall, "Portable
+	   Multithreading", USENIX ATC 2000) */
 	ucontext_t main_ctx, dev_ctx;
+	jmp_buf main_jb, dev_jb;
 	void *stack;
 	int in_dev;		/* running in the coroutine */
 	int started;
@@ -202,7 +208,8 @@ iod_dma(void *ctx, int we, uint64_t pa, unsigned n, uint8_t *data)
 			push(d, pa);
 			d->wait = 1;
 			d->dma_reads++;
-			swapcontext(&d->dev_ctx, &d->main_ctx);	/* until the completion */
+			if (!_setjmp(d->dev_jb))		/* until the completion */
+				_longjmp(d->main_jb, 1);
 			if (d->err) {
 				d->dma_errors++;
 				return -1;
@@ -221,9 +228,13 @@ dev_main(void)
 {
 	extern struct iod *iod_current;
 	struct iod *d = iod_current;
+	/* the first switch came by swapcontext; every later one by _longjmp */
+	if (!_setjmp(d->dev_jb))
+		swapcontext(&d->dev_ctx, &d->main_ctx);
 	for (;;) {
 		board_tick(d->b);
-		swapcontext(&d->dev_ctx, &d->main_ctx);
+		if (!_setjmp(d->dev_jb))
+			_longjmp(d->main_jb, 1);
 	}
 }
 
@@ -241,10 +252,12 @@ iod_board_tick(struct iod *d)
 		d->dev_ctx.uc_link = NULL;
 		iod_current = d;
 		makecontext(&d->dev_ctx, dev_main, 0);
+		swapcontext(&d->main_ctx, &d->dev_ctx);	/* runs to its first _setjmp */
 		d->started = 1;
 	}
 	d->in_dev = 1;
-	swapcontext(&d->main_ctx, &d->dev_ctx);
+	if (!_setjmp(d->main_jb))
+		_longjmp(d->dev_jb, 1);
 	d->in_dev = 0;
 }
 
