@@ -26,3 +26,15 @@ foreach(src IN LISTS TEST_SOURCES)
   add_test(NAME ${name}
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/run.py $<TARGET_FILE:vsim> ${bin} ${src})
 endforeach()
+
+# firmware: QEMU's SeaBIOS build (the "pc" machine's bios.bin) on the test board
+set(VIBE86_SEABIOS /usr/local/share/qemu/bios.bin CACHE FILEPATH "SeaBIOS image (QEMU's bios.bin)")
+if(EXISTS ${VIBE86_SEABIOS})
+  add_test(NAME firmware/seabios
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/run.py $<TARGET_FILE:vsim>
+            ${VIBE86_SEABIOS} ${CMAKE_CURRENT_SOURCE_DIR}/firmware/seabios.test)
+  set_tests_properties(firmware/seabios PROPERTIES LABELS slow TIMEOUT 1500
+    ENVIRONMENT "ACPI=${VIBE86_ACPI_DIR};DATA=${CMAKE_CURRENT_SOURCE_DIR}/firmware")
+else()
+  message(STATUS "no SeaBIOS image (${VIBE86_SEABIOS}): firmware/seabios test skipped")
+endif()
