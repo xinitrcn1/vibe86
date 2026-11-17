@@ -1,0 +1,5 @@
+# XLAT/XLATB—Table Look-up Translation -- override
+# 'AL := (DS:rBX + ZeroExtend(AL))' with the base register at the address
+# size (the manual's three AddressSize cases); DS can be overridden.
+@operation
+AL := Memory8[DS:rBX + ZeroExtend(AL)];

@@ -38,7 +38,7 @@ raises #PF, and returns (URET) to retry the access (D-008).
 """
 
 WIDTH = 128
-UADDR_W = 16      # micro-op address bits
+UADDR_W = 20      # micro-op address bits (1M micro-ops)
 
 OPS = [
     "NOP",

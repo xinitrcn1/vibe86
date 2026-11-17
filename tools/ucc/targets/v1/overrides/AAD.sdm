@@ -1,0 +1,7 @@
+# AAD—ASCII Adjust AX Before Division -- override
+# 'tempAL := AL; tempAH := AH; AL := (tempAL + (tempAH * imm8)) AND FFH;
+# AH := 0;' with the product's low byte (MulU); SF, ZF and PF of AL.
+@operation
+t := MulU(AH, imm8);
+AL := AL + t;
+AH := 0;

@@ -1,0 +1,13 @@
+# ARPL—Adjust RPL Field of Segment Selector -- override
+# 'IF DEST[RPL] < SRC[RPL] THEN ZF := 1; DEST[RPL] := SRC[RPL]; ELSE ZF :=
+# 0; FI;' with the RPL field written as bits 1:0. #UD in real-address and
+# virtual-8086 mode.
+@operation
+IF CR0.PE = 0 OR RFLAGS.VM = 1 THEN #UD; FI;
+d := DEST;
+IF (d AND 3) < (SRC AND 3)
+    THEN
+        ZF := 1;
+        DEST := (d AND FFFCH) OR (SRC AND 3);
+    ELSE ZF := 0;
+FI;

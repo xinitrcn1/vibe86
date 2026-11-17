@@ -1,0 +1,5 @@
+# WBINVD—Write Back and Invalidate Cache -- override
+# 'WriteBack(InternalCaches); Flush(InternalCaches); ...' -- v1 has no
+# caches; #GP(0) at CPL > 0.
+@operation
+IF CPL > 0 THEN #GP(0); FI;

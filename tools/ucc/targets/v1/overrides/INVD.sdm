@@ -1,0 +1,5 @@
+# INVD—Invalidate Internal Caches -- override
+# 'Flush(InternalCaches); SignalFlush(ExternalCaches);' -- v1 has no caches;
+# #GP(0) at CPL > 0.
+@operation
+IF CPL > 0 THEN #GP(0); FI;

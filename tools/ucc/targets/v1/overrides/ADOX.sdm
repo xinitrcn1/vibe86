@@ -1,0 +1,7 @@
+# ADOX—Unsigned Integer Addition of Two Operands With Overflow Flag -- override
+# 'DEST := DEST + SRC + OF;' with the carry out in OF and no other flag
+# changed: the ALU's add with OF as the carry (AddOverflowCarry).
+@operation
+DEST := AddOverflowCarry(DEST, SRC);
+@flags
+The OF flag is set according to the carry. The CF, SF, ZF, AF and PF flags are not affected.

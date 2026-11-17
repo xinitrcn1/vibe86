@@ -1,0 +1,7 @@
+# RDSEED—Read Random Number -- override
+# 'IF HW_RND_GEN.ready = 1 THEN DEST := HW_RND_GEN.data; CF := 1; ELSE DEST
+# := 0; CF := 0; FI; OF, SF, ZF, AF, PF := 0;' -- v1's source (Random) is
+# always ready. It is an xorshift generator, NOT a cryptographic one: fine
+# for simulation, never for keys.
+@operation
+DEST := Random();

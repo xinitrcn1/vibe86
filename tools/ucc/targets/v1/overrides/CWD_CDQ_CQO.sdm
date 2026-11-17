@@ -1,0 +1,10 @@
+# CWD/CDQ/CQO—Convert Word to Doubleword/Convert Doubleword to Quadword -- override
+# The manual writes 'DX := SignExtend(AX);' (EDX/EAX, RDX/RAX) meaning
+# DX:AX := SignExtend(AX): DX receives only the sign. Compiled as written it
+# copies AX into DX (SDM errata E-17), which made SeaBIOS's IDIV fault and
+# its e820 table wrong.
+@operation
+IF OperandSize = 16 THEN DX := SAR(AX, 15);
+ELSE IF OperandSize = 32 THEN EDX := SAR(EAX, 31);
+ELSE RDX := SAR(RAX, 63);
+FI;

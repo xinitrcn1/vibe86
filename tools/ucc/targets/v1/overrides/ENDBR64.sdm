@@ -1,0 +1,5 @@
+# ENDBR64—Terminate an Indirect Branch -- override
+# The manual's Operation only acts when indirect branch tracking (CET IBT)
+# is enabled; the Venice target has CET shadow stacks but not IBT, so
+# ENDBR64 is a NOP, as it is on processors without IBT.
+@operation

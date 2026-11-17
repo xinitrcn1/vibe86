@@ -1,0 +1,8 @@
+# SHRD—Double Precision Shift -- override
+# The manual's Operation shifts bit by bit in a loop over the count
+# ("FOR i := ... DO DEST[i] := ..."); v1's double shifter does it in one
+# step (DoubleShift): the count masked to 5 bits (6 with REX.W), CF the last
+# bit shifted out of DEST, OF set for 1-bit shifts when the sign changes,
+# SF/ZF/PF of the result, nothing changed for a zero count (Flags Affected).
+@operation
+DEST := DoubleShift(SHRD, DEST, SRC, COUNT);

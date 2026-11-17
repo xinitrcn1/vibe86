@@ -1,0 +1,22 @@
+# INVPCID—Invalidate Process-Context Identifier -- override
+# The manual's Operation for the four INVPCID types (register operand), with
+# the 128-bit descriptor (PCID in bits 11:0, linear address in bits 127:64):
+# 0 an address in a PCID, 1 a PCID, 2 all including globals, 3 all but
+# globals; #GP(0) at CPL > 0, for a type above 3, a PCID above 0FFFH, a
+# non-canonical address, or PCID other than 0 with CR4.PCIDE = 0.
+@operation
+IF CPL > 0 THEN #GP(0); FI;
+ty := DEST;
+pcid := Memory64[EffectiveAddress(SRC)];
+la := Memory64[EffectiveAddress(SRC) + 8];
+IF ty > 3 OR pcid > 0FFFH THEN #GP(0); FI;
+IF ty = 0 THEN
+    IF NOT Canonical(la) THEN #GP(0); FI;
+    TlbInvalidate(4, la, pcid);
+ELSE IF ty = 1 THEN
+    TlbInvalidate(3, 0, pcid);
+ELSE IF ty = 2 THEN
+    TlbInvalidate(0);
+ELSE
+    TlbInvalidate(1);
+FI;

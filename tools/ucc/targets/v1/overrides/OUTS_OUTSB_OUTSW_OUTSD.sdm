@@ -1,0 +1,27 @@
+# OUTS/OUTSB/OUTSW/OUTSD -- override
+# The manual's Operation: the I/O permission check (IOPermitted), 'DEST :=
+# SRC' from DS:(E)SI (segment overridable) to port DX, (E)SI stepped by the
+# element size (DF), and the REP loop for the F3 forms.
+@operation
+IF IOPermitted(DX, OperandSize / 8) = 0 THEN #GP(0); FI;
+IF DF = 0
+    THEN delta := OperandBytes;
+    ELSE delta := 0 - OperandBytes;
+FI;
+IF RepPrefix
+    THEN
+        WHILE rCX != 0
+        DO
+            tmp := Memory[DS:rSI];
+            Out(DX, tmp);
+            rSI := rSI + delta;
+            rCX := rCX - 1;
+            Commit;
+        OD;
+    ELSE
+        tmp := Memory[DS:rSI];
+        Out(DX, tmp);
+        rSI := rSI + delta;
+FI;
+@flags
+None.

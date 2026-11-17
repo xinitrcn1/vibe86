@@ -1,0 +1,6 @@
+# CLFLUSHOPT—Flush Cache Line Optimized -- override
+# 'Flush_Cache_Line_Optimized(SRC);' -- v1 has no caches; the operand is read so
+# the access faults as the instruction would. (The page's Operation ends in
+# a footnote about ModRM.mod, which isn't pseudocode.)
+@operation
+tmp := Memory8[EffectiveAddress(DEST)];

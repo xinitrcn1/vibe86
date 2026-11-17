@@ -1,0 +1,22 @@
+# DAS—Decimal Adjust AL After Subtraction -- override
+# The manual's Operation, with "Borrow from AL := AL - 6" computed as
+# AL < 6; SF, ZF and PF of the result, OF undefined.
+@operation
+old_AL := AL;
+old_CF := CF;
+CF := 0;
+IF ((AL AND 0FH) > 9) OR (AF = 1)
+    THEN
+        IF old_CF = 1 OR AL < 6 THEN CF := 1; FI;
+        AL := AL - 6;
+        AF := 1;
+    ELSE AF := 0;
+FI;
+IF (old_AL > 99H) OR (old_CF = 1)
+    THEN
+        AL := AL - 60H;
+        CF := 1;
+FI;
+SF := MSB(AL);
+IF AL = 0 THEN ZF := 1; ELSE ZF := 0; FI;
+PF := BitwiseXNOR(AL);

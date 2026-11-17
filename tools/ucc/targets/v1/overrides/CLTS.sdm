@@ -1,0 +1,5 @@
+# CLTS—Clear Task-Switched Flag in CR0 -- override
+# 'CR0.TS[bit 3] := 0;' with #GP(0) at CPL > 0.
+@operation
+IF CPL > 0 THEN #GP(0); FI;
+WriteSpecial(CR0, CR0 AND FFFFFFFFFFFFFFF7H);

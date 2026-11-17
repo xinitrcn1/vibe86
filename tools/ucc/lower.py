@@ -343,6 +343,7 @@ class Lowerer:
             b["BitBase"] = 0
             b["BitOffset"] = 1
         if n == 3:
+            b["COUNT"] = 2
             b["SRC1"] = 1
             b["SRC2"] = 2
             b["SRC"] = 1
@@ -516,6 +517,16 @@ class Lowerer:
             return int(any(o.kind in ("farptr", "farmem") for o in self.f.operands))
         if n == "FarPtrImm":
             return int(any(o.kind == "farptr" for o in self.f.operands))
+        if n == "SegOfLoad":
+            return {"LDS": 3, "LES": 0, "LFS": 4, "LGS": 5, "LSS": 2}.get(self.f.mnem)
+        if n == "LoopKind":
+            return {"LOOP": 0, "LOOPE": 1, "LOOPZ": 1, "LOOPNE": 2, "LOOPNZ": 2}.get(self.f.mnem)
+        if n == "IsGS":
+            return int(self.f.mnem in ("RDGSBASE", "WRGSBASE"))
+        if n == "IsVERW":
+            return int(self.f.mnem == "VERW")
+        if n == "IsLSL":
+            return int(self.f.mnem == "LSL")
         if n == "SregDest":
             return int(bool(self.f.operands) and self.f.operands[0].kind == "sreg")
         if n == "SegmentOperand":
@@ -540,6 +551,8 @@ class Lowerer:
     def operand(self, idx, role):
         o = self.f.operands[idx]
         w = o.size or self.f.osz
+        if w > 64:
+            w = 64          # a wide memory operand (m128, m512) is used through its address
         if o.kind in ("rm",) and not self.f.mem:
             return V("sel", w, sel="RM")
         if o.kind in ("rm", "mem"):
@@ -581,10 +594,18 @@ class Lowerer:
         if n in REGS:
             s, w = REGS[n]
             return V("sel", w, sel=s)
-        if n in ("rSI", "rDI", "rCX"):
+        if n in ("rSI", "rDI", "rCX", "rBX"):
             # the string registers at the address size: SI/ESI/RSI
             return V("sel", self.static("AddressSize"), sel={"rSI": "RSI", "rDI": "RDI",
-                                                              "rCX": "RCX"}[n])
+                                                              "rCX": "RCX", "rBX": "RBX"}[n])
+        if n == "IMM2":
+            return V("sel", 8, sel="IMM2")
+        if n == "sBP":
+            return V("sel", self.static("StackAddrSize"), sel="RBP")
+        if n == "imm8" or n == "imm16":
+            for i, o in enumerate(self.f.operands):
+                if o.kind == "imm":
+                    return self.operand(i, n)
         if n == "sSP":
             # the stack pointer at the stack-address size: SP/ESP/RSP
             return V("sel", self.static("StackAddrSize"), sel="RSP")
@@ -917,6 +938,17 @@ class Lowerer:
             op = {"MulU": "MULU", "MulS": "MULS", "IMulTrunc": "IMULT"}[f]
             self.E(op, w, dst=t, a=sa, b=sb, imm=imm, fmask=FMASK["CF"] | FMASK["OF"])
             return V("sel", w, sel=t)
+        if f == "InPort":
+            # InPort(port): a value read from the I/O space at the operand size
+            port = self.widen(self.eval(e.args[0], 16), 64)
+            sp = self.to_sel(port, 64)
+            if isinstance(sp, tuple):
+                k = self.tmp()
+                self.E("MOV", 64, dst=k, a="K", imm=sp[1])
+                sp = k
+            t = self.tmp()
+            self.E("IN", self.f.osz, dst=t, a=sp)
+            return V("sel", self.f.osz, sel=t)
         if f in ("HighHalf",):
             return V("sel", self.f.osz, sel="HI")
         if f in ("Remainder",):
@@ -931,6 +963,56 @@ class Lowerer:
             t = self.tmp()
             self.E(kind, w, dst=t, a=sd, b=sc, imm=imm, fmask=self.result_mask_all())
             self.native_flags |= self.result_mask_all()
+            return V("sel", w, sel=t)
+        if f == "Crc32":
+            # Crc32(acc, data): CRC-32C (Castagnoli) of data's bytes into acc
+            acc = self.widen(self.eval(e.args[0]), 64)
+            d = self.eval(e.args[1])
+            if d.kind == "mem":
+                d = self.load(d)
+            w = opsize(d.w if not d.adapt else 32)
+            (sa, sd), _ = self.srcs(acc, d, w=w)
+            t = self.tmp()
+            self.E("CRC32", w, dst=t, a=sa, b=sd)
+            return V("sel", 32, sel=t)
+        if f == "Random":
+            # Random(): the random number source (RDRAND, RDSEED); CF := valid
+            t = self.tmp()
+            self.E("RDRAND", self.f.osz, dst=t, fmask=0x3F)
+            self.native_flags |= 0x3F
+            return V("sel", self.f.osz, sel=t)
+        if f == "AddOverflowCarry":
+            # ADOX: DEST + SRC + OF, the carry out into OF only
+            a = self.eval(e.args[0])
+            b = self.eval(e.args[1])
+            if a.kind == "mem":
+                a = self.load(a)
+            w = opsize(a.w)
+            (sa, sb), imm = self.srcs(a, b, w=w)
+            t = self.tmp()
+            self.E("ADC", w, dst=t, a=sa, b=sb, imm=imm, x=1, fmask=0x20)
+            self.native_flags |= 0x20
+            return V("sel", w, sel=t)
+        if f == "DoubleShift":
+            # DoubleShift(SHLD|SHRD, dest, src, count): the core's double shifter
+            kind = e.args[0].n
+            d = self.eval(e.args[1])
+            sv = self.eval(e.args[2])
+            c = self.eval(e.args[3])
+            w = opsize(d.w if not d.adapt else self.f.osz)
+            if d.kind == "mem":
+                d = self.load(d)
+            (sd, ss), _ = self.srcs(d, sv, w=w)
+            cv = self.widen(c, 64) if c.kind == "sel" and not c.adapt else c
+            sc = self.to_sel(cv, 64)
+            if isinstance(sc, tuple):
+                k = self.tmp()
+                self.E("MOV", 64, dst=k, a="K", imm=sc[1])
+                sc = k
+            t = self.tmp()
+            m = self.result_mask_all()
+            self.E(kind, w, dst=t, a=sd, b=ss, c=sc, fmask=m)
+            self.native_flags |= m
             return V("sel", w, sel=t)
         if f in ("BitScan",):
             kind = e.args[0].n
@@ -1227,6 +1309,16 @@ class Lowerer:
             return
         if isinstance(e, Un) and e.op == "NOT":
             self.branch(e.a, target, not when)
+            return
+        if isinstance(e, Call) and e.f in ("SignedLess", "SignedGreater"):
+            a = self.eval(e.args[0])
+            b = self.eval(e.args[1])
+            fixed = [v.w for v in (a, b) if not v.adapt and v.kind != "k"]
+            w = opsize(max(fixed) if fixed else 64)
+            (sa, sb), imm = self.srcs(a, b, w=w)
+            self.E("CMP", w, a=sa, b=sb, imm=imm)
+            c = "LTS" if e.f == "SignedLess" else "GTS"
+            self.E("JU", cc=self.ucc(c if when else UCC_NEG[c]), imm=target)
             return
         if isinstance(e, Bin) and e.op in self.CMPS:
             a = self.eval(e.a)
@@ -1603,7 +1695,8 @@ class Lowerer:
                 self.E("JMP", imm=self.loop_ends[-1])
                 return
             text = e.text if isinstance(e, Prose) else str(e)
-            what = oracle.statement(text) if isinstance(e, Prose) else None
+            what = oracle.statement(text) if isinstance(e, Prose) else \
+                oracle.statement(f"{e.f}()") if isinstance(e, Call) else None
             if what == "skip":
                 return
             if what == "HLT":

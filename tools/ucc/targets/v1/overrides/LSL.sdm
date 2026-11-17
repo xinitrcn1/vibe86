@@ -1,0 +1,20 @@
+# LSL—Load Segment Limit -- override
+# As LAR, with DEST := the descriptor's limit in bytes (scaled by G) for
+# segments, TSSs and LDTs (no gates).
+@operation
+IF CR0.PE = 0 OR RFLAGS.VM = 1 THEN #UD; FI;
+s := SRC AND FFFFH;
+ok := 0;
+IF (s AND FFFCH) != 0 THEN
+    IF (s AND 4) = 0 THEN tl := GDTR_LIMIT; tb := GDTR_BASE; ELSE tl := LDTR_LIMIT; tb := LDTR_BASE; FI;
+    IF (s OR 7) <= tl THEN
+        d := Linear64[tb + (s AND FFF8H)];
+        ty := SHR(d, 40) AND 1FH;
+        dpl := SHR(d, 45) AND 3;
+        IF (ty AND 10H) != 0 OR ty = 1 OR ty = 2 OR ty = 3 OR ty = 9 OR ty = 0BH THEN
+            IF ((ty AND 1CH) = 1CH) OR (dpl >= CPL AND dpl >= (s AND 3)) THEN ok := 1; FI;
+        FI;
+    FI;
+FI;
+IF ok = 1 THEN DEST := DescLimit(d); FI;
+ZF := ok;

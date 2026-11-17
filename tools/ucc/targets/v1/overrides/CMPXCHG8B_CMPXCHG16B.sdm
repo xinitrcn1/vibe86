@@ -1,0 +1,46 @@
+# CMPXCHG8B/CMPXCHG16B—Compare and Exchange Bytes -- override
+# 'IF (EDX:EAX = TEMP64) THEN ZF := 1; DEST := ECX:EBX; ELSE ZF := 0;
+# EDX:EAX := TEMP64; DEST := TEMP64; FI;' (and the 128-bit form with
+# RDX:RAX, RCX:RBX, which needs a 16-byte aligned operand: #GP(0)), with
+# the 64/128-bit values as two halves. The destination is always written.
+@operation
+IF OperandSize = 64
+    THEN
+        IF (EffectiveAddress(DEST) AND 0FH) != 0 THEN #GP(0); FI;
+        lo := Memory64[EffectiveAddress(DEST)];
+        hi := Memory64[EffectiveAddress(DEST) + 8];
+        IF lo = RAX AND hi = RDX
+            THEN
+                ZF := 1;
+                Memory64[EffectiveAddress(DEST)] := RBX;
+                Memory64[EffectiveAddress(DEST) + 8] := RCX;
+            ELSE
+                ZF := 0;
+                Memory64[EffectiveAddress(DEST)] := lo;
+                Memory64[EffectiveAddress(DEST) + 8] := hi;
+                RAX := lo;
+                RDX := hi;
+        FI;
+    ELSE
+        lo := Memory32[EffectiveAddress(DEST)];
+        hi := Memory32[EffectiveAddress(DEST) + 4];
+        IF lo = EAX AND hi = EDX
+            THEN
+                ZF := 1;
+                Memory32[EffectiveAddress(DEST)] := EBX;
+                Memory32[EffectiveAddress(DEST) + 4] := ECX;
+            ELSE
+                ZF := 0;
+                Memory32[EffectiveAddress(DEST)] := lo;
+                Memory32[EffectiveAddress(DEST) + 4] := hi;
+                EAX := lo;
+                EDX := hi;
+        FI;
+FI;
+@flags
+The ZF flag is set if the destination operand and EDX:EAX are equal; otherwise it is cleared. The CF, PF, AF, SF, and OF flags are unaffected.
+@opcodes
+0F C7 /1 | CMPXCHG8B m64 | M | Valid | Valid
+REX.W + 0F C7 /1 | CMPXCHG16B m128 | M | Valid | N.E.
+@encoding
+M | ModRM:r/m (r, w) | N/A | N/A | N/A

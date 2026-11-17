@@ -1,0 +1,8 @@
+# BOUND—Check Array Index Against Bounds -- override
+# 'IF (ArrayIndex < LowerBound OR ArrayIndex > UpperBound) THEN #BR;' with
+# the bounds the two signed values of the memory operand (the manual's
+# comparisons are signed).
+@operation
+lower := Memory[SRC];
+upper := Memory[EffectiveAddress(SRC) + OperandSize / 8];
+IF SignedLess(DEST, lower) OR SignedGreater(DEST, upper) THEN #BR; FI;

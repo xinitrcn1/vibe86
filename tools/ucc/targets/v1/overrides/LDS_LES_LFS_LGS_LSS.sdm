@@ -1,0 +1,9 @@
+# LDS/LES/LFS/LGS/LSS—Load Far Pointer -- override
+# 'SegmentRegister := SRC[Selector]; DEST := SRC[Offset];' with the segment
+# load MOV describes (LoadSegment), the selector after the offset in memory.
+# The manual's text nests its mode cases in a way that doesn't parse.
+@operation
+off := Memory[SRC];
+sel := Memory16[EffectiveAddress(SRC) + OperandSize / 8];
+LoadSegment(SegOfLoad, sel);
+DEST := off;

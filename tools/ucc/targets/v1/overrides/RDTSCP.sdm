@@ -1,0 +1,7 @@
+# RDTSCP—Read Time-Stamp Counter and Processor ID -- override
+# 'EDX:EAX := TimeStampCounter; ECX := IA32_TSC_AUX[31:0];'
+@operation
+tsc := TSC;
+EAX := tsc;
+EDX := SHR(tsc, 32);
+ECX := TSC_AUX;

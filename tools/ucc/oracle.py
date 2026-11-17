@@ -69,10 +69,11 @@ CONDITIONS = [
     (r"shadowstackenabled\(cpl\)( and dest != 0)?", lambda f: False),
     (r"shadowstackenabled\(cpl\) and.*", lambda f: False),
     (r"endbranchenabled\(cpl\)", lambda f: False),
-    (r"condition( true)?", lambda f: ("CC", f.cc)),
+    # JCXZ/JECXZ/JRCXZ (E3): the count register at the address size is zero
+    (r"condition( true)?", lambda f: "rCX = 0" if (f.map, f.opc) == (0, 0xE3) else ("CC", f.cc)),
     (r"cr4\.fred = 0", lambda f: True),           # v1 has no FRED: CR4.FRED is reserved
     (r"cr4\.fred = 1", lambda f: False),
-    (r"\(?operand size is 64-bit\)?", lambda f: f.osz == 64),
+    (r"\(?operand size is 64-bit\)?|operandsize is 64-bit", lambda f: f.osz == 64),
     (r"\(?rcx is not canonical\)?", lambda f: "NOT Canonical(RCX)"),
     (r"\(?rip is not canonical\)?", lambda f: "NOT Canonical(RIP)"),
     (r"\(?byte operation\)?", lambda f: f.osz == 8),
@@ -111,6 +112,9 @@ STATEMENTS = [
     (r"\(\* .* \*\)", "skip"),
     (r":", "skip"),
     (r"enter halt state", "HLT"),
+    # cache maintenance: v1 has no caches (WBINVD, INVD, CLFLUSH)
+    (r"(flush|writeback|write_back|flush_cache_line|flush_cache_line_optimized|"
+     r"cache_line_write_back|fetch|fetch_with_exclusive_ownership)\(.*\)", "skip"),
 ]
 
 

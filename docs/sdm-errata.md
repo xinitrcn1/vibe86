@@ -24,3 +24,5 @@ Developer's Manual, Vol. 2, order no. 325383-093US (September 2026).
 | E-13 | SDM, CMC | no Operation section | `CF := NOT CF` (Description) | missing | override `CMC.sdm` |
 | E-14 | SDM, RDMSR, opcode table | the 0F 32 row has no Instruction column (it shares the table with the VEX MSR_IMM form) | `0F 32 \| RDMSR \| ZO \| Valid \| Valid` | table layout | opcode override |
 | E-15 | SDM, LFENCE and MFENCE, opcode tables | Opcode/Op-En/64-32 bit/CPUID layout without an Instruction column | | table layout | opcode overrides |
+| E-16 | SDM, SETcc, opcode table | rows like `0F 94 \| SETE r/m8` without `/r` (or `/0`), though the instruction has a ModRM byte | | table | forms.py infers ModRM from an r/m operand |
+| E-17 | SDM, CWD/CDQ/CQO, Operation | `DX := SignExtend(AX);` (and EDX/EAX, RDX/RAX) | DX:AX := SignExtend(AX): DX receives the sign only | notation | override `CWD_CDQ_CQO.sdm` |

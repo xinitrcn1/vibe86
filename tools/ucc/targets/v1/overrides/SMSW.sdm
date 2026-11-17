@@ -1,0 +1,9 @@
+# SMSW—Store Machine Status Word -- override
+# 'DEST := CR0[15:0]' (v1 writes 16 bits for the register form too), #GP(0)
+# with CR4.UMIP at CPL > 0. Opcodes: the page's 'r32/m16' and 'r64/m16'
+# rows are the same encoding as 'r/m16'.
+@opcodes
+0F 01 /4 | SMSW r/m16 | M | Valid | Valid
+@operation
+IF CR4.UMIP = 1 AND CPL > 0 THEN #GP(0); FI;
+DEST := CR0 AND FFFFH;

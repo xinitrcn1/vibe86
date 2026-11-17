@@ -1,0 +1,6 @@
+# CLWB—Cache Line Write Back -- override
+# 'Cache_Line_Write_Back(m8);' -- v1 has no caches; the operand is read so
+# the access faults as the instruction would. (The page's Operation ends in
+# a footnote about ModRM.mod, which isn't pseudocode.)
+@operation
+tmp := Memory8[EffectiveAddress(DEST)];

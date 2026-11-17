@@ -1,0 +1,7 @@
+# LMSW—Load Machine Status Word -- override
+# 'CR0[0:3] := SRC[0:3];' -- PE can be set but not cleared -- with #GP(0)
+# at CPL > 0.
+@operation
+IF CPL > 0 THEN #GP(0); FI;
+v := SRC AND 0FH;
+WriteSpecial(CR0, (CR0 AND FFFFFFFFFFFFFFF0H) OR v OR (CR0 AND 1));

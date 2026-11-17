@@ -47,8 +47,7 @@ IF CR0.PE = 0
         SetFlag(INTF, 0);
         SetFlag(TF, 0);
         SetFlag(AC, 0);
-        WriteSpecial(CS_SEL, cs);
-        WriteSpecial(CS_BASE, SHL(cs, 4));
+        SetSegmentReal(1, cs);
         RIP := ip;
     ELSE IF IA32_EFER.LMA = 1
     THEN

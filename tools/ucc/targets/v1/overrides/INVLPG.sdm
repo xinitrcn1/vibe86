@@ -1,0 +1,8 @@
+# INVLPG—Invalidate TLB Entries -- override
+# 'Invalidate(RelevantTLBEntries);' for the page holding the operand's
+# linear address (v1: the effective address; segment bases are 0 or FS/GS
+# in practice); #GP(0) at CPL > 0. The TLB drops every entry that could
+# map it.
+@operation
+IF CPL > 0 THEN #GP(0); FI;
+TlbInvalidate(2, EffectiveAddress(SRC));

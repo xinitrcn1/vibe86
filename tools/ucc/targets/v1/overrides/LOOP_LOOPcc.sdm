@@ -1,0 +1,14 @@
+# LOOP/LOOPcc—Loop According to ECX Counter -- override
+# The manual's Operation, with its prose ("IF AddressSize = 32 THEN Count is
+# ECX; ...") as the count register at the address size: decrement it, then
+# jump if it isn't zero (and, for LOOPE/LOOPNE, if ZF is 1 / 0). The target
+# is truncated to the operand size.
+@operation
+rCX := rCX - 1;
+IF rCX != 0 AND (LoopKind = 0 OR (LoopKind = 1 AND ZF = 1) OR (LoopKind = 2 AND ZF = 0))
+    THEN
+        tempRIP := RIP + SignExtend(DEST);
+        IF OperandSize = 16 THEN tempRIP := tempRIP AND FFFFH; FI;
+        IF OperandSize = 32 THEN tempRIP := tempRIP AND FFFFFFFFH; FI;
+        RIP := tempRIP;
+FI;

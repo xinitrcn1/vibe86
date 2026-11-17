@@ -1,0 +1,14 @@
+# POPA/POPAD—Pop All General-Purpose Registers -- override
+# The manual's Operation with its prose step ("Increment ESP by 4 (* Skip
+# next 4 bytes of stack *)") made explicit: the stack pointer's slot is
+# skipped. #UD in 64-bit mode (no such row).
+@operation
+IF OperandSize = 32 THEN
+    EDI := Pop(); ESI := Pop(); EBP := Pop();
+    sSP := sSP + 4;
+    EBX := Pop(); EDX := Pop(); ECX := Pop(); EAX := Pop();
+ELSE
+    DI := Pop(); SI := Pop(); BP := Pop();
+    sSP := sSP + 2;
+    BX := Pop(); DX := Pop(); CX := Pop(); AX := Pop();
+FI;

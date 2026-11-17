@@ -1,0 +1,31 @@
+# VERR/VERW—Verify a Segment for Reading or Writing -- override
+# The manual's Operation without its prose: ZF := 1 if the selector is
+# non-null, within the GDT/LDT limit, names a code or data segment visible
+# at max(CPL, RPL) (any conforming code segment is), and is readable (VERR:
+# data, or readable code) / writable (VERW: writable data); else ZF := 0.
+@operation
+IF CR0.PE = 0 OR RFLAGS.VM = 1 THEN #UD; FI;
+s := SRC AND FFFFH;
+ok := 0;
+IF (s AND FFFCH) != 0 THEN
+    IF (s AND 4) = 0 THEN tl := GDTR_LIMIT; tb := GDTR_BASE; ELSE tl := LDTR_LIMIT; tb := LDTR_BASE; FI;
+    IF (s OR 7) <= tl THEN
+        d := Linear64[tb + (s AND FFF8H)];
+        ty := SHR(d, 40) AND 1FH;
+        dpl := SHR(d, 45) AND 3;
+        IF (ty AND 10H) != 0 THEN
+            IF ((ty AND 0CH) = 0CH) OR (dpl >= CPL AND dpl >= (s AND 3)) THEN
+                IF IsVERW = 1
+                    THEN IF (ty AND 0AH) = 02H THEN ok := 1; FI;
+                    ELSE IF (ty AND 08H) = 0 OR (ty AND 02H) != 0 THEN ok := 1; FI;
+                FI;
+            FI;
+        FI;
+    FI;
+FI;
+ZF := ok;
+@opcodes
+0F 00 /4 | VERR r/m16 | M | Valid | Valid
+0F 00 /5 | VERW r/m16 | M | Valid | Valid
+@encoding
+M | ModRM:r/m (r) | N/A | N/A | N/A

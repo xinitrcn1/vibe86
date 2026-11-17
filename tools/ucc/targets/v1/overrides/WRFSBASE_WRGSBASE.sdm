@@ -1,0 +1,11 @@
+# WRFSBASE/WRGSBASE—Write FS/GS Segment Base -- override
+# 'FS/GS segment base address := SRC;' with #UD unless CR4.FSGSBASE = 1 and
+# #GP(0) for a non-canonical base.
+@operation
+IF CR4.FSGSBASE = 0 THEN #UD; FI;
+v := ZeroExtend(SRC);
+IF NOT Canonical(v) THEN #GP(0); FI;
+IF IsGS = 1
+    THEN WriteSpecial(GS_BASE, v);
+    ELSE WriteSpecial(FS_BASE, v);
+FI;

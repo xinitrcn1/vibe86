@@ -108,13 +108,31 @@ module v1_alu
     r = '0;
     unique case (op)
       U_ADD, U_ADC: begin
-        cin = (op == U_ADC) ? flags_in[0] : 1'b0;
+        // x = 1 (ADOX): OF is the carry in and the carry out, nothing else
+        cin = (op == U_ADC) ? (x == 4'd1 ? flags_in[11] : flags_in[0]) : 1'b0;
         wide = {1'b0, am} + {1'b0, bm} + {64'b0, cin};
         res = wide[63:0] & m;
         fl[CF] = (n == 64) ? wide[64] : wide[n];
         fl[OF] = (msb(am, sz) == msb(bm, sz)) && (msb(res, sz) != msb(am, sz));
         fl[AF] = (am[4] ^ bm[4] ^ res[4]);
         native = 6'h3F;
+        if (op == U_ADC && x == 4'd1) begin
+          fl[OF] = fl[CF];
+          native = 6'h20;
+        end
+      end
+      U_CRC32: begin
+        // CRC-32C (Castagnoli, reflected polynomial 82F63B78h) of b's n bytes into a
+        logic [31:0] crc;
+        crc = a[31:0];
+        for (int i = 0; i < 8; i++) begin
+          if (i < n / 8) begin
+            crc = crc ^ {24'b0, b[8 * i +: 8]};
+            for (int k = 0; k < 8; k++)
+              crc = crc[0] ? ((crc >> 1) ^ 32'h82F63B78) : (crc >> 1);
+          end
+        end
+        res = {32'b0, crc};
       end
       U_SUB, U_SBB: begin
         cin = (op == U_SBB) ? flags_in[0] : 1'b0;
@@ -215,6 +233,31 @@ module v1_alu
           fl[CF] = c0;
           if (op == U_RCL) fl[OF] = msb(v, sz) ^ c0;
           native = (1 << CF) | (1 << OF);
+        end
+      end
+      U_SHLD, U_SHRD: begin
+        // a double shift: dst = a shifted, filled from b (count c, masked as
+        // SHL's; a count above the operand size leaves the result undefined)
+        cnt = 7'(c & ((sz == 2'd3) ? 64'd63 : 64'd31));
+        res = am;
+        if (cnt != 0) begin
+          logic [127:0] w2;
+          if (op == U_SHLD) begin
+            w2 = ({64'b0, am} << n) | {64'b0, bm};       // a:b
+            w2 = w2 << cnt;
+            res = 64'(w2 >> n) & m;
+            fl[CF] = (cnt <= 7'(n)) ? am[n - cnt] : 1'b0;
+          end else begin
+            w2 = ({64'b0, bm} << n) | {64'b0, am};       // b:a
+            w2 = w2 >> cnt;
+            res = w2[63:0] & m;
+            fl[CF] = (cnt <= 7'(n)) ? am[cnt - 1] : 1'b0;
+          end
+          fl[OF] = msb(res, sz) != msb(am, sz);
+          fl[SF] = msb(res, sz);
+          fl[ZF] = res == 0;
+          fl[PF] = parity(res[7:0]);
+          native = (1 << CF) | (1 << OF) | (1 << SF) | (1 << ZF) | (1 << PF);
         end
       end
       U_MULU, U_MULS, U_IMULT: begin

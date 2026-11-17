@@ -1,0 +1,9 @@
+# XGETBV—Get Value of Extended Control Register -- override
+# 'EDX:EAX := XCR[ECX];' for XCR0 (and ECX = 1: XINUSE, reported as XCR0);
+# #GP(0) for other registers, #UD unless CR4.OSXSAVE = 1.
+@operation
+IF CR4.OSXSAVE = 0 THEN #UD; FI;
+IF ECX != 0 AND ECX != 1 THEN #GP(0); FI;
+v := XCR0;
+EAX := v;
+EDX := SHR(v, 32);

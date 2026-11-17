@@ -161,6 +161,60 @@ def columns(line):
 FOOTNOTE = re.compile(r"(r/m8|r8|m8)\*?\d\b")
 
 
+MODE2 = re.compile(r"^(V|N\.E\.|N\.S\.|I|Inv\.?)/(V|N\.E\.|N\.S\.|I|Inv\.?)$")
+STACKED_ROW = re.compile(
+    r"^\s{0,6}(?P<op>(?:NP\s+|NFx\s+)?(?:[0-9A-F]{2}\b|REX|VEX\.|EVEX\.|MAP|NP)\S*(?:\s\S+)*?)"
+    r"\s{2,}(?P<open>[A-Z][A-Za-z0-9-]{0,5})\s+(?P<mode>\S+/\S+)(?:\s+(?P<rest>.*))?$")
+
+
+def mode_cols(m):
+    """'V/N.E.' (64-bit / 32-bit mode support) -> ('Valid', 'N.E.')."""
+    full = {"V": "Valid", "I": "Invalid", "Inv.": "Invalid", "Inv": "Invalid"}
+    a, b = m.split("/", 1)
+    return full.get(a, a), full.get(b, b)
+
+
+def opcode_rows_stacked(body):
+    """The 'Opcode/Instruction | Op/En | 64/32 bit Mode Support | CPUID
+    Feature Flag | Description' layout of the SSE/AVX pages: the instruction
+    is on the line(s) under its opcode."""
+    rows = []
+    in_table = False
+    cur = None
+    for line, _ in body:
+        if line == "\0page":
+            continue
+        s = line.strip()
+        if re.match(r"^Opcode\s?\*?\s?/", s):
+            in_table = True
+            cur = None
+            continue
+        if not in_table:
+            continue
+        if s.startswith("NOTES") or s.startswith("NOTE:") or "Instruction Operand Encoding" in s \
+                or s == "Description":
+            in_table = False
+            continue
+        if not s or s.startswith("Instruction") or s in ("Support", "Flag", "Mode"):
+            continue
+        m = STACKED_ROW.match(line)
+        if m and MODE2.match(m.group("mode")):
+            m64, mleg = mode_cols(m.group("mode"))
+            cur = [m.group("op").strip(), "", m.group("open"), m64, mleg]
+            rows.append(cur)
+            continue
+        indent = len(line) - len(line.lstrip())
+        if cur is not None and indent <= 3:
+            frag = re.split(r"\s{2,}", s)[0]
+            cur[1] = (cur[1] + " " + frag).strip() if cur[1] else frag
+    out = []
+    for r in rows:
+        if r[1]:
+            r[1] = re.sub(r"\s+,", ",", re.sub(r",(\S)", r", \1", r[1]))
+            out.append(r)
+    return out
+
+
 def opcode_rows(body):
     """The legacy-encoded rows of the opcode table(s), as 5-tuples.
 
@@ -263,7 +317,11 @@ def main(argv):
         with open(os.path.join(outdir, fname(name) + ".sdm"), "w") as f:
             f.write(f"# {title} -- Intel SDM 325383-{rev}, {page or '?'}\n")
             f.write("@opcodes\n")
-            for r in opcode_rows(body):
+            rows = opcode_rows(body)
+            if any(re.match(r"^Opcode\s?\*?\s?/", l.strip()) for l, _ in body if l != "\0page"):
+                rows = [r for r in rows if len(r) == 5 and r[1] and r[3] in
+                        ("Valid", "Invalid", "N.E.", "N.S.", "Inv.")] + opcode_rows_stacked(body)
+            for r in rows:
                 f.write(" | ".join(r) + "\n")
             f.write("@encoding\n")
             for r in encoding_rows(body):

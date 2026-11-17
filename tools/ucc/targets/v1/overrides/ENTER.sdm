@@ -1,0 +1,22 @@
+# ENTER—Make Stack Frame for Procedure Parameters -- override
+# The manual's Operation with its FOR loop over the nesting level written as
+# a WHILE (the level is a run-time immediate): push (R/E)BP, copy level - 1
+# frame pointers from the enclosing frame, push the new frame pointer, then
+# (R/E)BP := the frame and the stack pointer lowered by the allocation size.
+@operation
+size := SRC AND FFFFH;
+level := IMM2 AND 1FH;
+Push(RBP);
+frame := sSP;
+IF level > 0 THEN
+    i := 1;
+    WHILE i < level
+    DO
+        sBP := sBP - OperandSize / 8;
+        Push(Memory[SS:sBP]);
+        i := i + 1;
+    OD;
+    Push(frame);
+FI;
+sBP := frame;
+sSP := sSP - size;

@@ -1,0 +1,16 @@
+# MOVDIR64B—Move 64 Bytes as Direct Store -- override
+# 'DEST := SRC;' for 64 bytes: from the memory operand to ES:[register at
+# the address size], which must be 64-byte aligned (#GP(0)). v1's bus has no
+# 64-byte write from the core yet, so the store is eight 8-byte stores (not
+# a single atomic write as the manual guarantees: a v1 deviation).
+@operation
+dst := DEST;
+IF AddressSize = 16 THEN dst := dst AND FFFFH; FI;
+IF AddressSize = 32 THEN dst := dst AND FFFFFFFFH; FI;
+IF (dst AND 3FH) != 0 THEN #GP(0); FI;
+i := 0;
+WHILE i < 64
+DO
+    Memory64[ES:dst + i] := Memory64[EffectiveAddress(SRC) + i];
+    i := i + 8;
+OD;

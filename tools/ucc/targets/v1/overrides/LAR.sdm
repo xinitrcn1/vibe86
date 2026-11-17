@@ -1,0 +1,23 @@
+# LAR—Load Access Rights Byte -- override
+# The manual's Operation: for a non-null selector within the table limit
+# naming a segment or a valid system descriptor (TSS, LDT, call/task gate)
+# visible at max(CPL, RPL) (conforming code: any), DEST := the descriptor's
+# access rights (bits 23:8 of its second doubleword, masked 00F0FF00H) and
+# ZF := 1; else ZF := 0 and DEST unchanged.
+@operation
+IF CR0.PE = 0 OR RFLAGS.VM = 1 THEN #UD; FI;
+s := SRC AND FFFFH;
+ok := 0;
+IF (s AND FFFCH) != 0 THEN
+    IF (s AND 4) = 0 THEN tl := GDTR_LIMIT; tb := GDTR_BASE; ELSE tl := LDTR_LIMIT; tb := LDTR_BASE; FI;
+    IF (s OR 7) <= tl THEN
+        d := Linear64[tb + (s AND FFF8H)];
+        ty := SHR(d, 40) AND 1FH;
+        dpl := SHR(d, 45) AND 3;
+        IF (ty AND 10H) != 0 OR ty = 1 OR ty = 2 OR ty = 3 OR ty = 4 OR ty = 5 OR ty = 9 OR ty = 0BH OR ty = 0CH THEN
+            IF ((ty AND 1CH) = 1CH) OR (dpl >= CPL AND dpl >= (s AND 3)) THEN ok := 1; FI;
+        FI;
+    FI;
+FI;
+IF ok = 1 THEN DEST := SHR(d, 32) AND 00F0FF00H; FI;
+ZF := ok;

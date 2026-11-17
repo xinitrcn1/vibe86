@@ -1,0 +1,12 @@
+# AAM—ASCII Adjust AX After Multiply -- override
+# 'tempAL := AL; AH := tempAL / imm8; AL := tempAL MOD imm8;' (#DE for a
+# zero divisor) with one division (DivU); SF, ZF and PF of AL.
+@operation
+IF imm8 = 0 THEN #DE; FI;
+q := DivU(0, AL, imm8);
+r := Remainder();
+AH := q;
+AL := r;
+SF := MSB(AL);
+IF AL = 0 THEN ZF := 1; ELSE ZF := 0; FI;
+PF := BitwiseXNOR(AL);

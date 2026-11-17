@@ -1,0 +1,7 @@
+# ADCX—Unsigned Integer Addition of Two Operands With Carry Flag -- override
+# 'DEST := DEST + SRC + CF;' with only CF written (the manual's Operation
+# says it through prose: "IF OperandSize is 64-bit ..."); the ADC idiom.
+@operation
+DEST := DEST + SRC + CF;
+@flags
+The CF flag is set according to the result. The OF, SF, ZF, AF and PF flags are not affected.

@@ -94,7 +94,8 @@ OPCODE_TOKEN = re.compile(r"[0-9A-F]{2}\+?$")
 
 def parse_opcode(f, col):
     """Fill map/opc/digit/modrm/imm/rexw/mprefix from the opcode column."""
-    s = col.replace("REX.W +", "REX.W ").replace("REX.R +", "REX.R ").replace("REX +", "REX ")
+    s = col.replace("REX.w", "REX.W")
+    s = s.replace("REX.W +", "REX.W ").replace("REX.R +", "REX.R ").replace("REX +", "REX ")
     s = re.sub(r"\+\s*(r[bwdo])\b", r"+\1", s)   # 'B8+ rd' -> 'B8+rd'
     s = re.sub(r"([0-9A-F]{2})\s*\+r", r"\1 +r", s)
     s = re.sub(r"/(\d|r)", r" /\1", s)
@@ -163,7 +164,7 @@ def parse_opcode(f, col):
     f.opc = rest[0]
 
 
-SIZED = re.compile(r"^(r/m|r|m|imm|rel|moffs)(8|16|32|64)$")
+SIZED = re.compile(r"^(r/m|r|m|imm|rel|moffs)(8|16|32|64|128|256|512)$")
 FIXED = {"AL": 8, "CL": 8, "DL": 8, "BL": 8, "AX": 16, "DX": 16, "EAX": 32, "RAX": 64}
 
 
@@ -172,6 +173,10 @@ def parse_operands(f, enc):
     # footnote marks on operands: 'MOV Sreg, r/m162', 'MOV r64/m16, Sreg2'
     ins = re.sub(r"\b(Sreg|r/m16|r/m64|r/m32)\d\b", r"\1", ins)
     ins = re.sub(r"\bmoffs(8|16|64)3\b", r"moffs\1", ins)
+    # 'LAR r16, r16/m16', 'SMSW r32/m16': a register or a 16-bit memory operand
+    ins = re.sub(r"\br(16|32|64)/m16\d?\b", "r/m16", ins)
+    # 'MOVDIR64B r16/r32/r64, m512': a register of the address size
+    ins = ins.replace("r16/r32/r64", "rasz")
     parts = ins.split(None, 1)
     f.mnem = parts[0]
     ops = [o.strip() for o in parts[1].split(",")] if len(parts) > 1 else []
@@ -202,6 +207,8 @@ def parse_operands(f, enc):
             else:
                 raise FormError(f"operand '{o}'")
             f.operands.append(Operand(kind, sz, text=o))
+        elif o == "rasz":
+            f.operands.append(Operand("reg", 0, text=o))
         elif o in ("m",) or re.match(r"^m\d+&\d+$", o):
             f.operands.append(Operand("mem", 0, text=o))
         elif o in FIXED:
@@ -233,7 +240,7 @@ SUFFIX = {"B": 8, "W": 16, "D": 32, "Q": 64}
 
 def operand_size(f):
     for o in f.operands:
-        if o.kind in ("rm", "reg", "opreg", "mem", "fixed") and o.size:
+        if o.kind in ("rm", "reg", "opreg", "mem", "fixed") and o.size and o.size <= 64:
             return o.size
     for o in f.operands:
         if o.kind in ("farptr", "farmem"):
@@ -257,6 +264,9 @@ def make_forms(page, cfg):
     for row in page.opcodes:
         if len(row) < 4:
             continue
+        if len(row) >= 4 and " " in row[2] and row[2].split()[-1] in ("Valid", "Invalid", "N.E."):
+            # columns run together by pdftotext: 'MRC Valid | Valid | Shift ...'
+            row = [row[0], row[1], row[2].split()[0], row[2].split()[-1], row[3]]
         opcol, ins, open_, m64 = row[0], row[1], row[2], row[3]
         mleg = row[4] if len(row) > 4 else ""
         ok64 = m64.startswith("Valid") or m64 in ("V", "V/V", "V/N.E.")
@@ -318,6 +328,11 @@ def make_forms(page, cfg):
             continue
         if (f.page in ("Jcc", "SETcc", "CMOVcc")) or cfg.get("cc"):
             f.cc = f.opc & 0xF
+        # an r/m operand means a ModRM byte, even where the opcode column
+        # doesn't say /r (SETcc: '0F 94 | SETE r/m8')
+        if any(o.kind == "rm" or (o.kind == "mem" and not f.hints.get("moffs"))
+               for o in f.operands):
+            f.modrm = True
         f.hints["sized"] = operand_size(f) is not None
         if (f.map, f.opc) == (0, 0x90):
             # 90h is NOP/PAUSE without REX.B and XCHG with a register otherwise

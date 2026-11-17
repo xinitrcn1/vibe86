@@ -1,0 +1,7 @@
+# RDPMC—Read Performance-Monitoring Counters -- override
+# 'EDX:EAX := PMC[ECX]' with #GP(0) at CPL > 0 unless CR4.PCE = 1, and for
+# a counter that doesn't exist. v1 implements none of the core counters
+# (PERFCORE is reported 0 in CPUID), so every index raises #GP(0).
+@operation
+IF CPL > 0 AND CR4.PCE = 0 THEN #GP(0); FI;
+#GP(0);

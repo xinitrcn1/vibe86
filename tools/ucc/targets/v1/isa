@@ -41,7 +41,7 @@ POP                 class=d64  skip='POP CS'
 CALL                class=f64
 RET                 class=f64  immz  immnotsize   # imm16 is a byte count, not the operand size
 JMP                 class=f64
-Jcc                 skip='CXZ'               class=f64
+Jcc                 class=f64
 LEAVE               class=d64
 # shifts, rotates, bits
 SAL_SAR_SHL_SHR
@@ -103,3 +103,67 @@ SYSRET
 SYSENTER
 SYSEXIT
 MOV_Move_to_from_Debug_Registers     crreg  anymod
+INS_INSB_INSW_INSD             rep=F3  suffixed=INS   only='INS[BWD]$'
+OUTS_OUTSB_OUTSW_OUTSD         rep=F3  suffixed=OUTS  only='OUTS[BWD]$'
+SHLD
+SHRD
+# legacy and system instructions (BIOS-era code: SeaBIOS, DOS, MikeOS)
+PUSHA_PUSHAD
+POPA_POPAD
+ENTER              class=d64  skip='iw 0[01]'
+LOOP_LOOPcc
+XLAT_XLATB
+CLTS
+LMSW
+SMSW               anyosz
+STR                anyosz
+SLDT               anyosz
+INVD
+WBINVD
+INVLPG             memonly
+AAA
+AAS
+AAD                skip='D5 0A'
+AAM                skip='D4 0A'
+DAA
+DAS
+LAR                anyosz
+LSL                anyosz
+VERR_VERW          anyosz
+ARPL               anyosz
+BOUND
+LDS_LES_LFS_LGS_LSS
+CMPXCHG8B_CMPXCHG16B
+CLFLUSH            memonly
+MOVBE
+RDTSCP
+RDPID              anymod
+# general-purpose and system extensions of the Venice target (D-007)
+ADCX
+ADOX
+CLAC
+STAC
+CLFLUSHOPT         memonly
+CLWB               memonly
+CRC32
+ENDBR32
+ENDBR64
+INVPCID            memonly
+MONITOR
+MWAIT
+MOVDIRI            memonly
+MOVDIR64B          memonly
+MOVNTI             memonly
+PREFETCHW          memonly
+PREFETCHh          memonly
+RDFSBASE_RDGSBASE  anymod
+WRFSBASE_WRGSBASE  anymod
+RDPKRU
+WRPKRU
+RDPMC
+RDRAND             anymod
+RDSEED             anymod
+SWAPGS
+XGETBV
+XSETBV
+WBNOINVD

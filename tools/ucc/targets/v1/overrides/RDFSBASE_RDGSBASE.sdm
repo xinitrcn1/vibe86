@@ -1,0 +1,6 @@
+# RDFSBASE/RDGSBASE—Read FS/GS Segment Base -- override
+# 'DEST := FS/GS segment base address;' (truncated to 32 bits for the 32-bit
+# form); #UD unless CR4.FSGSBASE = 1 (in 64-bit mode only: the rows).
+@operation
+IF CR4.FSGSBASE = 0 THEN #UD; FI;
+IF IsGS = 1 THEN DEST := GS_BASE; ELSE DEST := FS_BASE; FI;

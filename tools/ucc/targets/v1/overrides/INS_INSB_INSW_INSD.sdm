@@ -1,0 +1,28 @@
+# INS/INSB/INSW/INSD -- override
+# The manual's Operation: the I/O permission check (as IN: IOPermitted),
+# 'DEST := SRC' from port DX to ES:(E)DI, (E)DI stepped by the element size
+# (DF), and the REP prefix's loop for the F3 forms ("WHILE CountReg != 0",
+# the REP page), committing each iteration.
+@operation
+IF IOPermitted(DX, OperandSize / 8) = 0 THEN #GP(0); FI;
+IF DF = 0
+    THEN delta := OperandBytes;
+    ELSE delta := 0 - OperandBytes;
+FI;
+IF RepPrefix
+    THEN
+        WHILE rCX != 0
+        DO
+            tmp := InPort(DX);
+            Memory[ES:rDI] := tmp;
+            rDI := rDI + delta;
+            rCX := rCX - 1;
+            Commit;
+        OD;
+    ELSE
+        tmp := InPort(DX);
+        Memory[ES:rDI] := tmp;
+        rDI := rDI + delta;
+FI;
+@flags
+None.

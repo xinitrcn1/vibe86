@@ -1,0 +1,20 @@
+# MOVBE—Move Data After Swapping Bytes -- override
+# 'TEMP := SRC; DEST := ByteSwap(TEMP)'. Opcodes: the page's table has no
+# Instruction column.
+@opcodes
+0F 38 F0 /r | MOVBE r16, m16 | RM | Valid | Valid
+0F 38 F0 /r | MOVBE r32, m32 | RM | Valid | Valid
+REX.W + 0F 38 F0 /r | MOVBE r64, m64 | RM | Valid | N.E.
+0F 38 F1 /r | MOVBE m16, r16 | MR | Valid | Valid
+0F 38 F1 /r | MOVBE m32, r32 | MR | Valid | Valid
+REX.W + 0F 38 F1 /r | MOVBE m64, r64 | MR | Valid | N.E.
+@encoding
+RM | ModRM:reg (w) | ModRM:r/m (r) | N/A | N/A
+MR | ModRM:r/m (w) | ModRM:reg (r) | N/A | N/A
+@operation
+IF OperandSize = 16
+    THEN
+        t := SRC;
+        DEST := SHR(t, 8) OR SHL(t AND FFH, 8);
+    ELSE DEST := BitScan(BSWAP, SRC);
+FI;

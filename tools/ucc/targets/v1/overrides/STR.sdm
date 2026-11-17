@@ -1,0 +1,7 @@
+# STR—Store Task Register -- override
+# 'DEST := TR(SegmentSelector)'; #GP(0) with CR4.UMIP at CPL > 0, #UD in
+# real-address and virtual-8086 mode.
+@operation
+IF CR0.PE = 0 OR RFLAGS.VM = 1 THEN #UD; FI;
+IF CR4.UMIP = 1 AND CPL > 0 THEN #GP(0); FI;
+DEST := TR_SEL;

@@ -1,0 +1,10 @@
+# RDPID—Read Processor ID -- override
+# 'DEST := IA32_TSC_AUX' (zero-extended). Opcodes: the page's table has no
+# Instruction column.
+@opcodes
+F3 0F C7 /7 | RDPID r32 | R | N.E. | Valid
+F3 0F C7 /7 | RDPID r64 | R | Valid | N.E.
+@encoding
+R | ModRM:r/m (w) | N/A | N/A | N/A
+@operation
+DEST := TSC_AUX;

@@ -1,0 +1,7 @@
+# CRC32—Accumulate CRC32 Value -- override
+# The manual's Operation spells out CRC-32C (the Castagnoli polynomial
+# 11EDC6F41H, bit-reflected) as BIT_REFLECT/MOD2 steps followed by prose
+# notes; v1's ALU computes the same CRC (Crc32). The 64-bit forms
+# zero-extend the 32-bit CRC.
+@operation
+DEST := Crc32(DEST, SRC);

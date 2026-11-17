@@ -1,0 +1,15 @@
+# XSETBV—Set Extended Control Register -- override
+# 'XCR[ECX] := EDX:EAX;' for XCR0 with its rules (Vol. 1 13.3): bit 0 (x87)
+# set, AVX (bit 2) only with SSE (bit 1), the AVX-512 bits 7:5 all or none
+# and only with AVX; only bits the target supports (x87, SSE, AVX, opmask,
+# ZMM_Hi256, Hi16_ZMM, PKRU: E7H | 200H). #GP(0) otherwise or at CPL > 0.
+@operation
+IF CR4.OSXSAVE = 0 THEN #UD; FI;
+IF CPL > 0 OR ECX != 0 THEN #GP(0); FI;
+v := SHL(ZeroExtend(EDX), 32) OR ZeroExtend(EAX);
+IF (v AND FFFFFFFFFFFFFD18H) != 0 THEN #GP(0); FI;
+IF (v AND 1) = 0 THEN #GP(0); FI;
+IF (v AND 6) = 4 THEN #GP(0); FI;
+IF (v AND E0H) != 0 AND (v AND E0H) != E0H THEN #GP(0); FI;
+IF (v AND E0H) != 0 AND (v AND 4) = 0 THEN #GP(0); FI;
+WriteSpecial(XCR0, v);
