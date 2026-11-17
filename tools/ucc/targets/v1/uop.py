@@ -85,8 +85,14 @@ OPS = [
     "FGETEXP", "FGETMANT", "FSCALE", "FRCP", "FRSQRT", "FFIXUP", "FRANGE", "FREDUCE", "FCLASS",
     "FXAM", "FPREM", "FTRIG", "FLOG", "FEXP",   # x87 transcendental/partial remainder (x: variant)
     # vectors and lanes
-    "VGET",                # dst (scalar) := element imm of vector a (et)
-    "VSET",                # vector dst element imm := scalar a (et)
+    # lane-serial vector access (D-015): bit offsets, element width = sz
+    "VGET",                # dst (scalar SEL) := vector b (VSEL)[rd(a) + imm +: sz], zero-extended
+    "VSET",                # vector dst (VSEL)[rd(b) + imm +: sz] := a (scalar SEL)
+    "VZUP",                # vector dst (VSEL)[511:imm] := 0 (DEST[MAXVL-1:VL] := 0)
+    "VMOVR",               # vector dst (VSEL) := vector a (VSEL), all 512 bits
+    "FPCHK",               # end of an SSE/AVX FP instruction: unmasked MXCSR exceptions
+                           # raised by it -> #XM (#UD without CR4.OSXMMEXCPT), else
+                           # MXCSR's flags |= them (Intel SDM Vol. 1 11.5.1)
     "VBCAST",              # every element of dst := scalar a, or element 0 of vector a
     "VPERM",               # dst := elements of a selected by index vector b (x: 2-source)
     "VSHUF",               # dst := imm8 shuffle of a/b within 128-bit lanes (x: pattern kind)
