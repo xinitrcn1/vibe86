@@ -48,3 +48,6 @@ add_test(NAME tools/ucc
   COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ucc.py)
 set_tests_properties(tools/ucc PROPERTIES ENVIRONMENT
   "VIBE86_EXTRACTED=${UCC_SDM};VIBE86_UCODE_PKG=${CMAKE_BINARY_DIR}/rtl/${VIBE86_LATEST}/gen/${VIBE86_LATEST}_ucode_pkg.sv")
+
+# jtag: the JTAG probe (vsim -D) end to end
+add_subdirectory(jtag)
