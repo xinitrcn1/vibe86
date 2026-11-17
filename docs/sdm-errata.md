@@ -27,3 +27,7 @@ Developer's Manual, Vol. 2, order no. 325383-093US (September 2026).
 | E-16 | SDM, SETcc, opcode table | rows like `0F 94 \| SETE r/m8` without `/r` (or `/0`), though the instruction has a ModRM byte | | table | forms.py infers ModRM from an r/m operand |
 | E-17 | SDM, CWD/CDQ/CQO, Operation | `DX := SignExtend(AX);` (and EDX/EAX, RDX/RAX) | DX:AX := SignExtend(AX): DX receives the sign only | notation | override `CWD_CDQ_CQO.sdm` |
 | E-18 | SDM, CMPXCHG, Operation | `ELSE accumulator := TEMP; DEST := TEMP;` | for a register destination nothing is written (a 32-bit write would zero-extend the register in 64-bit mode; Intel and AMD processors leave it); the write-back is the memory operand's locked cycle | semantics | override `CMPXCHG.sdm` |
+| E-19 | SDM, PADDUSB, Operation | the last lane is spelled `SaturateToUnSignedByte (` where the first is `SaturateToUnsignedByte(` | the same function | spelling | the lane interpolation compares statements ignoring case and spacing (vector.py) |
+| E-20 | SDM, PMINUB, Operation | 128-bit form: `ELSE DEST[15:0] := SRC[7:0]`; 64-bit form: `SRC[17:0]` | `DEST[7:0] := SRC[7:0]`, `SRC[7:0]` (bytes) | off by one field | override `PMINUB_PMINUW.sdm` |
+| E-21 | SDM, PMAXUB, Operation | as E-20 (`DEST[15:0] := SRC[7:0]`, `SRC[17:0])` with an unbalanced parenthesis) | as E-20 | off by one field | override `PMAXUB_PMAXUW.sdm` |
+| E-22 | SDM, PADDSB and VPADDSB, Operation | the last lane reads `DEST[111:120]` / `SRC1[111:120]` | `DEST[127:120]` / `SRC1[127:120]` | typo | override `PADDSB_PADDSW.sdm` |

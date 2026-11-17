@@ -1,0 +1,13 @@
+# PADDSB/PADDSW -- override (docs/sdm-errata.md E-22): PADDSB's 128-bit
+# form ends 'DEST[127:120] := SaturateToSignedByte (DEST[111:120] +
+# SRC[127:120])'; meant is DEST[127:120] + SRC[127:120]. One section per
+# mnemonic, as the manual's (legacy 128-bit forms).
+@operation
+PADDSB (With 128-bit Operands)
+FOR b := 0 TO 15
+    DEST[8 * b + 7:8 * b] := SaturateToSignedByte(DEST[8 * b + 7:8 * b] + SRC[8 * b + 7:8 * b]);
+ENDFOR
+PADDSW (With 128-bit Operands)
+FOR w := 0 TO 7
+    DEST[16 * w + 15:16 * w] := SaturateToSignedWord(DEST[16 * w + 15:16 * w] + SRC[16 * w + 15:16 * w]);
+ENDFOR

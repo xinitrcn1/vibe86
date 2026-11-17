@@ -1,0 +1,10 @@
+# PMAXUB -- override (docs/sdm-errata.md E-21): as PMINUB (E-20), the
+# 128-bit legacy form's first lane reads 'DEST[15:0] := SRC[7:0]' (and the
+# 64-bit form's 'SRC[17:0])'); meant is DEST[7:0] := SRC[7:0], each byte the
+# unsigned maximum. Only PMAXUB xmm is selected (the isa file).
+@operation
+FOR b := 0 TO 15
+    IF DEST[8 * b + 7:8 * b] <= SRC[8 * b + 7:8 * b]
+        THEN DEST[8 * b + 7:8 * b] := SRC[8 * b + 7:8 * b];
+    FI;
+ENDFOR
