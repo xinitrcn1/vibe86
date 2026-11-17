@@ -7,7 +7,10 @@
 
 #include "board.h"
 
+uint64_t board_ram_size = SRAM_SIZE;
+
 static void mce_cb(void *ctx, int type, uint64_t pa);
+static void board_debugcon(void *ctx, uint8_t c);
 static int dma_mem(void *ctx, int we, uint64_t pa, unsigned n, uint8_t *data);
 static int dma_msi(void *ctx, uint64_t pa, uint64_t v);
 
@@ -25,8 +28,24 @@ board_init(struct board *b, int kind, const char *path, const struct dimm_cfg *d
 	if (!b->eeprom)
 		return -1;
 	memset(b->eeprom, 0xFF, EEPROM_SIZE);
-	if (kind == BOARD_TEST && !(b->sram = calloc(1, SRAM_SIZE)))
+	b->ram_size = kind == BOARD_TEST ? board_ram_size : 0;
+	if (kind == BOARD_TEST && !(b->sram = calloc(1, b->ram_size)))
 		return -1;
+	pc_init(&b->pc, b->ram_size, 1);
+	b->pc.mem = dma_mem;
+	b->pc.memctx = b;
+	b->pc.debugcon = board_debugcon;
+	b->pc.dbgctx = b;
+	if (b->ram_size) {
+		/* fw_cfg "etc/e820": the RAM (QEMU's format: u64 address, u64 length, u32 type) */
+		uint8_t e[20];
+		uint64_t len = b->ram_size;
+		memset(e, 0, sizeof e);
+		for (int i = 0; i < 8; i++)
+			e[8 + i] = (uint8_t)(len >> (8 * i));
+		e[16] = 1;
+		pc_fwcfg_add(&b->pc, "etc/e820", e, sizeof e);
+	}
 	if (vga_init(&b->vga))
 		return -1;
 	b->pmc.msi = board_msi;
@@ -142,6 +161,8 @@ void
 board_reset(struct board *b)
 {
 	b->power = PWR_ON;
+	pc_reset(&b->pc);
+	b->cf8 = 0;
 	memset(&b->qport, 0, sizeof b->qport);
 	b->evh = b->evn = 0;
 	b->syscon_mce_addr = 0;
@@ -162,10 +183,89 @@ board_suspended(const struct board *b)
 	return b->pmc.suspended;
 }
 
+static void
+board_debugcon(void *ctx, uint8_t c)
+{
+	struct board *b = ctx;
+	if (b->debugcon)
+		b->debugcon(b->dbgctx, c);
+}
+
+int
+board_pic_pending(struct board *b, uint8_t *vector)
+{
+	if (!pc_pic_intr(&b->pc))
+		return 0;
+	struct pc tmp = b->pc;		/* the vector INTA would return */
+	*vector = pc_pic_inta(&tmp);
+	return 1;
+}
+
+void
+board_pic_ack(struct board *b)
+{
+	(void)pc_pic_inta(&b->pc);
+}
+
+/*
+ * The legacy region below 1 MiB (test board): A0000-BFFFF is the VGA
+ * window (not decoded yet: reads all ones), C0000-FFFFF is RAM shadowed
+ * under the host bridge's PAM registers: reads go to RAM when the region's
+ * RE bit is set, else to the flash (E0000-FFFFF: its last 128 KiB, the
+ * BIOS's legacy alias; C0000-DFFFF: no option ROMs, all ones); writes go to
+ * RAM when WE is set, else nowhere.
+ */
+static unsigned
+pam_bits(struct board *b, uint64_t a)
+{
+	if (!b->pcie)
+		return 3;
+	if (a >= 0xF0000)
+		return (b->pcie->host.cfg[0x59] >> 4) & 3;
+	unsigned k = (unsigned)((a - 0xC0000) >> 14);
+	uint8_t r = b->pcie->host.cfg[0x5A + k / 2];
+	return (k & 1) ? (r >> 4) & 3 : r & 3;
+}
+
+static int
+legacy_access(struct board *b, int we, uint64_t addr, unsigned n, uint8_t *data)
+{
+	for (unsigned i = 0; i < n; i++) {
+		uint64_t a = addr + i;
+		if (a < 0xA0000 || a >= 0x100000) {
+			if (we)
+				b->sram[a] = data[i];
+			else
+				data[i] = b->sram[a];
+		} else if (a < 0xC0000) {
+			if (!we)
+				data[i] = 0xFF;
+		} else {
+			unsigned pam = pam_bits(b, a);
+			if (we) {
+				if (pam & 2)
+					b->sram[a] = data[i];
+			} else if (pam & 1)
+				data[i] = b->sram[a];
+			else if (a >= 0xE0000)
+				data[i] = b->eeprom[EEPROM_SIZE - 0x20000 + (a - 0xE0000)];
+			else
+				data[i] = 0xFF;
+		}
+	}
+	return 0;
+}
+
 void
 board_tick(struct board *b)
 {
 	b->now++;
+	pc_tick(&b->pc);
+	if (b->pc.power_off) {
+		b->pc.power_off = 0;
+		board_nvram_flush(b);
+		b->power = PWR_OFF;
+	}
 	if (b->dram)
 		dram_tick(b->dram);
 	if (b->pcie)
@@ -301,12 +401,9 @@ board_access(struct board *b, int we, uint64_t addr, unsigned size, uint8_t *dat
 	*lat = 1;
 	if (size > 6 || addr + n < addr)
 		return -1;
-	if (b->pcie) {
-		int r = pcie_access(b->pcie, we, addr, size, data);
-		if (r != 1)
-			return r;
-	}
 	b->accesses++;
+	if (b->sram && addr < 0x100000 && addr + n > 0xA0000 && addr + n <= b->ram_size)
+		return legacy_access(b, we, addr, (unsigned)n, data);
 	if (addr >= VGA_VRAM && addr + n <= VGA_VRAM + VGA_VRAM_SIZE)
 		return vga_mem(&b->vga, we, addr - VGA_VRAM, (unsigned)n, data);
 	if (addr >= VGA_REGS && addr + n <= VGA_REGS + 0x1000)
@@ -338,7 +435,7 @@ board_access(struct board *b, int we, uint64_t addr, unsigned size, uint8_t *dat
 		memcpy(data, b->eeprom + (addr - EEPROM_BASE), n);
 		return 0;
 	}
-	if (b->sram && addr >= SRAM_BASE && addr + n <= SRAM_BASE + SRAM_SIZE) {
+	if (b->sram && addr >= SRAM_BASE && addr + n <= SRAM_BASE + b->ram_size) {
 		if (we)
 			memcpy(b->sram + (addr - SRAM_BASE), data, n);
 		else
@@ -444,6 +541,14 @@ board_access(struct board *b, int we, uint64_t addr, unsigned size, uint8_t *dat
 		memcpy(data, &b->straps, 4);	/* little-endian host */
 		return 0;
 	}
+	/* everything the board doesn't decode goes to PCI (the host bridge
+	   decodes its RAM first, as a PC chipset does: a bridge window at 0
+	   mustn't shadow memory) */
+	if (b->pcie) {
+		int r = pcie_access(b->pcie, we, addr, size, data);
+		if (r != 1)
+			return r;
+	}
 	return -1;
 }
 
@@ -483,6 +588,26 @@ board_io(struct board *b, int we, uint16_t port, unsigned size, uint8_t *data)
 		}
 		return 0;
 	}
+	/* PCI configuration mechanism #1 (PCI Local Bus Specification 3.0, 3.2.2.3.2) */
+	if (port == 0xCF8 && size == 2) {
+		if (we)
+			memcpy(&b->cf8, data, 4);
+		else
+			memcpy(data, &b->cf8, 4);
+		return 0;
+	}
+	if (port >= 0xCFC && port <= 0xCFF) {
+		if (!(b->cf8 >> 31) || !b->pcie) {
+			if (!we)
+				memset(data, 0xFF, n);
+			return 0;
+		}
+		pcie_cfg(b->pcie, we, (b->cf8 >> 16) & 0xFF, (b->cf8 >> 11) & 31, (b->cf8 >> 8) & 7,
+		    (b->cf8 & 0xFC) + (port & 3), size, data);
+		return 0;
+	}
+	if (pc_io(&b->pc, we, port, n, data))
+		return 0;
 	for (unsigned i = 0; i < n; i++) {
 		uint16_t p = (uint16_t)(port + i);
 		uint8_t *d = data + i;
@@ -551,7 +676,7 @@ dma_mem(void *ctx, int we, uint64_t pa, unsigned n, uint8_t *data)
 		memcpy(data, b->eeprom + (pa - EEPROM_BASE), n);
 		return 0;
 	}
-	if (b->sram && pa >= SRAM_BASE && pa + n <= SRAM_BASE + SRAM_SIZE) {
+	if (b->sram && pa >= SRAM_BASE && pa + n <= SRAM_BASE + b->ram_size) {
 		if (we)
 			memcpy(b->sram + (pa - SRAM_BASE), data, n);
 		else
@@ -572,7 +697,7 @@ board_preload(struct board *b, uint64_t addr, const uint8_t *data, size_t n)
 {
 	if (addr + n < addr)
 		goto bad;
-	if (b->sram && addr >= SRAM_BASE && addr + n <= SRAM_BASE + SRAM_SIZE) {
+	if (b->sram && addr >= SRAM_BASE && addr + n <= SRAM_BASE + b->ram_size) {
 		memcpy(b->sram + (addr - SRAM_BASE), data, n);
 		return 0;
 	}
@@ -584,7 +709,7 @@ bad:
 	fprintf(stderr, "vsim: can't preload 0x%llx bytes at 0x%llx: only the test board's "
 	    "SRAM (0x%llx, %llu KiB) and the EEPROM (0x%llx-0xffffffff) can be preloaded\n",
 	    (unsigned long long)n, (unsigned long long)addr,
-	    (unsigned long long)SRAM_BASE, (unsigned long long)(SRAM_SIZE >> 10),
+	    (unsigned long long)SRAM_BASE, (unsigned long long)(b->ram_size >> 10),
 	    (unsigned long long)EEPROM_BASE);
 	return -1;
 }

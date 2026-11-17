@@ -49,6 +49,7 @@ struct cpu_v1 : cpu {
 		r.uops = v.rt_uops;
 		for (int i = 0; i < 16; i++)
 			r.bytes[i] = (uint8_t)(v.rt_bytes[i / 4] >> (8 * (i % 4)));
+		intr_ack[0] = v.intr_ack;
 		shutdown[0] = v.shutdown;
 		halted[0] = v.halted;
 		shutdown_rip[0] = v.shutdown_rip;

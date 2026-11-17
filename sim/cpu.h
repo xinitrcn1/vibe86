@@ -27,7 +27,7 @@ struct cpu {
 	bool bus_ack = false, bus_err = false;
 	uint32_t bus_rdata[16] = {};	/* 512 bits: a line (v1 uses 128) */
 	/* uncore events, one-cycle pulses, and the core they go to */
-	bool intr_valid = false;	/* an MSI: fixed delivery, vector */
+	bool intr_valid = false;	/* a maskable interrupt request (level): vector */
 	unsigned intr_core = 0, intr_vector = 0;
 	bool nmi = false;
 	unsigned nmi_core = 0;
@@ -38,6 +38,7 @@ struct cpu {
 	/* outputs */
 	bool bus_req = false, bus_we = false;
 	bool bus_io = false;		/* I/O space (IN/OUT): bus_addr is the port */
+	bool intr_ack[MAXCORES] = {};	/* the core took the maskable interrupt (INTA) */
 	uint64_t bus_addr = 0;
 	unsigned bus_size = 0;		/* log2 bytes: 0..4, 6 for a line */
 	uint32_t bus_wdata[16] = {};

@@ -32,8 +32,9 @@ module v1_core
   input  logic         bus_err,
   input  logic [127:0] bus_rdata,
   // events from the uncore
-  input  logic         intr_valid,
+  input  logic         intr_valid,      // a maskable interrupt request (level), and its vector
   input  logic [7:0]   intr_vector,
+  output logic         intr_ack,        // taken: the INTA cycle (one pulse)
   input  logic         nmi,
   input  logic         mce_valid,
   input  logic [1:0]   mce_type,
@@ -115,6 +116,8 @@ module v1_core
   logic [7:0]  deliv_vec;       // the event being delivered (for #DF)
   logic [3:0]  db_data;         // data breakpoints hit by this instruction (DR6.B0-B3)
   logic        flags_loaded;    // this instruction loaded RFLAGS (IRET, POPF): RF stays
+  logic [63:0] rng;             // RDRAND/RDSEED: xorshift64 (Marsaglia, J. Stat. Softw. 8(14),
+                                // 2003): NOT a cryptographic source
   logic        shadow_set;      // this instruction asked for an interrupt shadow
   logic        int_shadow;      // no interrupts at this boundary (MOV SS, POP SS, STI)
 
@@ -638,6 +641,7 @@ module v1_core
     sp[SP_PAT[7:0]] <= 64'h0007_0406_0007_0406;
     sp[SP_APIC_BASE[7:0]] <= 64'hFEE0_0900;
     sp[SP_DR6[7:0]] <= 64'hFFFF_0FF0;
+    rng <= 64'h9E37_79B9_7F4A_7C15;
     sp[SP_DR7[7:0]] <= 64'h400;
     udepth <= '0;
     db_data <= '0;
@@ -680,6 +684,7 @@ module v1_core
       bus_req <= 1'b0;
       rt_valid <= 1'b0;
       ev_valid <= 1'b0;
+      intr_ack <= 1'b0;
       shutdown <= 1'b0;
       halted <= 1'b0;
       shutdown_rip <= '0;
@@ -687,11 +692,8 @@ module v1_core
     end else begin
       rt_valid <= 1'b0;
       ev_valid <= 1'b0;
+      intr_ack <= 1'b0;
       sp[SP_TSC[7:0]] <= sp[SP_TSC[7:0]] + 1;
-      if (intr_valid) begin
-        intr_pend <= 1'b1;
-        intr_vec <= intr_vector;
-      end
       if (nmi) nmi_pend <= 1'b1;
       shutdown <= (st == S_SHUTDOWN);
       halted <= (st == S_HALT);
@@ -1125,6 +1127,18 @@ module v1_core
                 lb_v <= 1'b0;
               end
               U_LOCK, U_UNLOCK, U_CLFLUSH, U_SERIALIZE: ;
+              U_RDRAND: begin
+                logic [63:0] x;
+                x = rng ^ (rng << 13);
+                x = x ^ (x >> 7);
+                x = x ^ (x << 17);
+                rng <= x;
+                wr(u.dst, u.sz, x & szmask(u.sz));
+                w_flags[0] <= 1'b1;                 // CF: valid
+                w_flags[2] <= 1'b0; w_flags[4] <= 1'b0; w_flags[6] <= 1'b0;
+                w_flags[7] <= 1'b0; w_flags[11] <= 1'b0;
+              end
+              U_CRC32: wr(u.dst, 2'd2, alu_res);
               U_SETF: if (u.imm[5:0] != 6'd1) w_flags[u.imm[5:0]] <= va[0];
               U_DIVU, U_DIVS: begin
                 if (alu_de) begin
@@ -1137,6 +1151,7 @@ module v1_core
               end
               default: begin
                 if (u.op inside {U_ADD, U_ADC, U_SUB, U_SBB, U_AND, U_OR, U_XOR, U_ANDN, U_SHL,
+                                 U_SHLD, U_SHRD,
                                  U_SHR, U_SAR, U_ROL, U_ROR, U_RCL, U_RCR, U_NEG, U_NOT, U_MOV,
                                  U_MULU, U_MULS, U_IMULT, U_ZEXT, U_SEXT, U_SETCC, U_BSF, U_BSR,
                                  U_TZCNT, U_LZCNT, U_POPCNT, U_BSWAP, U_SZP, U_GETF, U_SLICE,
@@ -1171,7 +1186,7 @@ module v1_core
 
         // ------------------------------------------------------------ halted
         S_HALT: begin
-          if (nmi_pend || (intr_pend && w_flags[9])) st <= S_FETCH;
+          if (nmi_pend || (intr_valid && w_flags[9])) st <= S_FETCH;
         end
 
         default: ;   // S_SHUTDOWN: until reset
@@ -1184,9 +1199,9 @@ module v1_core
         if (nmi_pend) begin
           nmi_pend <= 1'b0;
           raise(8'd2, 1'b0, 32'd0, 1'b1, 1'b0, 1'b1);
-        end else if (intr_pend && w_flags[9]) begin
-          intr_pend <= 1'b0;
-          raise(intr_vec, 1'b0, 32'd0, 1'b1, 1'b0, 1'b1);
+        end else if (intr_valid && w_flags[9]) begin
+          intr_ack <= 1'b1;
+          raise(intr_vector, 1'b0, 32'd0, 1'b1, 1'b0, 1'b1);
         end
       end
     end

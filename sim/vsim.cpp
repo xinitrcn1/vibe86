@@ -61,6 +61,10 @@ struct opts {
 	const char *vga_bmp = nullptr;	// -V: dump the VGA picture on exit
 	const char *vga_txt = nullptr;	// -Y: dump the VGA text cells on exit
 	const char *nvram = nullptr;	// -N: NVRAM file
+	unsigned ram_mib = 0;		// -M: the test board's RAM (MiB; default 2)
+	const char *debugcon = nullptr;	// -g: the debug console (port 402h) to this file, - stderr
+	const char *fwcfg[16] = {};	// -f name=file: fw_cfg files
+	int nfwcfg = 0;
 	const char *cpu = nullptr;	// -C: the core version (default: the latest)
 };
 
@@ -98,6 +102,9 @@ usage()
 	    "  -Y  save the VGA text cells as 25 lines of text on exit\n"
 	    "  -T  keep the debug TPM's NV state in this file (default: fresh each run)\n"
 	    "  -N  keep the NVRAM (firmware settings) in this file (default: erased each run)\n"
+	    "  -M  the test board's RAM in MiB (default 2)\n"
+	    "  -g  write the debug console (I/O port 402h) to this file (- for stderr)\n"
+	    "  -f  name=file: offer a file through fw_cfg (e.g. etc/acpi/tables=tables.bin); repeatable\n"
 	    "  -l  file@addr: copy a raw image into memory before reset (test-board SRAM or\n"
 	    "      the EEPROM range); repeatable\n"
 	    "  -e  load an ELF64 x86-64 executable's PT_LOAD segments the same way; repeatable\n"
@@ -444,39 +451,65 @@ struct machine {
 		ack(d, r);
 	}
 
-	// Uncore events (MSIs, NMI, machine checks) reach the core one per
-	// cycle, as one-cycle pulses on its pins.
+	// Uncore events: NMIs and machine checks are one-cycle pulses on the
+	// core's pins; maskable interrupts (an MSI, else the PIC's request) are
+	// a level the core acknowledges with intr_ack (INTA), which takes the
+	// MSI or the PIC's vector.
+	bool msi_pend = false, from_pic = false;
+	unsigned msi_vec = 0;
+
 	void events()
 	{
-		top->intr_valid = 0;
 		top->nmi = 0;
 		top->mce_valid = 0;
 		struct board_event e;
-		if (!board_event(&brd, &e))
-			return;
-		switch (e.kind) {
-		case EV_MSI:
-			if (e.core >= top->ncores())
-				break;		// no such APIC id: dropped
-			top->intr_valid = 1;
-			top->intr_core = e.core;
-			top->intr_vector = e.vector & 0xFF;
-			halted_for[e.core] = 0;
-			break;
-		case EV_NMI:
-			top->nmi = 1;
-			top->nmi_core = 0;
-			halted_for[0] = 0;
-			break;
-		case EV_MCE:
-			top->mce_valid = 1;
-			top->mce_core = 0;
-			top->mce_type = e.type & 3;
-			top->mce_addr = e.addr;
-			break;
-		default:
-			break;
+		if (!msi_pend && board_event(&brd, &e)) {
+			switch (e.kind) {
+			case EV_MSI:
+				if (e.core < top->ncores()) {	// else no such APIC id: dropped
+					msi_pend = true;
+					msi_vec = e.vector & 0xFF;
+				}
+				break;
+			case EV_NMI:
+				top->nmi = 1;
+				top->nmi_core = 0;
+				halted_for[0] = 0;
+				break;
+			case EV_MCE:
+				top->mce_valid = 1;
+				top->mce_core = 0;
+				top->mce_type = e.type & 3;
+				top->mce_addr = e.addr;
+				break;
+			default:
+				break;
+			}
 		}
+		uint8_t v;
+		top->intr_core = 0;
+		if (msi_pend) {
+			top->intr_valid = 1;
+			top->intr_vector = msi_vec;
+			from_pic = false;
+		} else if (board_pic_pending(&brd, &v)) {
+			top->intr_valid = 1;
+			top->intr_vector = v;
+			from_pic = true;
+		} else
+			top->intr_valid = 0;
+		if (top->intr_valid)
+			halted_for[0] = 0;
+	}
+
+	void acked()
+	{
+		if (!top->intr_ack[0])
+			return;
+		if (from_pic)
+			board_pic_ack(&brd);
+		else
+			msi_pend = false;
 	}
 
 	void step()
@@ -494,6 +527,7 @@ struct machine {
 		events();
 		top->clk = 1;
 		top->eval();
+		acked();
 		board_tick(&brd);
 		cycles++;
 		if (cycles >= next_key)
@@ -922,7 +956,7 @@ main(int argc, char **argv)
 	opts o;
 	int c;
 
-	while ((c = getopt(argc, argv, "b:ndJ:m:c:H:tvxs:S:P:X:K:V:Y:T:l:e:N:C:")) != -1) {
+	while ((c = getopt(argc, argv, "b:ndJ:m:c:H:tvxs:S:P:X:K:V:Y:T:l:e:N:C:M:g:f:")) != -1) {
 		switch (c) {
 		case 'b':
 			if (!std::strcmp(optarg, "server"))
@@ -993,6 +1027,13 @@ main(int argc, char **argv)
 		case 'Y': o.vga_txt = optarg; break;
 		case 'T': tpm_set_state_file(optarg); break;
 		case 'N': o.nvram = optarg; break;
+		case 'M': o.ram_mib = (unsigned)std::strtoul(optarg, nullptr, 0); break;
+		case 'g': o.debugcon = optarg; break;
+		case 'f':
+			if (o.nfwcfg == 16 || !std::strchr(optarg, '='))
+				usage();
+			o.fwcfg[o.nfwcfg++] = optarg;
+			break;
 		case 'C': o.cpu = optarg; break;
 		case 's': o.scale = std::atoi(optarg); if (o.scale < 1) o.scale = 1; break;
 		default: usage();
@@ -1011,8 +1052,43 @@ main(int argc, char **argv)
 		return 4;
 	m.trace = o.trace;
 	m.halt_idle = o.halt_idle ? o.halt_idle : 1;
+	if (o.ram_mib)
+		board_ram_size = (uint64_t)o.ram_mib << 20;
 	if (board_init(&m.brd, o.board_kind, o.image, o.dimms_given ? o.dimms : nullptr))
 		return 4;
+	if (o.debugcon) {
+		FILE *dc = !std::strcmp(o.debugcon, "-") ? stderr : std::fopen(o.debugcon, "w");
+		if (!dc) {
+			std::fprintf(stderr, "vsim: %s: %s\n", o.debugcon, std::strerror(errno));
+			return 4;
+		}
+		m.brd.debugcon = [](void *ctx, uint8_t c) {
+			std::fputc(c, (FILE *)ctx);
+			if (c == '\n')
+				std::fflush((FILE *)ctx);
+		};
+		m.brd.dbgctx = dc;
+	}
+	for (int i = 0; i < o.nfwcfg; i++) {
+		std::string spec(o.fwcfg[i]);
+		size_t eq = spec.find('=');
+		std::string name = spec.substr(0, eq), path = spec.substr(eq + 1);
+		FILE *f = std::fopen(path.c_str(), "rb");
+		if (!f) {
+			std::fprintf(stderr, "vsim: %s: %s\n", path.c_str(), std::strerror(errno));
+			return 4;
+		}
+		std::vector<uint8_t> buf;
+		uint8_t chunk[65536];
+		size_t n;
+		while ((n = std::fread(chunk, 1, sizeof chunk, f)) > 0)
+			buf.insert(buf.end(), chunk, chunk + n);
+		std::fclose(f);
+		if (pc_fwcfg_add(&m.brd.pc, name.c_str(), buf.data(), (uint32_t)buf.size())) {
+			std::fprintf(stderr, "vsim: fw_cfg: can't add %s\n", name.c_str());
+			return 4;
+		}
+	}
 	if (o.pci_slot >= 0 && o.pci_slot == o.xhci_slot) {
 		std::fprintf(stderr, "vsim: the DMA test endpoint (-P) and the xHCI controller (-X) "
 		    "are both in PCIe slot %d\n", o.pci_slot);

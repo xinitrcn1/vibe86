@@ -43,8 +43,13 @@ struct pcidev {
 	uint64_t bar_size;	/* BAR0's size (0: 4 KiB) */
 };
 
+/* the root ports' device numbers on bus 0 (device 1 is the PIIX ISA/PM) */
+#define PCI_RP_DEV0	0x10
+
 struct pcie {
-	struct pcifn host;
+	struct pcifn host;		/* 00:00.0, an i440FX host bridge */
+	struct pcifn piix_isa;		/* 00:01.0, PIIX3 PCI-to-ISA bridge */
+	struct pcifn piix_pm;		/* 00:01.3, PIIX4 power management */
 	struct pcifn rp[PCI_SLOTS];
 	struct pcidev *slot[PCI_SLOTS];
 	struct iommu iommu;
@@ -67,6 +72,9 @@ void pcie_tick(struct pcie *pc);
 /* an access from the core in ECAM, a BAR window or the IOMMU registers;
  * returns 1 if the address isn't PCIe's, else 0 / -1 (bus error) */
 int pcie_access(struct pcie *pc, int we, uint64_t addr, unsigned size, uint8_t *data);
+/* configuration space by bus/device/function (the CF8h/CFCh mechanism) */
+int pcie_cfg(struct pcie *pc, int we, unsigned bus, unsigned dev, unsigned fn, unsigned reg,
+    unsigned size, uint8_t *data);
 
 /* for endpoints: DMA (any length; split at 4 KiB pages). A request through
  * the IOMMU; returns IO_OK, IO_FAULT or IO_PRI (the device must wait). */

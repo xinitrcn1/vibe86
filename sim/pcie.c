@@ -39,14 +39,51 @@ cfg_write(struct pcifn *f, unsigned off, unsigned n, const uint8_t *d)
 		    (d[i] & f->wm[off + i]));
 }
 
+/*
+ * Bus 0 looks like QEMU's "pc" machine to firmware (SeaBIOS, docs/platform.md
+ * "PC compatibility"): an Intel 82441FX (i440FX) host bridge with its PAM
+ * registers (Intel 82441FX PCI and Memory Controller datasheet, 290549-001,
+ * 3.2.17 "PAM0-PAM6"), and an 82371SB PIIX3 ISA bridge with PIIX4
+ * (82371AB) power-management function at device 1.
+ */
 static void
 init_host(struct pcifn *f)
 {
 	memset(f, 0, sizeof *f);
-	put(f, 0x00, 2, PCI_VENDOR, 0);
-	put(f, 0x02, 2, PCI_DEV_HOST, 0);
+	put(f, 0x00, 2, 0x8086, 0);
+	put(f, 0x02, 2, 0x1237, 0);	/* 82441FX */
 	put(f, 0x04, 2, 0x0006, 0x0006);
-	put(f, 0x08, 4, 0x06000001, 0);	/* class 06/00/00, revision 1 */
+	put(f, 0x08, 4, 0x06000002, 0);	/* class 06/00/00, revision 2 */
+	for (unsigned r = 0x59; r <= 0x5F; r++)
+		put(f, r, 1, 0, 0x33);	/* PAM0-PAM6: RE/WE per half */
+	put(f, 0x72, 1, 0x02, 0x78);	/* SMRAM */
+}
+
+static void
+init_piix_isa(struct pcifn *f)
+{
+	memset(f, 0, sizeof *f);
+	put(f, 0x00, 2, 0x8086, 0);
+	put(f, 0x02, 2, 0x7000, 0);	/* 82371SB PIIX3 ISA */
+	put(f, 0x04, 2, 0x0007, 0);
+	put(f, 0x08, 4, 0x06010000, 0);	/* class 06/01/00: ISA bridge */
+	put(f, 0x0E, 1, 0x80, 0);	/* multi-function */
+	put(f, 0x60, 4, 0x80808080, 0x8F8F8F8F);	/* PIRQRC[A-D]: disabled */
+}
+
+static void
+init_piix_pm(struct pcifn *f)
+{
+	memset(f, 0, sizeof *f);
+	put(f, 0x00, 2, 0x8086, 0);
+	put(f, 0x02, 2, 0x7113, 0);	/* 82371AB PIIX4 ACPI */
+	put(f, 0x04, 2, 0x0000, 0x0001);
+	put(f, 0x08, 4, 0x06800003, 0);	/* class 06/80/00, revision 3 */
+	put(f, 0x3D, 1, 0x01, 0);	/* INTA# (the SCI) */
+	put(f, 0x40, 4, 0x00000001, 0x0000FFC0);	/* PMBA: I/O */
+	put(f, 0x80, 1, 0x00, 0x01);	/* PMREGMISC: PM I/O enable */
+	put(f, 0x90, 4, 0x00000001, 0x0000FFF0);	/* SMBBA */
+	put(f, 0xD2, 1, 0x00, 0x0F);	/* SMBHSTCFG */
 }
 
 static void
@@ -335,6 +372,8 @@ void
 pcie_reset(struct pcie *pc)
 {
 	init_host(&pc->host);
+	init_piix_isa(&pc->piix_isa);
+	init_piix_pm(&pc->piix_pm);
 	for (int k = 0; k < PCI_SLOTS; k++) {
 		init_rp(&pc->rp[k], k);
 		if (pc->slot[k])
@@ -358,12 +397,14 @@ cfg_fn(struct pcie *pc, uint64_t off)
 	unsigned bus = (unsigned)(off >> 20) & 0xFF, dev = (unsigned)(off >> 15) & 31,
 	    fn = (unsigned)(off >> 12) & 7;
 	if (bus == 0) {
+		if (dev == 1)
+			return fn == 0 ? &pc->piix_isa : fn == 3 ? &pc->piix_pm : NULL;
 		if (fn)
 			return NULL;
 		if (dev == 0)
 			return &pc->host;
-		if (dev >= 1 && dev <= PCI_SLOTS)
-			return &pc->rp[dev - 1];
+		if (dev >= PCI_RP_DEV0 && dev < PCI_RP_DEV0 + PCI_SLOTS)
+			return &pc->rp[dev - PCI_RP_DEV0];
 		return NULL;
 	}
 	for (int k = 0; k < PCI_SLOTS; k++)
@@ -389,6 +430,15 @@ cfg_access(struct pcie *pc, int we, uint64_t off, unsigned size, uint8_t *data)
 	else
 		memcpy(data, f->cfg + reg, n);
 	return 0;
+}
+
+int
+pcie_cfg(struct pcie *pc, int we, unsigned bus, unsigned dev, unsigned fn, unsigned reg,
+    unsigned size, uint8_t *data)
+{
+	uint64_t off = (uint64_t)(bus & 0xFF) << 20 | (uint64_t)(dev & 31) << 15 |
+	    (uint64_t)(fn & 7) << 12 | (reg & 0xFFF);
+	return cfg_access(pc, we, off, size, data);
 }
 
 static uint64_t

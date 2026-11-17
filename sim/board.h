@@ -12,6 +12,7 @@
 #include "tpm.h"
 #include "vga.h"
 #include "xhci.h"
+#include "pc.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,7 +25,7 @@ extern "C" {
  * window, as on PC-compatible platforms.
  */
 #define SRAM_BASE	0x00000000ull	/* test board only */
-#define SRAM_SIZE	(2ull << 20)
+#define SRAM_SIZE	(2ull << 20)	/* the default; vsim -M sets board_ram_size */
 #define MMIO_BASE	0xFE000000ull	/* board / uncore register block */
 #define UART0_BASE	0xFE000000ull	/* MMIO alias of COM1 */
 #define SYSCON_BASE	0xFE001000ull
@@ -94,7 +95,12 @@ struct board_event {
 struct board {
 	uint8_t *eeprom;	/* EEPROM_SIZE bytes, erased = 0xFF */
 	int kind;		/* BOARD_* */
-	uint8_t *sram;		/* BOARD_TEST: SRAM_SIZE bytes */
+	uint8_t *sram;		/* BOARD_TEST: ram_size bytes of RAM at 0 */
+	uint64_t ram_size;
+	struct pc pc;		/* the legacy PC devices (pc.h) */
+	uint32_t cf8;		/* PCI configuration address (CF8h) */
+	void (*debugcon)(void *ctx, uint8_t c);
+	void *dbgctx;
 	uint32_t straps;
 	struct uart16550 uart;
 	int power;		/* PWR_* */
@@ -148,6 +154,12 @@ int board_access(struct board *b, int we, uint64_t addr, unsigned size,
  * bad size.
  */
 int board_io(struct board *b, int we, uint16_t port, unsigned size, uint8_t *data);
+/* the test board's RAM size (set before board_init; default SRAM_SIZE) */
+extern uint64_t board_ram_size;
+/* a maskable interrupt the board's PIC is requesting (1, and its vector),
+   and the core's acknowledgement of it (INTA) */
+int board_pic_pending(struct board *b, uint8_t *vector);
+void board_pic_ack(struct board *b);
 /*
  * An enq: one atomic 64-byte write tagged with a PASID. Returns 0 with
  * *retry = 0 (accepted) or 1 (queue full), or -1 = bus error (not a portal).
