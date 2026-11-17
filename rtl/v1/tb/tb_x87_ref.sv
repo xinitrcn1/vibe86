@@ -66,7 +66,7 @@ module tb_x87_ref;
     else if (c < 76) v = {sg, 15'h7FFF, 2'b10, s[61:0] | 62'd1};                 // SNaN
     else if (c < 78) v = {sg, 15'($urandom_range(1, 32766)), 1'b0, s[62:0]};     // unnormal
     else if (c < 90) v = fp_from_int(64'($signed(16'(s[15:0]))), 64, 1'b1, FMT_F80, 2'd0, 64).v;
-    else v = {sg, 15'(16383 + $urandom_range(0, 8)), 1'b1, s[62:0] & 64'hFFFF_0000_0000_0000};
+    else v = {sg, 15'(16383 + $urandom_range(0, 8)), 1'b1, s[62:0] & 63'h7FFF_0000_0000_0000};  // 16 significant bits
     return v;
   endfunction
 
