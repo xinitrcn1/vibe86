@@ -1,0 +1,9 @@
+# SWAPGS—Swap GS Base Register -- override
+# 'tmp := GS.base; GS.base := IA32_KERNEL_GS_BASE; IA32_KERNEL_GS_BASE :=
+# tmp;' at CPL 0 in 64-bit mode (#GP(0) at CPL > 0; #UD outside 64-bit
+# mode: the opcode table's 'Invalid').
+@operation
+IF CPL != 0 THEN #GP(0); FI;
+tmp := GS_BASE;
+WriteSpecial(GS_BASE, KERNEL_GS_BASE);
+WriteSpecial(KERNEL_GS_BASE, tmp);

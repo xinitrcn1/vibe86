@@ -1179,7 +1179,7 @@ module v1_core
                 else upc <= uentry(dmap == 3'd0 && dopc == 8'h90 && !(rex_v && rex[0]),
                                    mode, dmap, vl, plus_base(dopc),
                                    modrm[5:3], pk, dosz, (has_modrm && modrm[7:6] != 2'd3) || attr.moffs,
-                                   dasz, ssz);
+                                   dasz, ssz, modrm[2:0]);
                 st <= S_EXEC;
               end
               default: ;

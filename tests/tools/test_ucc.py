@@ -247,13 +247,13 @@ class Table:
         with open(path) as fh:
             text = fh.read()
         self.attr = []
-        for m in re.finditer(r"14'b([01?_]+): d = '\{(.*?)\};", text):
+        for m in re.finditer(r"15'b([01?_]+): d = '\{(.*?)\};", text):
             f = {k: int(v, 2 if base == "b" else 10)
                  for k, base, v in re.findall(r"(\w+): \d+'([db])(\w+)", m.group(2))}
             self.attr.append((m.group(1).replace("_", ""), f))
-        self.modrm = [m.group(1).replace("_", "") for m in re.finditer(r"11'b([01?_]+): return 1'b1;", text)]
+        self.modrm = [m.group(1).replace("_", "") for m in re.finditer(r"12'b([01?_]+): return 1'b1;", text)]
         self.entry = [(m.group(1).replace("_", ""), m.group(2))
-                      for m in re.finditer(r"24'b([01?_]+): return \d+'d\d+;\s*// (.*)", text)]
+                      for m in re.finditer(r"29'b([01?_]+): return \d+'d\d+;\s*// (.*)", text)]
         self.uaddr_w = int(re.search(r"localparam int UADDR_W = (\d+);", text).group(1))
         self.urom_n = int(re.search(r"localparam int UROM_N = (\d+);", text).group(1))
 
@@ -262,14 +262,14 @@ class Table:
         return len(pat) == len(bits) and all(p in ("?", b) for p, b in zip(pat, bits))
 
     def dec_attr(self, m64, mp, opc, digit):
-        bits = f"{m64:b}{mp:02b}{opc:08b}{digit:03b}"
+        bits = f"{m64:b}{mp:03b}{opc:08b}{digit:03b}"
         for p, a in self.attr:
             if self.match(p, bits):
                 return a
         return {"valid": 0}
 
     def dec_modrm(self, m64, mp, opc):
-        return any(self.match(p, f"{m64:b}{mp:02b}{opc:08b}") for p in self.modrm)
+        return any(self.match(p, f"{m64:b}{mp:03b}{opc:08b}") for p in self.modrm)
 
     def decode(self, hexbytes, mode=3, ssz=1):
         """bytes -> the form (comment of the matching uentry line) or 'UD'."""
@@ -326,7 +326,8 @@ class Table:
         mem = int((at["modrm"] and (modrm >> 6) != 3) or bool(at["moffs"]))
         sub90 = int(mp == 0 and opc == 0x90 and not (rex and rex & 1))
         mode2 = {0: 0, 1: 1, 2: 2, 3: 3}[mode]
-        key = f"{sub90}{mode2:02b}{mp:02b}{base:08b}{digit:03b}{pk:02b}{osz:02b}{mem}{asz:02b}{ssz}"
+        vl = 0                                   # legacy encodings only (no VEX)
+        key = f"{sub90}{mode2:02b}{mp:03b}{vl}{base:08b}{digit:03b}{pk:02b}{osz:02b}{mem}{asz:02b}{ssz}{modrm & 7:03b}"
         for p, name in self.entry:
             if self.match(p, key):
                 return name

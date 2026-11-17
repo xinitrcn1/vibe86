@@ -284,14 +284,17 @@ def sv_tables(forms, image, cfg_of):
     out.append("  endcase")
     out.append("endfunction")
     out.append("")
-    out.append("// microcode entry point: {sub90, mode, map, vl, opc, digit, pfx, osz, mem, asz, ssz}")
+    out.append("// microcode entry point: {sub90, mode, map, vl, opc, digit, pfx, osz, mem, asz, ssz, rm}")
     out.append("// (vl: VEX.L; pfx: the mandatory prefix, or VEX.pp for VEX maps)")
     out.append("function automatic logic [UADDR_W-1:0] uentry(input logic sub90, "
                "input logic [1:0] mode, input logic [2:0] map, input logic vl, input logic [7:0] opc, "
                "input logic [2:0] digit, input logic [1:0] pfx, input logic [1:0] osz, "
-               "input logic mem, input logic [1:0] asz, input logic ssz);")
-    out.append("  casez ({sub90, mode, map, vl, opc, digit, pfx, osz, mem, asz, ssz})")
+               "input logic mem, input logic [1:0] asz, input logic ssz, input logic [2:0] rm);")
+    out.append("  casez ({sub90, mode, map, vl, opc, digit, pfx, osz, mem, asz, ssz, rm})")
+    # a row naming the whole register-form ModRM byte (rm fixed: FLD1, MWAIT)
+    # comes before the rows for any rm (casez takes the first match)
     order = sorted(forms, key=lambda f: (f.mode, f.map, f.opc, f.digit is None, f.digit or 0,
+                                         f.rm is None, f.rm or 0,
                                          f.prefix_key() is None, f.okey == "any",
                                          len(f.spec) == 0))
     for f in order:
@@ -310,7 +313,8 @@ def sv_tables(forms, image, cfg_of):
         az = ASZ_CODE[f.spec["AddressSize"]] if "AddressSize" in f.spec else "??"
         sz = {16: "0", 32: "1"}[f.spec["StackAddrSize"]] if "StackAddrSize" in f.spec else "?"
         vl = "?" if f.vl is None or not f.vex else str(f.vl)
-        out.append(f"    26'b{sub}_{f.mode:02b}_{f.map:03b}_{vl}_{f.opc:08b}_{dg}_{pk}_{oz}_{mm}_{az}_{sz}: "
+        rmb = "???" if f.rm is None else format(f.rm, "03b")
+        out.append(f"    29'b{sub}_{f.mode:02b}_{f.map:03b}_{vl}_{f.opc:08b}_{dg}_{pk}_{oz}_{mm}_{az}_{sz}_{rmb}: "
                    f"return {U.UADDR_W}'d{image.addr[f.routine]};  // {f.name}")
     out.append(f"    default: return {U.UADDR_W}'d{image.addr['UD']};")
     out.append("  endcase")
