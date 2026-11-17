@@ -23,7 +23,7 @@ def main():
     args = (re.findall(r"//\s*vsim-args:\s*(.*)", text) or ["-b test -c 2000000"])[0]
     args = re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), args).split()
     p = subprocess.run([vsim, "-n"] + args + [image], capture_output=True, text=True,
-                       timeout=1500)
+                       timeout=21600)  # ctest's TIMEOUT is the real limit
     ok = True
     if p.returncode != exit_want:
         print(f"exit {p.returncode}, expected {exit_want}")

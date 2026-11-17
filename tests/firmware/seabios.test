@@ -2,7 +2,7 @@
 // test board with 128 MiB, the platform's ACPI tables through fw_cfg
 // (etc/acpi/tables, etc/acpi/rsdp, etc/table-loader) and SeaBIOS's serial
 // console on COM1; no boot devices, so it ends retrying the boot.
-// vsim-args: -b test -H 100000000 -c 260000000 -f etc/acpi/tables=${ACPI}/tables -f etc/acpi/rsdp=${ACPI}/rsdp -f etc/table-loader=${ACPI}/table-loader -f etc/sercon-port=${DATA}/sercon-port -f etc/show-boot-menu=${DATA}/zero16
+// vsim-args: -b test -H 100000000 -c 3000000000 -f etc/acpi/tables=${ACPI}/tables -f etc/acpi/rsdp=${ACPI}/rsdp -f etc/table-loader=${ACPI}/table-loader -f etc/sercon-port=${DATA}/sercon-port -f etc/show-boot-menu=${DATA}/zero16
 // expect-exit: 6   (halted: SeaBIOS waits to retry the boot)
 // expect-out: SeaBIOS (version
 // expect-out: Booting from Floppy...

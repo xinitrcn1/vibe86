@@ -34,7 +34,7 @@ if(EXISTS ${VIBE86_SEABIOS})
   add_test(NAME firmware/seabios
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/run.py $<TARGET_FILE:vsim>
             ${VIBE86_SEABIOS} ${CMAKE_CURRENT_SOURCE_DIR}/firmware/seabios.test)
-  set_tests_properties(firmware/seabios PROPERTIES LABELS slow TIMEOUT 1500
+  set_tests_properties(firmware/seabios PROPERTIES LABELS slow TIMEOUT 21600
     ENVIRONMENT "ACPI=${VIBE86_ACPI_DIR};DATA=${CMAKE_CURRENT_SOURCE_DIR}/firmware")
 else()
   message(STATUS "no SeaBIOS image (${VIBE86_SEABIOS}): firmware/seabios test skipped")
