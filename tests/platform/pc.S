@@ -7,11 +7,12 @@
 //     write-only RAM (2), read/write RAM (3), read-only RAM (1);
 //   fw_cfg: signature, ID (traditional + DMA), the file directory naming
 //     etc/e820, a DMA read of the signature and DMA's own signature;
-//   CMOS: memory sizes for 128 MiB (base 640 KiB, extended capped at FFFFh
-//     KiB, above 16 MiB in 64 KiB units);
+//   CMOS: memory sizes for the default 16 GiB DIMM with DRAM below TOLM
+//     (2 GiB) and the rest above 4 GiB (D-014): base 640 KiB, extended
+//     capped at FFFFh KiB, 16 MiB..TOLM and above 4 GiB in 64 KiB units;
 //   8259 + 8254: a one-shot (mode 0) counter is one rising edge on IRQ 0:
 //     delivered (INTA through intr_ack) exactly once.
-// vsim-args: -b test -M 128 -c 20000000
+// vsim-args: -b test -c 20000000
 // expect-out: COM1 after the windows
 // expect-out: PC OK
 #include "boot64.inc"
@@ -80,7 +81,7 @@ main64:
 	lea	msg_com(%rip), %rsi
 	call	puts
 
-	// ---- CMOS memory sizes (-M 128)
+	// ---- CMOS memory sizes (one 16 GiB DIMM: 2 GiB below TOLM, 14 GiB above 4 GiB)
 	CMOS	0x15
 	EXPECT	%rax, 0x80, 0x10
 	CMOS	0x16
@@ -92,7 +93,13 @@ main64:
 	CMOS	0x34
 	EXPECT	%rax, 0x00, 0x14
 	CMOS	0x35
-	EXPECT	%rax, 0x07, 0x15		// (128 - 16) MiB / 64 KiB = 700h
+	EXPECT	%rax, 0x7f, 0x15		// (2 GiB - 16 MiB) / 64 KiB = 7F00h
+	CMOS	0x5b
+	EXPECT	%rax, 0x00, 0x16
+	CMOS	0x5c
+	EXPECT	%rax, 0x80, 0x17
+	CMOS	0x5d
+	EXPECT	%rax, 0x03, 0x18		// (16 - 2) GiB / 64 KiB = 3_8000h
 
 	// windows off again
 	CFGW	0x10, 0, 0x04, w, 0
@@ -172,6 +179,15 @@ main64:
 	bswap	%eax
 	mov	$0x518, %dx
 	out	%eax, %dx			// address low: starts it
+	// the device clears the control field when the transfer is done (QEMU
+	// docs/specs/fw_cfg.rst; the DMA runs over the I/O link, D-014)
+	mov	$1000000, %ecx
+1:	mov	DMA, %eax
+	test	%eax, %eax
+	jz	2f
+	dec	%ecx
+	jnz	1b
+2:	EXPECT	%rax, 0, 0x31			// the control field cleared: done, no error
 	EXPECT	BUF, 0x554d4551, 0x32
 	movl	DMA, %eax
 	EXPECT	%rax, 0, 0x33			// control cleared: done, no error

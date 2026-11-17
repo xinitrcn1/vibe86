@@ -8,16 +8,18 @@
 // SPD: the JESD300-5 SPD5 hub at 50h + channel*2 + DIMM, legacy I2C mode:
 // MR11 (0Bh) selects the 128-byte NVM page, an address byte with bit 7 set
 // reads NVM. Bytes (JESD400-5): 2 (DRAM type, 12h = DDR5), 4 (density per
-// die), 6 (I/O width), 234 (ranks), 235 (bus width / ECC / subchannels).
+// die: 04h = 16 Gb), 6 (I/O width: 20h = x8), 234 (bits 5:3 ranks - 1),
+// 235 (bus width per subchannel / ECC extension / subchannels).
 // SMBus master: NXP UM10204 "I2C-bus specification and user manual" Rev. 7
 // (2021) — START, repeated START, STOP, ACK/NACK, clock stretching; 1 MHz
 // (Fast-mode Plus) SCL, divided down with the meminit_fast strap.
 //
 // Progress is posted as port 80h codes over the I/O link (as AMD's PSP and
 // ABL post codes): D0h start, D1h SPD read, D2h RESET_n released, D3h DRAM
-// ready (the core starts); errors E1h no DIMMs, E2h not DDR5 / unsupported
-// organisation, E3h channels populated differently or DIMM 1 without DIMM 0
-// (the slots fill from 0, as server boards require), E4h SPD bus error.
+// ready (the core starts); errors E1h no DIMM in channel 0, E2h not DDR5 /
+// unsupported organisation, E3h channel 1 populated unlike channel 0, or a
+// DIMM 1 without its DIMM 0 (slots fill from 0, as server boards require),
+// E4h SPD bus error. Channel 0 alone, or both channels alike, are allowed.
 module meminit (
   input  logic        clk,
   input  logic        rst_n,
@@ -36,6 +38,7 @@ module meminit (
   input  logic [3:0]  sub_ready,        // per subchannel (0a, 0b, 1a, 1b)
   // results
   output logic        dram_ready,       // the x86 core may leave reset
+  output logic        two_ch,           // both channels populated (lines interleave over 4 subchannels)
   output logic [40:0] dram_size,        // bytes
   // POST codes (port 80h) through the fabric
   output logic        post_valid,
@@ -185,6 +188,7 @@ module meminit (
       sub_two_rank <= 1'b0;
       dram_ready <= 1'b0;
       dram_size <= '0;
+      two_ch <= 1'b0;
       for (int i = 0; i < 4; i++)
         for (int j = 0; j < 5; j++) spd[i][j] <= '0;
     end else begin
@@ -242,16 +246,20 @@ module meminit (
             if (present[i]) begin
               if (spd[i][0] != 8'h12) ok = 1'b0;
               if (spd[i][2][7:5] != 3'b001) ok = 1'b0;
-              if (spd[i][4][2:0] != 3'b011 || spd[i][4][4:3] != 2'b01 || spd[i][4][7:5] != 3'b001) ok = 1'b0;
+              // byte 235: [2:0] primary width per subchannel (010b = 32), [4:3]
+              // extension (10b = 8 bits, ECC), [6:5] subchannels (01b = 2)
+              if (spd[i][4][2:0] != 3'b010 || spd[i][4][4:3] != 2'b10 || spd[i][4][6:5] != 2'b01) ok = 1'b0;
+              if (spd[i][1][4:0] != 5'h04) ok = 1'b0;            // byte 4: 16 Gb dies (16 row bits)
               if (spd[i][3][5:3] > 3'd1) ok = 1'b0;
               tr = spd[i][3][3];
             end
           for (int i = 0; i < 4; i++)
             if (present[i] && spd[i][3][3] != tr) ok = 1'b0;
-          if (present == 4'b0000) begin
+          if (present[1:0] == 2'b00) begin
             post_code <= 8'hE1;
             after_post <= M_FAIL;
-          end else if (present[1:0] != present[3:2] || (present[1] && !present[0])) begin
+          end else if ((present[3:2] != 2'b00 && present[1:0] != present[3:2]) ||
+                       (present[1] && !present[0]) || (present[3] && !present[2])) begin
             post_code <= 8'hE3;
             after_post <= M_FAIL;
           end else if (!ok) begin
@@ -261,7 +269,9 @@ module meminit (
             sub_two_rank <= tr;
             sub_pop <= {present[1] & tr, present[1], present[0] & tr, present[0]};
             // 16 GiB per rank per DIMM (8 GiB per subchannel), 2 channels
-            dram_size <= (41'(present[0]) + 41'(present[1])) * (tr ? 41'd2 : 41'd1) * (41'd32 << 30);
+            two_ch <= present[2];
+            dram_size <= (41'(present[0]) + 41'(present[1])) * (tr ? 41'd2 : 41'd1) *
+                         (present[2] ? (41'd32 << 30) : (41'd16 << 30));
             post_code <= 8'hD1;
             after_post <= M_RESET;
           end
@@ -277,7 +287,7 @@ module meminit (
             ms <= M_POST;
           end
         end
-        M_WAIT: if (sub_ready == 4'b1111) begin
+        M_WAIT: if (sub_ready[1:0] == 2'b11 && (!two_ch || sub_ready[3:2] == 2'b11)) begin
           post_code <= 8'hD3;
           after_post <= M_READY;
           ms <= M_POST;

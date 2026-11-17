@@ -8,10 +8,11 @@ board model). Target ISA: AMD EPYC "Venice" (Zen 6) — see
 | Path | What |
 |---|---|
 | `rtl/common/` | descriptions every core version shares (D-013): CPUID identity and features, reset state, platform constants, the die's pins; `tools/gen/rtlgen.py` generates their SystemVerilog packages and vsim's C headers into the build tree |
-| `rtl/v1/` | **v1**, the first core: not pipelined, microcoded (`v1_core.sv`, `v1_alu.sv`); `tb/` its SystemVerilog testbenches |
+| `rtl/uncore/` | the die's uncore every core version shares (D-014): DDR5 subchannel controllers, the memory init engine (the PSP's role), the address fabric with the I/O link endpoint and the host bridge, the JTAG TAP and debug module |
+| `rtl/v1/` | **v1**, the first core: not pipelined, microcoded (`v1_core.sv`, `v1_alu.sv`); `v1_die.sv` the die (core + uncore, the pins of docs/die-interface.md); `tb/` its SystemVerilog testbenches |
 | `tools/sdm/` | `extract.py`: the instruction pages of the Intel SDM Vol. 2 as `.sdm` files (generated into the build tree from SDM 325383-093US) |
 | `tools/ucc/` | the microcode compiler: SDM pseudocode → micro-ops, decoder tables, entry points; `targets/<vN>/` is one core version's micro-op ISA, instruction list, overrides and routines (`--target`, default the latest) |
-| `sim/` | `vsim`: a Verilated core (`-C`, default the latest) in the board model (DDR5 memory subsystem, PCIe + IOMMU, xHCI, VGA, I2C/TPM, PMC, COM1); see [docs/platform.md](docs/platform.md) |
+| `sim/` | `vsim`: a Verilated die (`-C`, default the latest) on the board model: pin-level DDR5 DIMMs, the I/O die (PCIe + IOMMU, xHCI with a USB floppy, VGA, I2C/TPM, PMC, COM1, the PC legacy devices), a JTAG probe for OpenOCD; see [docs/platform.md](docs/platform.md) |
 | `tests/` | programs run from reset on the latest core (`tests/<group>/*.S`, checked by `run.py`) |
 | `docs/` | design decisions, the platform, SDM errata found while compiling it |
 

@@ -374,7 +374,20 @@ cmos_mem_size(struct pc *p)
 		hi = 0xFFFF;
 	p->cmos[0x34] = (uint8_t)hi;
 	p->cmos[0x35] = (uint8_t)(hi >> 8);
+	/* DRAM above 4 GiB in 64 KiB units (5Bh-5Dh, as QEMU and SeaBIOS use) */
+	uint64_t above = p->ram_high >> 16;
+	p->cmos[0x5B] = (uint8_t)above;
+	p->cmos[0x5C] = (uint8_t)(above >> 8);
+	p->cmos[0x5D] = (uint8_t)(above >> 16);
 	p->cmos[0x5F] = (uint8_t)(p->ncpus - 1);
+}
+
+/* DRAM above 4 GiB (set after pc_init: the CMOS size bytes follow) */
+void
+pc_ram_high(struct pc *p, uint64_t bytes)
+{
+	p->ram_high = bytes;
+	cmos_mem_size(p);
 }
 
 /* ---------------------------------------------------------------- fw_cfg */
@@ -551,6 +564,12 @@ pc_reset(struct pc *p)
 void
 pc_tick(struct pc *p)
 {
+	/* fw_cfg DMA: the device's DMA engine works in its own time (the guest
+	   polls the control word); its memory accesses go over the I/O link */
+	if (p->fw_dma_pending) {
+		p->fw_dma_pending = 0;
+		fw_dma_run(p);
+	}
 	p->pit_acc += PIT_HZ;
 	if (p->pit_acc >= CORE_HZ) {
 		p->pit_acc -= CORE_HZ;
@@ -701,10 +720,10 @@ pc_io(struct pc *p, int we, uint16_t port, unsigned n, uint8_t *d)
 			p->fw_dma = (p->fw_dma & 0xFFFFFFFFull) | v << 32;
 		else if (o == 4 && n == 4) {
 			p->fw_dma = (p->fw_dma & ~0xFFFFFFFFull) | v;
-			fw_dma_run(p);
+			p->fw_dma_pending = 1;	/* the transfer runs in the next tick */
 		} else if (o == 0 && n == 8) {
 			p->fw_dma = v;
-			fw_dma_run(p);
+			p->fw_dma_pending = 1;
 		}
 		return 1;
 	}

@@ -5,8 +5,9 @@
 // Initialization after the channel's RESET_n is released (Micron DDR5 core
 // data sheet, "Power-up Initialization Sequence" and Table 10): CS_n LOW
 // tINIT3, then HIGH (DES) tINIT4, NOP for tINIT5, tXPR, then multicycle MPCs
-// (MR2:OP[4] = 0 before training): Configure tDLLK/tCCD_L (MR13), DLL RESET,
-// ZQCal Start, ZQCal Latch (the order of steps 7a-c), MRW MR0 = BL16/CL40,
+// (MR2:OP[4] = 0 before training): SET 1N command timing (2N is the reset
+// default, MR2:OP[2] = 0), Configure tDLLK/tCCD_L (MR13), DLL RESET, ZQCal
+// Start, ZQCal Latch (the order of steps 7a-c), MRW MR0 = BL16/CL40,
 // and tDLLK before the first READ or WRITE. CS/CA/write-leveling training is
 // not needed by the simulated DRAMs (the datasheet allows "host-provided
 // successful training solutions"); a real PHY would train here.
@@ -246,7 +247,7 @@ module ddr5_sub
           end else wcnt <= wcnt - 32'd1;
         end
         S_INITCMD: begin
-          if (istep == 3'd4) begin
+          if (istep == 3'd5) begin
             // MRW MR0: BL16, CL40 (Table 21); a 2-cycle command
             logic [27:0] c;
             c = cmd_mrw(8'h00, MR0_BL16_CL40);
@@ -260,9 +261,10 @@ module ddr5_sub
             // a multicycle MPC: CA setup 3, CS_n LOW 4, CA hold 3 (Figure 11)
             logic [7:0] op;
             case (istep)
-              3'd0: op = MPC_TDLLK_CCDL;
-              3'd1: op = MPC_DLL_RESET;
-              3'd2: op = MPC_ZQCAL_START;
+              3'd0: op = MPC_SET_1N;      // 1N command timing (2N is the reset default)
+              3'd1: op = MPC_TDLLK_CCDL;
+              3'd2: op = MPC_DLL_RESET;
+              3'd3: op = MPC_ZQCAL_START;
               default: op = MPC_ZQCAL_LATCH;
             endcase
             ca <= cmd_mpc(op);
@@ -270,15 +272,15 @@ module ddr5_sub
             else cs_n <= 4'hF;
             if (mpc_t == 4'(T_MPC_SETUP + T_MPC_CS + T_MPC_HOLD - 1)) begin
               mpc_t <= '0;
-              if (istep == 3'd1) dll_at <= now;
-              wcnt <= (istep == 3'd2) ? scale(T_ZQCAL) : (istep == 3'd3) ? 32'(T_ZQLAT) : 32'(T_MPC);
+              if (istep == 3'd2) dll_at <= now;
+              wcnt <= (istep == 3'd3) ? scale(T_ZQCAL) : (istep == 3'd4) ? 32'(T_ZQLAT) : 32'(T_MPC);
               st <= S_INITWAIT;
             end else mpc_t <= mpc_t + 4'd1;
           end
         end
         S_INITWAIT: begin
           if (wcnt == 0) begin
-            if (istep == 3'd4) begin
+            if (istep == 3'd5) begin
               // the DLL locks tDLLK after its reset; then normal operation
               if (now - dll_at >= scale(T_DLLK)) begin
                 ready <= 1'b1;
@@ -400,12 +402,14 @@ module ddr5_sub
               // PRECHARGE after the burst plus tWR
               if (now + 32'(T_CWL + T_BURST + T_WR) > b_rdy[r_cs][r_bank])
                 b_rdy[r_cs][r_bank] <= now + 32'(T_CWL + T_BURST + T_WR);
-              wcnt <= 32'(T_CWL - 1);
+              // data from CWL after the command's final cycle (the datasheet's
+              // reference: "from final cycle of the WRITE command")
+              wcnt <= 32'(T_CWL);
               st <= S_WDATA;
             end else begin
               if (now + 32'(T_RTP) > b_rdy[r_cs][r_bank])
                 b_rdy[r_cs][r_bank] <= now + 32'(T_RTP);
-              wcnt <= 32'(T_CL - 2);
+              wcnt <= 32'(T_CL - 1);      // the window opens a clock before data
               gate <= '0;
               st <= S_RDATA;
             end

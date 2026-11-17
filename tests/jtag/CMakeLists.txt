@@ -1,10 +1,9 @@
 # jtag: vsim's JTAG probe (OpenOCD remote_bitbang, vsim -D) end to end
-# against the die's TAP (docs/jtag.md). Disabled until the die top drives
-# the JTAG pins (rtl/<v>/<v>_die.sv, D-014): remove DISABLED then.
+# against the die's TAP (docs/jtag.md; rtl/<v>/<v>_die.sv, D-014).
 add_test(NAME jtag/bitbang
   COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/bitbang.py
           $<TARGET_FILE:vsim> ${PROJECT_SOURCE_DIR}/rtl/common/platform.toml)
-set_tests_properties(jtag/bitbang PROPERTIES TIMEOUT 300 DISABLED TRUE)
+set_tests_properties(jtag/bitbang PROPERTIES TIMEOUT 300)
 
 # the same client against the TAP and debug module alone (tap_top.sv with
 # stub core and fabric), driven by the probe server in vsim's per-cycle loop

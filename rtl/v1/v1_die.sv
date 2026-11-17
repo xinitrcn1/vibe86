@@ -7,7 +7,7 @@ module v1_die (
 );
 
   // ------------------------------------------------------------ memory init
-  logic        dram_ready;
+  logic        dram_ready, two_ch;
   logic [40:0] dram_size;
   logic        sub_in_reset, sub_start, sub_two_rank;
   logic [3:0]  sub_pop, sub_ready;
@@ -19,7 +19,7 @@ module v1_die (
     .scl_o(spd_scl_o), .sda_o(spd_sda_o), .scl_i(spd_scl_i), .sda_i(spd_sda_i),
     .ddr_reset_n({ddr1_reset_n, ddr0_reset_n}),
     .sub_in_reset, .sub_start, .sub_pop, .sub_two_rank, .sub_ready,
-    .dram_ready, .dram_size,
+    .dram_ready, .two_ch, .dram_size,
     .post_valid, .post_code, .post_ack);
 
   // ------------------------------------------------------------ the core
@@ -131,7 +131,7 @@ module v1_die (
 
   // ------------------------------------------------------------ fabric
   fabric u_fabric (
-    .clk, .rst_n, .dram_ready, .dram_size,
+    .clk, .rst_n, .dram_ready, .dram_size, .two_ch,
     .c_req, .c_we, .c_io, .c_addr, .c_size, .c_wdata, .c_smm, .c_ack, .c_err, .c_rdata,
     .d_req, .d_we, .d_addr, .d_size, .d_wdata, .d_ack, .d_err, .d_rdata,
     .p_req(post_valid), .p_code(post_code), .p_ack(post_ack),

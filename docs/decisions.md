@@ -166,3 +166,47 @@ Chisel's parameterized generators (J. Bachrach et al., "Chisel:
 Constructing Hardware in a Scala Embedded Language", DAC 2012,
 https://doi.org/10.1145/2228360.2228584), reduced to a TOML file and a
 small script.
+
+## D-014: a pin-accurate die: DDR5, an I/O link, JTAG; memory initialized before the core
+
+The die (`rtl/<v>/<v>_die.sv`: the core plus `rtl/uncore/`) talks to the
+system only through pins a real server part has (docs/die-interface.md):
+
+- **DDR5**: two channels of two 32+8-bit subchannels with their DRAMs'
+  own CS_n/CA/DQ/DQS/RESET_n/ALERT_n, driven by four RTL memory
+  controllers (`ddr5_sub.sv`) from Micron's *DDR5 SDRAM Product Core
+  Data Sheet* (Rev. D 10/2022; JESD79-5): the command truth table, the
+  power-up sequence, mode registers, MPC, refresh and the DDR5-4800
+  timings, open pages, per-beat Hsiao SEC-DED ECC (Hsiao 1970). The
+  DIMMs are C models at the same pin level (`sim/ddr5.c`) that flag every
+  protocol or timing violation. An RDIMM's register (JESD82-511) is not
+  modelled: CA reaches the DRAMs directly, as on an unbuffered module.
+- **Memory initialization before the core**, as AMD's PSP does on EPYC:
+  `meminit.sv` reads the SPD hubs over the SPD SMBus pins, checks the
+  population (channel 0 alone or both channels alike), runs RESET_n and
+  starts the controllers' JEDEC initialization, posts its progress on port
+  80h (D0h-D3h, errors E1h-E4h) and only then releases the x86 core. The
+  user chose this over x86 firmware training so that firmware (SeaBIOS,
+  ours) finds DRAM at reset. A `meminit_fast` strap scales the JEDEC waits
+  by 1/1024 in simulation (tINIT3 alone is 9.6M clocks); vsim -F sets it.
+- **An I/O link** replaces the held request/acknowledge bus: two 64-bit
+  flit channels with valid/ready handshakes and split transactions
+  (MRD/MWR/IORD/IOWR/CPL/CPLE), like the die-to-I/O-die links of chiplet
+  servers. Device DMA comes into the die over it and is served from DRAM
+  by the fabric. vsim's `iod.c` is the I/O die: the board's devices run in
+  a coroutine that a DMA read suspends until its completion returns.
+- **The address fabric** (`fabric.sv`) owns the physical map: DRAM below
+  TOLM (2 GiB) and hoisted above 4 GiB (as AMD's data fabric), SMRAM at
+  A_0000h for the core in SMM, the PAM shadow, and the i440FX host
+  bridge's registers (bus 0 device 0's configuration is answered on the
+  die), everything else over the link.
+- **JTAG**: an IEEE 1149.1 TAP and a debug module (halt, step, registers,
+  system-bus access) — docs/jtag.md; vsim -D serves OpenOCD's
+  remote_bitbang protocol.
+- **Machine checks**: an uncorrectable ECC error in DRAM reaches the core as
+  #MC (with CR4.MCE) or shuts it down (SDM Vol. 3A 17.10).
+
+The test board's SRAM and the C memory controller (`sim/dram.c`) are gone:
+every board runs from DIMMs. The cost is simulation speed — every DRAM
+access is a DDR5 transaction (ACT/RD at CL40) instead of a one-cycle
+board access.

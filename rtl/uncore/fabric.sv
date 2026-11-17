@@ -1,8 +1,9 @@
 // fabric: the die's address fabric (D-014, docs/die-interface.md).
 //
-// Masters, served one transaction at a time in round-robin order: the core
-// (bus_*), the JTAG debug module (dm_*), requests arriving over the I/O
-// link (device DMA: MRD/MWR), and the init engine's POST codes.
+// Masters: the core (bus_*), the JTAG debug module (dm_*) and the init
+// engine's POST codes, in round-robin order through the outbound engine;
+// requests arriving over the I/O link (device DMA: MRD/MWR) through the
+// inbound engine (see "the engines" below).
 // Targets: the four DDR5 subchannel controllers (DRAM), the host bridge
 // registers on the die (bus 0 device 0, an i440FX's identity as the PC
 // platform presents: PAM 59h-5Fh and SMRAM 72h, Intel 82441FX datasheet
@@ -18,7 +19,9 @@
 // alias, option ROMs). Port CF8h (configuration address) is kept here and
 // passed on; CFCh-CFFh and the ECAM page of 00:00.0 are answered here.
 //
-// DRAM offsets interleave 64-byte lines over the subchannels: off[7:6].
+// DRAM offsets interleave 64-byte lines over the subchannels: off[7:6] with
+// both channels populated, off[6] (channel 0) otherwise; the bits above
+// shift down by one then (sim/ddr5.h implements the same map).
 module fabric
   import vibe86_platform_pkg::*;
 (
@@ -26,6 +29,7 @@ module fabric
   input  logic         rst_n,
   input  logic         dram_ready,
   input  logic [40:0]  dram_size,
+  input  logic         two_ch,         // lines interleave over 4 subchannels, else channel 0's 2
   // the core
   input  logic         c_req,
   input  logic         c_we,
@@ -103,34 +107,58 @@ module fabric
     return k[0] ? pam[1 + 32'(k[3:1])][5:4] : pam[1 + 32'(k[3:1])][1:0];
   endfunction
 
-  // ------------------------------------------------------------ transactions
+  // ------------------------------------------------------------ the engines
+  // Two engines, so that device DMA never waits behind the core: the
+  // outbound engine serves the core, the debug module and the POST codes
+  // (DRAM, the host bridge, or a request over the link whose completion it
+  // waits for); the inbound engine serves requests arriving over the link
+  // (device DMA) from DRAM and sends their completions. A single engine
+  // deadlocks: a core read waiting for its completion while a posted DMA
+  // write ahead of that completion on the link waits for the engine (the
+  // head-of-line blocking PCIe's separate posted/completion flow-control
+  // classes exist to prevent: PCI Express Base Specification 4.0, 2.4 and
+  // 2.6). The DRAM port and the link's transmit channel are arbitrated
+  // between them; a link packet is never interleaved with another.
   typedef enum logic [3:0] {
-    F_IDLE, F_DRAM, F_DRAMWAIT, F_TXHDR, F_TXADDR, F_TXDATA, F_RXWAIT, F_DONE,
-    F_INRX, F_INDATA, F_CPLHDR, F_CPLDATA
-  } fst_e;
-  fst_e st;
+    O_IDLE, O_ROUTE, O_DRAM, O_DRAMWAIT, O_TXWAIT, O_TXHDR, O_TXADDR, O_TXDATA, O_RXWAIT, O_DONE
+  } ost_e;
+  typedef enum logic [2:0] {I_IDLE, I_DRAM, I_DRAMWAIT, I_TXWAIT, I_CPLHDR, I_CPLDATA} ist_e;
+  ost_e ost;
+  ist_e ist;
 
-  typedef enum logic [1:0] {MS_CORE, MS_DBG, MS_LINK, MS_POST} msel_e;
+  typedef enum logic [1:0] {MS_CORE, MS_DBG, MS_POST} msel_e;
   msel_e who;
-  logic [1:0] rr;                    // round-robin pointer
+  logic [1:0] rr;                    // round-robin pointer over the outbound masters
 
-  logic        t_we, t_io;
+  // the outbound transaction
+  logic        t_we, t_io, t_err;
   logic [63:0] t_addr;
   logic [2:0]  t_size;
-  logic [511:0] t_data;              // write data (aligned to the line for DRAM) / read result
+  logic [511:0] t_data;
   logic [3:0]  t_nflits, t_flit;
-  logic [7:0]  t_tag;                // inbound request tag (link)
-  logic        t_err;
 
-  // inbound requests from the link: header, address, data flits
+  // the inbound transaction
+  logic        i_we, i_err;
+  logic [63:0] i_addr;
+  logic [2:0]  i_size;
+  logic [7:0]  i_tag;
+  logic [511:0] i_data;
+  logic [3:0]  i_nflits, i_flit;
+
+  // link receive: inbound requests are assembled here (header, address,
+  // data flits); completions go to the outbound engine
   logic [22:0] in_hdr;                // opcode, tag, size, data flits
   logic [63:0] in_addr;
   logic [3:0]  in_n;
   logic        in_pending;            // a complete inbound request is held
   logic [511:0] in_data;
-  logic        rx_cpl;                // completion for our outstanding request
+  logic        rx_cpl;                // receiving our completion's data flits
 
-  // DRAM decode of a physical address: hit and offset
+  // shared resources
+  logic        dram_busy;             // the DRAM port is taken (one line request)
+  logic        tx_busy;               // the transmit channel is taken (one packet)
+
+  // DRAM decode of a physical address: {hit, offset}
   function automatic logic [41:0] dram_decode(input logic [63:0] pa, input logic smm, input logic we);
     logic hit;
     logic [40:0] off;
@@ -153,6 +181,11 @@ module fabric
     return {hit, off};
   endfunction
 
+  function automatic logic [3:0] nflits_of(input logic [2:0] size);
+    return (size == 3'd6) ? 4'd8 : (size == 3'd5) ? 4'd4 : (size == 3'd4) ? 4'd2 : 4'd1;
+  endfunction
+
+  // the outbound engine's decode
   logic [41:0] dd;                    // {DRAM hit, offset}; offsets fit 37 bits (128 GiB)
   logic        cfg_local;             // CFCh-CFFh or ECAM for 00:00.0
   logic [7:0]  cfg_reg;
@@ -168,21 +201,30 @@ module fabric
       cfg_reg = t_addr[7:0];
     end
   end
+  // the inbound engine's decode (device DMA never sees SMRAM)
+  logic [41:0] di;
+  assign di = dram_decode(i_addr, 1'b0, i_we);
 
-  wire [5:0] lo = dd[5:0];            // byte within the DRAM line
-  wire [1:0] sc = dd[7:6];            // subchannel
+  // the DRAM line request of an engine: subchannel, offset, byte lane
+  function automatic logic [1:0] subch(input logic [7:6] d);
+    return two_ch ? d[7:6] : {1'b0, d[6]};
+  endfunction
+  function automatic logic [36:8] lineoff(input logic [36:7] d);
+    return two_ch ? d[36:8] : d[35:7];
+  endfunction
   /* verilator lint_off UNUSEDSIGNAL */
-  wire [3:0] dd_unused = dd[40:37];   // beyond the 4-slot maximum (128 GiB)
+  wire [7:0] dd_unused = {dd[40:37], di[40:37]};   // beyond the 4-slot maximum (128 GiB)
   /* verilator lint_on UNUSEDSIGNAL */
 
-  // a held inbound request stops further inbound requests, never the
-  // completion of our own request (that would deadlock the link)
+  // a held inbound request stops further inbound packets, never the
+  // completion of the outbound engine's request
   assign rx_ready = !in_pending || rx_cpl ||
-                    (st == F_RXWAIT && in_n == 0 && (rx_flit[7:0] == OP_CPL || rx_flit[7:0] == OP_CPLE));
+                    (ost == O_RXWAIT && in_n == 0 && (rx_flit[7:0] == OP_CPL || rx_flit[7:0] == OP_CPLE));
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      st <= F_IDLE;
+      ost <= O_IDLE;
+      ist <= I_IDLE;
       who <= MS_CORE;
       rr <= '0;
       c_ack <= 1'b0;
@@ -201,19 +243,28 @@ module fabric
       tx_flit <= '0;
       t_we <= 1'b0;
       t_io <= 1'b0;
+      t_err <= 1'b0;
       t_addr <= '0;
       t_size <= '0;
       t_data <= '0;
       t_nflits <= '0;
       t_flit <= '0;
-      t_tag <= '0;
-      t_err <= 1'b0;
+      i_we <= 1'b0;
+      i_err <= 1'b0;
+      i_addr <= '0;
+      i_size <= '0;
+      i_tag <= '0;
+      i_data <= '0;
+      i_nflits <= '0;
+      i_flit <= '0;
       in_hdr <= '0;
       in_addr <= '0;
       in_n <= '0;
       in_pending <= 1'b0;
       in_data <= '0;
       rx_cpl <= 1'b0;
+      dram_busy <= 1'b0;
+      tx_busy <= 1'b0;
       cf8 <= '0;
       hb_cmd <= 16'h0006;
       smram <= 8'h02;
@@ -225,25 +276,24 @@ module fabric
       d_ack <= 1'b0;
       p_ack <= 1'b0;
       mce_ue <= 1'b0;
+      if (m_valid != 0 && (m_valid & m_ready) != 0) m_valid <= '0;
 
       // ---------------------------------------------------- link receive
-      // completions for our request go to the transaction; requests from
-      // the I/O die (DMA) are assembled and served in their turn
       if (rx_valid && rx_ready) begin
-        if (in_n == 0 && st == F_RXWAIT && (rx_flit[7:0] == OP_CPL || rx_flit[7:0] == OP_CPLE)
-            && rx_flit[15:8] == 8'h00 && !rx_cpl) begin
-          rx_cpl <= 1'b1;
+        if (in_n == 0 && ost == O_RXWAIT && !rx_cpl &&
+            (rx_flit[7:0] == OP_CPL || rx_flit[7:0] == OP_CPLE) && rx_flit[15:8] == 8'h00) begin
+          // data flits follow unless the completion has none (I/O writes, errors)
+          rx_cpl <= rx_flit[22:19] != 0;
           t_flit <= '0;
           t_nflits <= rx_flit[22:19];
           t_err <= rx_flit[7:0] == OP_CPLE;
-          if (rx_flit[22:19] == 0) st <= F_DONE;
+          if (rx_flit[22:19] == 0) ost <= O_DONE;
         end else if (rx_cpl) begin
-          // completion data flits
-          t_data[64 * t_flit +: 64] <= rx_flit;
+          t_data[64 * 32'(t_flit) +: 64] <= rx_flit;
           t_flit <= t_flit + 4'd1;
           if (t_flit + 4'd1 == t_nflits) begin
             rx_cpl <= 1'b0;
-            st <= F_DONE;
+            ost <= O_DONE;
           end
         end else if (in_n == 0) begin
           in_hdr <= rx_flit[22:0];
@@ -263,25 +313,96 @@ module fabric
         end
       end
 
-      case (st)
-        F_IDLE: begin
-          // round robin over the masters with a request
-          logic [3:0] want;
+      // ---------------------------------------------------- the inbound engine
+      case (ist)
+        I_IDLE: if (in_pending) begin
+          i_we <= in_hdr[7:0] == OP_MWR;
+          i_addr <= in_addr;
+          i_size <= in_hdr[18:16];
+          i_tag <= in_hdr[15:8];
+          i_data <= in_data;
+          i_err <= 1'b0;
+          in_pending <= 1'b0;
+          ist <= I_DRAM;
+        end
+        I_DRAM: begin
+          logic [6:0] n;
+          n = 7'(1) << i_size;
+          if (!di[41] || 7'(di[5:0]) + n > 7'd64) begin
+            // outside DRAM or across a line: an unsupported request (a read
+            // completes with an error; a posted write is dropped)
+            i_err <= 1'b1;
+            ist <= i_we ? I_IDLE : I_TXWAIT;
+          end else if (!dram_busy && !(ost == O_DRAM)) begin
+            dram_busy <= 1'b1;
+            m_off <= lineoff(di[36:7]);
+            m_we <= i_we;
+            m_wdata <= i_data << (8 * di[5:0]);
+            m_be <= ((64'(1) << n) - 64'd1) << di[5:0];
+            m_valid <= 4'(1) << subch(di[7:6]);
+            ist <= I_DRAMWAIT;
+          end
+        end
+        I_DRAMWAIT: if (m_rsp[subch(di[7:6])]) begin
+          dram_busy <= 1'b0;
+          i_data <= m_rdata[subch(di[7:6])] >> (8 * di[5:0]);
+          if (m_ue[subch(di[7:6])] && !i_we) i_err <= 1'b1;
+          ist <= i_we ? I_IDLE : I_TXWAIT;      // a write is posted
+        end
+        I_TXWAIT: if (!tx_busy && ost != O_TXWAIT) begin
+          tx_busy <= 1'b1;
+          i_nflits <= i_err ? 4'd0 : nflits_of(i_size);
+          ist <= I_CPLHDR;
+        end
+        I_CPLHDR: begin
+          tx_valid <= 1'b1;
+          tx_flit <= {32'b0, 9'b0, i_nflits, i_size, i_tag, i_err ? OP_CPLE : OP_CPL};
+          if (tx_valid && tx_ready) begin
+            if (i_nflits == 0) begin
+              tx_valid <= 1'b0;
+              tx_busy <= 1'b0;
+              ist <= I_IDLE;
+            end else begin
+              tx_flit <= i_data[63:0];
+              i_flit <= '0;
+              ist <= I_CPLDATA;
+            end
+          end
+        end
+        I_CPLDATA: if (tx_ready) begin
+          if (i_flit + 4'd1 == i_nflits) begin
+            tx_valid <= 1'b0;
+            tx_busy <= 1'b0;
+            ist <= I_IDLE;
+          end else begin
+            tx_flit <= i_data[64 * 32'(i_flit + 4'd1) +: 64];
+            i_flit <= i_flit + 4'd1;
+          end
+        end
+        default: ist <= I_IDLE;
+      endcase
+
+      // ---------------------------------------------------- the outbound engine
+      case (ost)
+        O_IDLE: begin
+          logic [2:0] want;
           logic [1:0] pick;
           logic found;
-          want = {p_req, in_pending, d_req && !d_ack, c_req && !c_ack};
+          want = {p_req && !p_ack, d_req && !d_ack, c_req && !c_ack};
           found = 1'b0;
           pick = rr;
-          for (int k = 0; k < 4; k++)
-            if (!found && want[2'(rr + 2'(k))]) begin
+          for (int k = 0; k < 3; k++) begin
+            logic [1:0] m;
+            m = (rr + 2'(k) > 2'd2) ? 2'(rr + 2'(k) - 2'd3) : 2'(rr + 2'(k));
+            if (!found && want[m]) begin
               found = 1'b1;
-              pick = 2'(rr + 2'(k));
+              pick = m;
             end
+          end
           if (found) begin
-            rr <= pick + 2'd1;
+            rr <= (pick == 2'd2) ? 2'd0 : pick + 2'd1;
             who <= msel_e'(pick);
             t_err <= 1'b0;
-            t_tag <= 8'h00;
             case (pick)
               2'd0: begin
                 t_we <= c_we; t_io <= c_io; t_addr <= c_addr; t_size <= c_size;
@@ -291,28 +412,25 @@ module fabric
                 t_we <= d_we; t_io <= 1'b0; t_addr <= d_addr; t_size <= d_size;
                 t_data <= {448'b0, d_wdata};
               end
-              2'd2: begin
-                t_we <= in_hdr[7:0] == OP_MWR; t_io <= 1'b0; t_addr <= in_addr;
-                t_size <= in_hdr[18:16]; t_data <= in_data; t_tag <= in_hdr[15:8];
-                in_pending <= 1'b0;
-              end
               default: begin
                 t_we <= 1'b1; t_io <= 1'b1; t_addr <= 64'h80; t_size <= 3'd0;
                 t_data <= {504'b0, p_code};
               end
             endcase
-            st <= F_DRAM;
+            ost <= O_ROUTE;
           end
         end
-        F_DRAM: begin
-          // route: the host bridge, DRAM, or the link
+        O_ROUTE: begin
+          // the host bridge, DRAM, or the link
           if (t_io && t_addr[15:0] == 16'hCF8 && t_size == 3'd2) begin
-            if (t_we) cf8 <= t_data[31:0];
-            else t_data <= {480'b0, cf8};
             if (t_we) begin
-              st <= F_TXHDR;                     // the I/O die keeps its copy too
+              cf8 <= t_data[31:0];
               t_nflits <= 4'd1;
-            end else st <= F_DONE;
+              ost <= O_TXWAIT;                   // the I/O die keeps its copy too
+            end else begin
+              t_data <= {480'b0, cf8};
+              ost <= O_DONE;
+            end
           end else if (cfg_local) begin
             if (t_we)
               for (int i = 0; i < 4; i++)
@@ -333,103 +451,73 @@ module fabric
                   end
                 end
             t_data <= {480'b0, hb_read(cfg_reg[7:2]) >> (8 * cfg_reg[1:0])};
-            st <= F_DONE;
+            ost <= O_DONE;
           end else if (!t_io && dd[41]) begin
-            // DRAM: one 64-byte line (a transfer must not cross it)
-            logic [6:0] n;
-            n = 7'(1) << t_size;
-            if (7'(lo) + n > 7'd64) begin
-              t_err <= 1'b1;
-              st <= (who == MS_LINK) ? (t_we ? F_IDLE : F_CPLHDR) : F_DONE;
-            end else begin
-              m_off <= dd[36:8];
-              m_we <= t_we;
-              m_wdata <= t_data << (8 * lo);
-              m_be <= ((64'(1) << n) - 64'd1) << lo;
-              m_valid <= 4'(1) << sc;
-              st <= F_DRAMWAIT;
-            end
-          end else if (who == MS_LINK) begin
-            // a device's DMA outside DRAM: an unsupported request (a read
-            // completes with an error; a posted write is dropped)
-            t_err <= 1'b1;
-            st <= t_we ? F_IDLE : F_CPLHDR;
+            if (7'(dd[5:0]) + (7'(1) << t_size) > 7'd64) begin
+              t_err <= 1'b1;                     // a transfer must stay inside its line
+              ost <= O_DONE;
+            end else ost <= O_DRAM;
           end else begin
-            t_nflits <= t_we ? ((t_size == 3'd4) ? 4'd2 : (t_size == 3'd6) ? 4'd8 : 4'd1) : 4'd0;
-            st <= F_TXHDR;
+            t_nflits <= t_we ? nflits_of(t_size) : 4'd0;
+            ost <= O_TXWAIT;
           end
         end
-        F_DRAMWAIT: begin
-          if (m_valid != 0 && (m_valid & m_ready) != 0) m_valid <= '0;
-          if (m_rsp[sc]) begin
-            t_data <= m_rdata[sc] >> (8 * lo);
-            if (m_ue[sc] && !t_we) begin
-              t_err <= 1'b1;
-              mce_ue <= 1'b1;
-              mce_addr <= t_addr;
-            end
-            // a device's memory write is posted: no completion
-            st <= (who == MS_LINK) ? (t_we ? F_IDLE : F_CPLHDR) : F_DONE;
-          end
+        O_DRAM: if (!dram_busy) begin
+          dram_busy <= 1'b1;
+          m_off <= lineoff(dd[36:7]);
+          m_we <= t_we;
+          m_wdata <= t_data << (8 * dd[5:0]);
+          m_be <= ((64'(1) << (7'(1) << t_size)) - 64'd1) << dd[5:0];
+          m_valid <= 4'(1) << subch(dd[7:6]);
+          ost <= O_DRAMWAIT;
         end
-        // ---------------------------------------------------- link: our request
-        F_TXHDR: begin
+        O_DRAMWAIT: if (m_rsp[subch(dd[7:6])]) begin
+          dram_busy <= 1'b0;
+          t_data <= m_rdata[subch(dd[7:6])] >> (8 * dd[5:0]);
+          if (m_ue[subch(dd[7:6])] && !t_we) begin
+            t_err <= 1'b1;
+            mce_ue <= 1'b1;
+            mce_addr <= t_addr;
+          end
+          ost <= O_DONE;
+        end
+        O_TXWAIT: if (!tx_busy) begin
+          tx_busy <= 1'b1;
+          ost <= O_TXHDR;
+        end
+        O_TXHDR: begin
           tx_valid <= 1'b1;
           tx_flit <= {32'b0, 9'b0, t_nflits, t_size, 8'h00,
                       t_io ? (t_we ? OP_IOWR : OP_IORD) : (t_we ? OP_MWR : OP_MRD)};
           if (tx_valid && tx_ready) begin
             tx_flit <= t_addr;
-            st <= F_TXADDR;
+            ost <= O_TXADDR;
           end
         end
-        F_TXADDR: if (tx_ready) begin
+        O_TXADDR: if (tx_ready) begin
           t_flit <= '0;
           if (t_nflits != 0) begin
             tx_flit <= t_data[63:0];
-            st <= F_TXDATA;
+            ost <= O_TXDATA;
           end else begin
             tx_valid <= 1'b0;
-            st <= F_RXWAIT;
+            tx_busy <= 1'b0;
+            ost <= O_RXWAIT;
           end
         end
-        F_TXDATA: if (tx_ready) begin
+        O_TXDATA: if (tx_ready) begin
           if (t_flit + 4'd1 == t_nflits) begin
             tx_valid <= 1'b0;
+            tx_busy <= 1'b0;
             // memory writes are posted; port writes wait for their completion
-            st <= (t_io || !t_we) ? F_RXWAIT : F_DONE;
+            ost <= (t_io || !t_we) ? O_RXWAIT : O_DONE;
           end else begin
             tx_flit <= t_data[64 * 32'(t_flit + 4'd1) +: 64];
             t_flit <= t_flit + 4'd1;
           end
         end
-        F_RXWAIT: ;                          // the completion arrives above
-        // ---------------------------------------------------- link: a completion for a DMA
-        F_CPLHDR: begin
-          tx_valid <= 1'b1;
-          tx_flit <= {32'b0, 9'b0, (t_we || t_err) ? 4'd0 : ((t_size == 3'd6) ? 4'd8 : (t_size == 3'd4) ? 4'd2 : 4'd1),
-                      t_size, t_tag, t_err ? OP_CPLE : OP_CPL};
-          t_nflits <= (t_we || t_err) ? 4'd0 : ((t_size == 3'd6) ? 4'd8 : (t_size == 3'd4) ? 4'd2 : 4'd1);
-          if (tx_valid && tx_ready) begin
-            if (t_nflits == 0) begin
-              tx_valid <= 1'b0;
-              st <= F_IDLE;
-            end else begin
-              tx_flit <= t_data[63:0];
-              t_flit <= '0;
-              st <= F_CPLDATA;
-            end
-          end
-        end
-        F_CPLDATA: if (tx_ready) begin
-          if (t_flit + 4'd1 == t_nflits) begin
-            tx_valid <= 1'b0;
-            st <= F_IDLE;
-          end else begin
-            tx_flit <= t_data[64 * 32'(t_flit + 4'd1) +: 64];
-            t_flit <= t_flit + 4'd1;
-          end
-        end
-        F_DONE: begin
+        O_RXWAIT: ;                              // the completion arrives above
+        O_DONE: begin
           case (who)
             MS_CORE: begin
               c_ack <= 1'b1;
@@ -441,12 +529,11 @@ module fabric
               d_err <= t_err;
               d_rdata <= t_data[63:0];
             end
-            MS_POST: p_ack <= 1'b1;
-            default: ;
+            default: p_ack <= 1'b1;
           endcase
-          st <= F_IDLE;
+          ost <= O_IDLE;
         end
-        default: st <= F_IDLE;
+        default: ost <= O_IDLE;
       endcase
     end
   end

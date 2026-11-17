@@ -31,6 +31,7 @@
 #include "cpu.h"
 #include "jtag_bitbang.h"
 #include "board.h"
+#include "iod.h"
 #include "verilated.h"
 
 namespace {
@@ -61,11 +62,11 @@ struct opts {
 	bool usb_floppy_ro = false;
 	const char *keys = nullptr;	// -K: key script
 	int jtag_port = 0;		// -D: JTAG remote_bitbang server port
-	dimm_cfg dimms[DRAM_SLOTS] = {};
+	ddr5_slot_cfg dimms[DDR5_SLOTS] = {};
+	int meminit_fast = 1;		// -F: the die's meminit_fast strap (default 1 in simulation)
 	const char *vga_bmp = nullptr;	// -V: dump the VGA picture on exit
 	const char *vga_txt = nullptr;	// -Y: dump the VGA text cells on exit
 	const char *nvram = nullptr;	// -N: NVRAM file
-	unsigned ram_mib = 0;		// -M: the test board's RAM (MiB; default 2)
 	const char *debugcon = nullptr;	// -g: the debug console (port 402h) to this file, - stderr
 	const char *fwcfg[16] = {};	// -f name=file: fw_cfg files
 	int nfwcfg = 0;
@@ -76,18 +77,20 @@ void
 usage()
 {
 	std::fprintf(stderr,
-	    "usage: vsim [-b server|test] [-C cpu] [-n] [-d] [-J ecc-skip|ecc-check] [-m dimm]... [-P slot] [-X slot]\n"
+	    "usage: vsim [-b server|test] [-C cpu] [-n] [-d] [-J ecc-skip|ecc-check] [-m dimm]... [-F 0|1] [-P slot] [-X slot]\n"
 	    "            [-K script] [-c cycles] [-H cycles] [-t] [-v] [-x] [-s scale] [-V vga.bmp] [-Y vga.txt]\n"
 	    "            [-T tpm-state] [-N nvram] [-l file@addr]... [-e file.elf]... [eeprom.bin]\n"
 	    "  eeprom.bin  flash image, placed so its last byte is at 0xFFFFFFFF (reset vector\n"
 	    "      0xFFFFFFF0); optional with -e or -l (the EEPROM is then erased)\n"
-	    "  -b  board model: server (default) or test (synthetic, adds 2 MiB SRAM at 0)\n"
+	    "  -b  board model: server (default) or test (the same, ECC_SKIP fitted)\n"
 	    "  -C  the core version in the socket: %s (default %s; rtl/<version>)\n"
 	    "  -n  headless: no window (serial is always on stdout)\n"
 	    "  -d  debug board: sets the ECC_SKIP jumper unless -J ecc-check\n"
 	    "  -J  set a jumper explicitly\n"
-	    "  -m  server board DIMM: slot:size[:noecc][:5600][:badspd], size 8G 16G 32G 64G;\n"
-	    "      repeatable; replaces the default (0:8G, ECC, DDR5-4800). -m none: no DIMMs\n"
+	    "  -m  DIMM: slot:size[:noecc][:badspd], slot 0..3 = channel*2 + DIMM, size 16G (1Rx8)\n"
+	    "      or 32G (2Rx8); repeatable; replaces the default (0:16G); -m none: no DIMMs\n"
+	    "  -F  the die's meminit_fast strap: 1 (default) scales the JEDEC init waits by\n"
+	    "      1/1024, 0 runs them in full (tINIT3 alone is 9.6M cycles)\n"
 	    "  -P  PCIe slot of the DMA test endpoint: 0..7 or none (default 0)\n"
 	    "  -X  PCIe slot of the xHCI USB controller (keyboard, mouse): 0..7 or none (default 1)\n"
 	    "  -D  a JTAG probe: OpenOCD remote_bitbang server on 127.0.0.1:PORT (docs/jtag.md)\n"
@@ -109,11 +112,10 @@ usage()
 	    "  -Y  save the VGA text cells as 25 lines of text on exit\n"
 	    "  -T  keep the debug TPM's NV state in this file (default: fresh each run)\n"
 	    "  -N  keep the NVRAM (firmware settings) in this file (default: erased each run)\n"
-	    "  -M  the test board's RAM in MiB (default 2)\n"
 	    "  -g  write the debug console (I/O port 402h) to this file (- for stderr)\n"
 	    "  -f  name=file: offer a file through fw_cfg (e.g. etc/acpi/tables=tables.bin); repeatable\n"
-	    "  -l  file@addr: copy a raw image into memory before reset (test-board SRAM or\n"
-	    "      the EEPROM range); repeatable\n"
+	    "  -l  file@addr: copy a raw image into memory before reset (DRAM through the\n"
+	    "      DIMMs' backdoor, or the EEPROM range); repeatable\n"
 	    "  -e  load an ELF64 x86-64 executable's PT_LOAD segments the same way; repeatable\n"
 	    "Window: keys and the mouse go to the USB keyboard and mouse (to COM1 with -X none);\n"
 	    "Pause is the power button.\n", cpu_names(), cpu_default());
@@ -350,11 +352,7 @@ struct machine {
 	board brd{};
 	uint64_t cycles = 0;
 	bool trace = false;
-	// a DRAM access waiting for its modeled latency
-	bool pend = false;
-	unsigned pend_left = 0;
-	int pend_err = 0;
-	uint8_t pend_d[64] = {};
+	iod *io = nullptr;		// the I/O die at the far end of the link
 	// why the run stopped, besides the board's power state
 	enum { RUNNING, SHUTDOWN, HALTED } stop = RUNNING;
 	unsigned stop_core = 0;
@@ -414,7 +412,8 @@ struct machine {
 		top->rst_n = 0;
 		top->trst_n = 0;		// power-on: the TAP resets too
 		top->clk = 0;
-		top->bus_ack = 0;
+		top->iol_tx_ready = 0;
+		top->iol_rx_valid = 0;
 		top->intr_valid = 0;
 		top->nmi = 0;
 		top->smi = 0;
@@ -426,60 +425,35 @@ struct machine {
 		top->rst_n = 1;
 		top->eval();
 		board_reset(&brd);
-		pend = false;
+		iod_reset(io);
 		stop = RUNNING;
 		for (uint64_t &h : halted_for)
 			h = 0;
 	}
 
-	void ack(const uint8_t *d, int r)
+	// One clock of the die's pins outside the die: sampled with the clock
+	// low, applied after the rising edge. The I/O link's handshakes complete
+	// at the edge (iod.h); the DIMMs see the DDR5 outputs the edge registered
+	// and answer for the next edge (ddr5.h).
+	int link_tx_valid = 0, link_rx_ready = 0;
+	uint64_t link_tx_flit = 0;
+
+	void pins_pre_edge()
 	{
-		top->bus_ack = 1;
-		top->bus_err = r != 0;
-		for (int w = 0; w < 16; w++)
-			top->bus_rdata[w] = (uint32_t)d[4 * w] | (uint32_t)d[4 * w + 1] << 8 |
-			    (uint32_t)d[4 * w + 2] << 16 | (uint32_t)d[4 * w + 3] << 24;
+		link_tx_valid = top->iol_tx_valid;
+		link_tx_flit = top->iol_tx_flit;
+		link_rx_ready = top->iol_rx_ready;
 	}
 
-	// The core holds a request until it is acknowledged. A DRAM access is
-	// performed when it is first seen and acknowledged after its latency.
-	// I/O-space requests (IN/OUT) go to the board's port decoder.
-	void bus()
+	void pins_post_edge()
 	{
-		top->bus_ack = 0;
-		top->bus_err = 0;
-		if (pend) {
-			if (--pend_left == 0) {
-				pend = false;
-				ack(pend_d, pend_err);
-			}
-			return;
-		}
-		if (!top->bus_req)
-			return;
-		uint8_t d[64] = {};
-		unsigned size = top->bus_size, lat = 1;
-		if (top->bus_we)
-			for (int i = 0; i < 64; i++)
-				d[i] = (uint8_t)(top->bus_wdata[i / 4] >> (8 * (i % 4)));
-		int r;
-		brd.smiact = top->bus_smm;	// SMRAM decodes for the core in SMM
-		if (top->bus_io)
-			r = board_io(&brd, top->bus_we, (uint16_t)top->bus_addr, size, d);
-		else
-			// 1-16 bytes, or a 64-byte line (size 6: cores with caches)
-			r = size > 4 && size != 6 ? -1 :
-			    board_access(&brd, top->bus_we, top->bus_addr, size, d, &lat);
-		if (top->bus_we)
-			std::memset(d, 0, sizeof d);
-		if (lat > 1) {
-			pend = true;
-			pend_left = lat - 1;
-			pend_err = r;
-			std::memcpy(pend_d, d, sizeof d);
-			return;
-		}
-		ack(d, r);
+		int txr = 0, rxv = 0;
+		uint64_t rxf = 0;
+		iod_cycle(io, link_tx_valid, link_tx_flit, link_rx_ready, &txr, &rxv, &rxf);
+		top->iol_tx_ready = txr;
+		top->iol_rx_valid = rxv;
+		top->iol_rx_flit = rxf;
+		ddr5_eval_pins(brd.ddr5, *top, cycles);
 	}
 
 	// Uncore events: NMIs and machine checks are one-cycle pulses on the
@@ -552,7 +526,7 @@ struct machine {
 	void step()
 	{
 		if (board_suspended(&brd)) {	// the PMC stopped the core's clock
-			board_tick(&brd);
+			iod_board_tick(io);
 			cycles++;
 			if (cycles >= next_key)
 				inject();
@@ -561,12 +535,13 @@ struct machine {
 		jtag_pins();
 		top->clk = 0;
 		top->eval();
-		bus();
+		pins_pre_edge();
 		events();
 		top->clk = 1;
 		top->eval();
 		acked();
-		board_tick(&brd);
+		pins_post_edge();
+		iod_board_tick(io);
 		cycles++;
 		if (cycles >= next_key)
 			inject();
@@ -994,7 +969,7 @@ main(int argc, char **argv)
 	opts o;
 	int c;
 
-	while ((c = getopt(argc, argv, "b:ndJ:m:c:H:tvxs:S:P:X:U:K:V:Y:T:l:e:N:C:M:g:f:D:")) != -1) {
+	while ((c = getopt(argc, argv, "b:ndJ:m:F:c:H:tvxs:S:P:X:U:K:V:Y:T:l:e:N:C:M:g:f:D:")) != -1) {
 		switch (c) {
 		case 'b':
 			if (!std::strcmp(optarg, "server"))
@@ -1019,7 +994,7 @@ main(int argc, char **argv)
 				std::memset(o.dimms, 0, sizeof o.dimms);
 				o.dimms_given = true;
 			}
-			if (std::strcmp(optarg, "none") && dram_parse_dimm(optarg, o.dimms)) {
+			if (std::strcmp(optarg, "none") && ddr5_parse_slot(optarg, o.dimms)) {
 				std::fprintf(stderr, "vsim: bad DIMM '%s'\n", optarg);
 				usage();
 			}
@@ -1079,7 +1054,11 @@ main(int argc, char **argv)
 		case 'Y': o.vga_txt = optarg; break;
 		case 'T': tpm_set_state_file(optarg); break;
 		case 'N': o.nvram = optarg; break;
-		case 'M': o.ram_mib = (unsigned)std::strtoul(optarg, nullptr, 0); break;
+		case 'M':
+			// the test board's SRAM is gone (D-014): memory is the DIMMs (-m)
+			std::fprintf(stderr, "vsim: -M is obsolete (memory is the DIMMs, -m); ignored\n");
+			break;
+		case 'F': o.meminit_fast = std::atoi(optarg) != 0; break;
 		case 'g': o.debugcon = optarg; break;
 		case 'f':
 			if (o.nfwcfg == 16 || !std::strchr(optarg, '='))
@@ -1109,10 +1088,11 @@ main(int argc, char **argv)
 			return 4;
 	}
 	m.halt_idle = o.halt_idle ? o.halt_idle : 1;
-	if (o.ram_mib)
-		board_ram_size = (uint64_t)o.ram_mib << 20;
-	if (board_init(&m.brd, o.board_kind, o.image, o.dimms_given ? o.dimms : nullptr))
+	if (board_init(&m.brd, o.board_kind, o.image, o.dimms_given ? o.dimms : nullptr,
+	    o.meminit_fast) || !(m.io = iod_new(&m.brd)))
 		return 4;
+	m.brd.iod = m.io;
+	m.top->meminit_fast = o.meminit_fast;
 	if (o.debugcon) {
 		FILE *dc = !std::strcmp(o.debugcon, "-") ? stderr : std::fopen(o.debugcon, "w");
 		if (!dc) {
@@ -1222,13 +1202,16 @@ main(int argc, char **argv)
 	    : run_window(m, o);
 	if (o.verbose)
 		std::fprintf(stderr, "vsim: POST code %02x (%u written)\n", m.brd.post, m.brd.nposts);
-	if (o.verbose && m.brd.dram) {
+	if (o.verbose && m.brd.ddr5) {
 		char buf[256];
-		dram_stats(m.brd.dram, buf, sizeof buf);
+		ddr5_stats(m.brd.ddr5, buf, sizeof buf);
+		std::fprintf(stderr, "vsim: %s\n", buf);
+		iod_stats(m.io, buf, sizeof buf);
 		std::fprintf(stderr, "vsim: %s\n", buf);
 	}
 	dump_vga(m.brd.vga, o.vga_bmp, o.vga_txt);
 	m.top->final();
 	board_free(&m.brd);
+	iod_free(m.io);
 	return r;
 }

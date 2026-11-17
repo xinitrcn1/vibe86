@@ -54,6 +54,8 @@ struct fwcfg_file {
 
 struct pc {
 	struct pit_ch pit[3];
+	uint64_t ram_high;		/* DRAM above 4 GiB (CMOS 5Bh-5Dh) */
+	int fw_dma_pending;		/* a fw_cfg DMA request to run at the next tick */
 	uint64_t pit_acc;		/* fractional PIT clocks (CORE_HZ units) */
 	struct pic8259 pic[2];
 	uint8_t cmos[128], cmos_idx, nmi_mask;
@@ -95,6 +97,8 @@ void pc_irq(struct pc *p, unsigned irq, int level);
 /* the PIC pair's interrupt request, and INTA: the vector it supplies */
 int pc_pic_intr(const struct pc *p);
 uint8_t pc_pic_inta(struct pc *p);
+
+void pc_ram_high(struct pc *p, uint64_t bytes);
 
 #ifdef __cplusplus
 }

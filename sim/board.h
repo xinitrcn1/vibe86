@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "dram.h"
+#include "ddr5.h"
 #include "pcie.h"
 #include "i2c.h"
 #include "pmc.h"
@@ -25,8 +25,6 @@ extern "C" {
  * 16 bytes; board and uncore registers are in the MMIO block below the MSI
  * window, as on PC-compatible platforms.
  */
-#define SRAM_BASE	0x00000000ull	/* test board only */
-#define SRAM_SIZE	(2ull << 20)	/* the default; vsim -M sets board_ram_size */
 #define MMIO_BASE	PLAT_MAP_MMIO_BASE	/* board / uncore register block */
 #define UART0_BASE	0xFE000000ull	/* MMIO alias of COM1 */
 #define SYSCON_BASE	0xFE001000ull
@@ -43,7 +41,6 @@ extern "C" {
 #define RESET_VECTOR	PLAT_MAP_RESET_VECTOR
 #define SYSCON_NMI	0xAAAAu
 #define SYSCON_MCE	0xBB00u		/* | type */
-/* server board only: SMB_BASE, MC_BASE and the DRAM window (dram.h) */
 
 /* I/O ports (IN/OUT) */
 #define PORT_POST	PLAT_PORTS_POST		/* POST code */
@@ -56,12 +53,12 @@ extern "C" {
 enum { PWR_ON, PWR_OFF, PWR_FAIL, PWR_RESET, PWR_THERMAL };
 
 /*
- * BOARD_SERVER: the server board (docs/platform.md): EEPROM, COM1, syscon,
- *   straps, the SPD SMBus, the DDR5 memory controller and 16 DIMM slots.
- *   VGA, the I2C controller (TPM, fan monitor, LM75), the PMC and PCIe (with
- *   the xHCI USB controller) are on both boards.
- * BOARD_TEST: a small synthetic board for the tests: the same devices plus
- *   2 MiB of SRAM at SRAM_BASE (no DRAM, so no firmware is needed).
+ * Both boards carry the die's DIMMs (four slots: 2 channels x 2, sim/ddr5.h;
+ * the memory controllers are on the die, D-014), EEPROM, COM1, syscon,
+ * straps, VGA, the I2C controller (TPM, fan monitor, LM75), the PMC and PCIe
+ * (with the xHCI USB controller) behind the I/O die (sim/iod.h).
+ * BOARD_SERVER and BOARD_TEST differ only in their straps (the test board
+ * has ECC_SKIP fitted).
  */
 enum { BOARD_SERVER, BOARD_TEST };
 
@@ -96,8 +93,9 @@ struct board_event {
 struct board {
 	uint8_t *eeprom;	/* EEPROM_SIZE bytes, erased = 0xFF */
 	int kind;		/* BOARD_* */
-	uint8_t *sram;		/* BOARD_TEST: ram_size bytes of RAM at 0 */
-	uint64_t ram_size;
+	struct ddr5_mem *ddr5;	/* the DIMMs (the die's DDR5 pins) */
+	uint64_t ram_size;	/* the DRAM's size */
+	struct iod *iod;	/* the I/O die: device DMA goes through it */
 	struct pc pc;		/* the legacy PC devices (pc.h) */
 	uint32_t cf8;		/* PCI configuration address (CF8h) */
 	void (*debugcon)(void *ctx, uint8_t c);
@@ -106,7 +104,6 @@ struct board {
 	struct uart16550 uart;
 	int power;		/* PWR_* */
 	unsigned failcode;	/* PWR_FAIL: code written to syscon */
-	struct dram *dram;	/* BOARD_SERVER */
 	uint64_t now;		/* cycles since power-on (board_tick) */
 	struct qport qport;
 	uint64_t syscon_mce_addr;	/* SYSCON + 8 */
@@ -131,11 +128,12 @@ struct board {
 };
 
 /*
- * dimms: the slot population of the server board (NULL: the default).
+ * dimms: the slot population (NULL: the default, one 16 GiB DIMM in slot 0);
+ * fast: the die's meminit_fast strap (the DIMMs scale their init waits too).
  * eeprom_image: NULL or "" for an erased EEPROM (vsim -e/-l fill memory).
  */
 int board_init(struct board *b, int kind, const char *eeprom_image,
-    const struct dimm_cfg *dimms);
+    const struct ddr5_slot_cfg *dimms, int fast);
 void board_free(struct board *b);
 /* -N: load the NVRAM from path (missing = erased) and save it back there */
 int board_nvram_file(struct board *b, const char *path);
@@ -145,9 +143,9 @@ void board_reset(struct board *b);
 /* one core clock */
 void board_tick(struct board *b);
 /*
- * One memory access; size = log2 bytes (0..6); returns 0, or -1 = bus error.
- * *lat = core cycles until the access is acknowledged: 1 = this cycle (every
- * device except DRAM), more for DRAM (the DDR5 timing model).
+ * One memory access from the die (over the I/O link: everything but DRAM);
+ * size = log2 bytes (0..6); returns 0, or -1 = bus error. *lat = cycles
+ * until the access is answered (1 = this cycle).
  */
 int board_access(struct board *b, int we, uint64_t addr, unsigned size,
     uint8_t *data, unsigned *lat);
@@ -157,8 +155,6 @@ int board_access(struct board *b, int we, uint64_t addr, unsigned size,
  * bad size.
  */
 int board_io(struct board *b, int we, uint16_t port, unsigned size, uint8_t *data);
-/* the test board's RAM size (set before board_init; default SRAM_SIZE) */
-extern uint64_t board_ram_size;
 /* a maskable interrupt the board's PIC is requesting (1, and its vector),
    and the core's acknowledgement of it (INTA) */
 int board_pic_pending(struct board *b, uint8_t *vector);
@@ -179,10 +175,9 @@ int board_suspended(const struct board *b);
 /* the next event for the core; returns 0 if none */
 int board_event(struct board *b, struct board_event *e);
 /*
- * Copy an image into board memory before reset (vsim -l, -e): the test
- * board's SRAM or the EEPROM range. Returns 0, or -1 with a message on
- * stderr (e.g. the server board's DRAM, which isn't decoded until firmware
- * brings the memory controller online).
+ * Copy an image into memory before reset (vsim -l, -e): DRAM (through the
+ * DIMMs' backdoor at the address the die's fabric maps: below TOLM, or
+ * hoisted above 4 GiB) or the EEPROM range. Returns 0, or -1 with a message.
  */
 int board_preload(struct board *b, uint64_t addr, const uint8_t *data, size_t n);
 void uart_rx_push(struct uart16550 *u, uint8_t c);

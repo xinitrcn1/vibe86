@@ -303,9 +303,19 @@ twoN(const struct rank *r)
 
 /* ---------------------------------------------------------------- data */
 
+/*
+ * What a DRAM cell holds before anything wrote it: random at power-on. With
+ * the die's meminit_fast strap the DIMMs instead start cleared (zero data,
+ * zero check bits: the Hsiao code of 0), standing in for the memory clear an
+ * ECC platform does before the cores start (AMD's ABL zeroes DRAM so that
+ * reads never meet uninitialized ECC) -- clearing 16 GiB line by line would
+ * take billions of simulated clocks.
+ */
 static uint8_t
 garbage(const struct ddr5_mem *m, uint64_t key, unsigned col, unsigned dev)
 {
+	if (m->fast)
+		return 0;
 	return (uint8_t)mix(m->seed ^ (key << 14) ^ (col * DEVS + dev));
 }
 

@@ -23,8 +23,8 @@ board are C models.
 
 | Pin group (socket) | On a real part | In `vsim` |
 |---|---|---|
-| DDR5 channels | 16 DIMM slots: 8 channels × 2 DIMMs per channel, each channel two 32-bit subchannels + 8 ECC bits each (JESD79-5) | `dram.c`: the memory controller (registers at `0xFE00_4000`), per-bank DDR5 timing, ECC; 16 slots, populated with `-m` |
-| SPD SMBus / I3C | the sideband to the DIMMs' SPD hubs (JESD300-5 hub, JESD400-5 contents) | `dram.c`: SPD SMBus controller at `0xFE00_3000`, two segments of 8 |
+| DDR5 channels | the die's DDR5 pins: 2 channels × 2 subchannels (32 DQ + 8 CB), 2 DIMM slots per channel (docs/die-interface.md) | the memory controllers are RTL on the die (`rtl/uncore/ddr5_sub.sv`, D-014); `ddr5.c`: the DIMMs at the pin level, populated with `-m` |
+| SPD SMBus / I3C | the sideband to the DIMMs' SPD hubs (JESD300-5 hub, JESD400-5 contents) | the die's SPD pins, mastered by its memory init engine (`meminit.sv`); `ddr5.c`/`spd.c`: the hubs at 50h–53h |
 | PCIe lanes | root ports, x16/x8 bifurcation | `pcie.c`: host bridge + 8 root ports (one per slot), ECAM, BAR windows, MSI; `iommu.c` in front of DMA |
 | eSPI / LPC to the board | the legacy I/O devices of a PC: COM ports, POST code port, reset control | `board.c` `board_io`: COM1 (16550) at `0x3F8`, POST code port `0x80`, reset control `0xCF9` |
 | SPI flash | boot firmware, mapped below 4 GiB | `board.c`: 16 MiB EEPROM at `0xFF00_0000`, reset vector `0xFFFF_FFF0` |
@@ -35,55 +35,41 @@ board are C models.
 | MCERR#, CATERR# | machine-check signalling | `mce_*` core pins: the DDR5 controller's corrected/uncorrected ECC errors, or SYSCON `0xBBxx` |
 | MSIs (inbound memory writes to `0xFEEx_xxxx`) | interrupt messages from PCIe devices and the IOMMU, delivered to a local APIC | `board.c` `msi_write`: the destination APIC id and vector go to the core's `intr_*` pins |
 
-### The core-uncore bus
+### The die's pins
 
-The core (vsim `-C`, `rtl/<version>`) reaches everything over one bus, one
-transaction at a time, held until acknowledged (the die interface,
-`rtl/common/pins.toml`, generated into each core's port list and vsim's
-`struct cpu`; D-013):
+The die (`rtl/<version>/<version>_die.sv`: the core and `rtl/uncore/`)
+reaches the system only through pins (docs/die-interface.md, D-014): the
+DDR5 channels, the SPD SMBus, an I/O link to the I/O die (split
+transactions over 64-bit flits: everything that isn't DRAM — MMIO, ports,
+the flash, other PCI configuration — and device DMA into DRAM), JTAG, the
+interrupt sideband (INTR/INTA, NMI, SMI, MCERR) and a trace port (an
+instruction retired, an exception or interrupt delivered, shutdown,
+halted). `sim/iod.c` is the I/O die; the board's devices behind it run in a
+coroutine that a DMA read suspends until the die's completion returns.
 
-- **memory**: 1–16 bytes (log2 size 0–4) at any address the target
-  accepts, or a whole 64-byte line (size 6) of cacheable memory for a core
-  with caches. Read data is up to 512 bits, byte 0 = the lowest address.
-  DRAM transactions take the DDR5 timing model's latency; everything else
-  answers in the same cycle. An address nothing decodes is a **bus error**
-  (`bus_err` with the acknowledge); what the core does with it is the core
-  version's business (`rtl/<version>/README.md`).
-- **I/O** (`bus_io`, for `IN`/`OUT`): the port number in `bus_addr`, 1, 2 or
-  4 bytes. Ports nothing decodes read as all ones and ignore writes, as on a
-  PC; only a bad size is a bus error.
-
-Uncore events (MSIs, NMI, machine checks) wait in a 64-entry queue that
-`vsim` drains into the core's `intr_*`, `nmi` and `mce_*` pins, one event per
-cycle (a full queue drops events).
-
-The core reports to `vsim` on trace pins: an instruction retired (RIP,
-length, bytes, micro-ops), an exception or interrupt delivered (vector,
-error code, RIP), **shutdown** (a triple fault, Intel SDM Vol. 3A §6.15,
-"Interrupt 8—Double Fault Exception") and **halted** (`HLT`).
+Memory is ready before the core runs: the die's init engine (the stand-in
+for AMD's PSP) reads the SPDs, initializes the DRAMs (JEDEC power-up
+sequence) and posts D0h–D3h on port 80h, then releases the core; errors
+post E1h–E4h and the core stays in reset. With the `meminit_fast` strap
+(vsim `-F 1`, the default) the waits are scaled by 1/1024 and the DIMMs
+start cleared (standing in for the platform's ECC memory clear).
 
 ## The boards
 
-| Part | Server board (`-b server`, default) | Test board (`-b test`) |
-|---|---|---|
-| Memory | 16 DDR5 RDIMM slots (default one 8 GiB DDR5-4800 ECC RDIMM in slot 0, `-m`); DRAM decodes only after firmware trains the controller | 2 MiB SRAM at `0x0000_0000`, usable at reset; no DRAM |
-| Firmware | 16 MiB EEPROM (SPI flash) | the same |
-| Serial | COM1 (16550) on I/O port `0x3F8`, MMIO alias at `0xFE00_0000` | the same |
-| PCIe | root complex, 8 slots, IOMMU; DMA test endpoint in slot 0 (`-P`), xHCI (USB keyboard + mouse) in slot 1 (`-X`) | the same |
-| Display | VGA: 80×25 text, 640×480 / 800×600 32 bpp; the "monitor" is an SDL3 window | the same |
-| I2C | TPM 2.0 (debug), fan monitor, LM75 | the same |
-| Power | PMC: power, reset cause, rails, thermal trips, watchdog, suspend; 2 fans | the same |
-
-**There is no vibe86 firmware yet.** The server board's DRAM is decoded only
-once firmware has read the SPDs and trained the DDR5 controller (the
-bring-up sequence below), so until that firmware exists the tests run on
-the **test board**, whose SRAM works from reset.
+Both boards (`-b server`, the default, and `-b test`) carry the same
+devices: four DIMM slots on the die's channels (default one 16 GiB 1Rx8
+ECC DIMM in slot 0, `-m slot:size`), a 16 MiB EEPROM (SPI flash), COM1,
+PCIe (8 slots, IOMMU, the DMA test endpoint in slot 0 `-P`, xHCI in slot 1
+`-X` with a USB keyboard, mouse and optional floppy `-U`), VGA (80×25 text,
+640×480 / 800×600 32 bpp, an SDL3 window), I2C (TPM 2.0 debug, fan monitor,
+LM75) and a PMC (power, reset cause, rails, thermal trips, watchdog,
+suspend, 2 fans). The test board has the ECC_SKIP strap fitted.
 
 ## Physical map
 
 | Address | Size | Device | Access |
 |---|---|---|---|
-| `0x0000_0000` | 2 MiB | SRAM (**test board only**) | any size |
+| `0x0000_0000` | to TOLM (2 GiB) | DRAM (the die's DIMMs); A_0000h–B_FFFFh is SMRAM for the core in SMM, C_0000h–F_FFFFh follows the PAM registers (the die's fabric decodes both) | any size within a 64-byte line |
 | `0xC000_0000` | 512 MiB | PCIe 32-bit memory window (BARs) | as the device allows |
 | `0xE000_0000` | 256 MiB | PCIe ECAM: 256 buses × 1 MiB | 1, 2 or 4 B |
 | `0xF000_0000` | 16 MiB | VGA VRAM | any size |
@@ -101,7 +87,7 @@ the **test board**, whose SRAM works from reset.
 | `0xFE01_0000` | 0x140 | VGA registers (both boards) | 4 or 8 B |
 | `0xFEE0_0000` | 1 MiB | MSI window: a 4-byte write is an interrupt message ([below](#msis-nmi-machine-checks)) | 4 B writes; reads return 0 |
 | `0xFF00_0000` | 16 MiB | EEPROM (firmware); the reset vector `0xFFFF_FFF0` is its last 16 bytes | read any size; writes fault |
-| `0x1_0000_0000` | 1 TiB window | DRAM (**server**): the DIMMs at the bases firmware programs | any size (scalar accesses naturally aligned) |
+| `0x1_0000_0000` | DRAM size − TOLM | DRAM above TOLM, hoisted above 4 GiB (as AMD's data fabric) | any size within a 64-byte line |
 | `0x200_0000_0000` | 64 GiB | PCIe 64-bit memory window (prefetchable BARs) | as the device allows |
 
 Any other address is a bus error. The DRAM window is a bus error until the
@@ -134,167 +120,19 @@ C620 Series Chipset Platform Controller Hub Datasheet*, doc. 336067, 2018,
 
 ## Memory
 
-### DIMMs
-
-Each slot holds nothing or one DDR5 RDIMM with two 32-bit subchannels, plus
-8 ECC bits per subchannel on ECC modules (side-band SECDED). The
-organizations follow JEDEC JESD79-5 densities:
-
-| Size | Organization | Dies | Bank groups × banks | Rows |
-|---|---|---|---|---|
-| 8 GiB | 1Rx16 | 16 Gb | 4 × 4 | 64 K |
-| 16 GiB | 1Rx8 | 16 Gb | 8 × 4 | 64 K |
-| 32 GiB | 2Rx8 | 16 Gb | 8 × 4 | 64 K |
-| 64 GiB | 2Rx8 | 32 Gb | 8 × 4 | 128 K |
-
-| Speed | tCK | CL-tRCD-tRP | tRAS | tRC | tRFC1 (16 / 32 Gb) |
-|---|---|---|---|---|---|
-| DDR5-4800 | 416 ps | 40-40-40 | 32 ns | 48.64 ns | 295 / 410 ns |
-| DDR5-5600 | 357 ps | 46-45-45 | 32 ns | 48.07 ns | 295 / 410 ns |
-
-These are approximations of the JEDEC speed bins, good enough for the model.
-
-### SPD
-
-Every DIMM has an SPD hub with 1024 bytes laid out after JEDEC JESD400-5
-(DDR5 SPD). The model fills these fields:
-
-| Bytes | Field | Example (8 GiB, 4800, ECC) |
-|---|---|---|
-| 0, 1 | SPD size / revision | `0x30`, `0x10` |
-| 2 | key byte: DRAM type | `0x12` DDR5 SDRAM |
-| 3 | module type [3:0] | `0x01` RDIMM |
-| 4 | dies per package [7:5], density [4:0] (4 = 16 Gb, 6 = 32 Gb) | `0x04` |
-| 5 | column bits − 10 [7:5], row bits − 16 [4:0] | `0x00` |
-| 6 | I/O width [7:5] (0 x4, 1 x8, 2 x16) | `0x40` |
-| 7 | bank groups log2 [7:5], banks per group log2 [2:0] | `0x42` |
-| 20–21 / 22–23 | tCKAVGmin / tCKAVGmax, ps | 416 / 1010 |
-| 24–28 | CAS latencies supported (bit n = CL 20 + 2n) | |
-| 30–41 | tAAmin, tRCDmin, tRPmin, tRASmin, tRCmin, tWRmin, ps | |
-| 42–47 | tRFC1min, tRFC2min, tRFCsbmin, ns | 295, 160, 130 |
-| 234 | package ranks − 1 [5:3] | `0x00` |
-| 235 | subchannels − 1 [6:5], ECC bits [4:3] (2 = 8), subchannel width [2:0] (2 = 32) | `0x32` (`0x22` without ECC) |
-| 510–511 | CRC-16 (polynomial 0x1021, init 0) over bytes 0–509 | |
-| 521–550 | part number, ASCII | `VSIM-DDR5-8G-1Rx16-4800-ECC` |
-
-### SPD SMBus controller (`0xFE00_3000`)
-
-DDR5 SPD hubs answer at 7-bit addresses `0x50 | HID` (HID 0–7) on each
-SMBus segment. The board has two segments, so slot = segment × 8 + HID.
-
-| Offset | Register | |
-|---|---|---|
-| `0x00` | CMD (w) | [3:0] slot (= [3] segment, [2:0] HID), [13:4] SPD byte offset, [31] GO: read one byte |
-| `0x08` | STATUS (r) | [0] BUSY, [1] DONE, [2] NACK (no DIMM) |
-| `0x10` | DATA (r) | the byte read (0xFF after a NACK) |
-
-A transaction takes 48 core cycles.
-
-### Memory controller (`0xFE00_4000`)
-
-64-bit registers; 32-bit accesses read or write one half.
-
-| Offset | Register | |
-|---|---|---|
-| `0x000` | ID (r) | `0x0001_0000_3552_4444` ("DDR5", version 1) |
-| `0x008` | STATUS (r) | [0] BUSY, [3:1] STATE (0 reset, 1 CKE, 2 MRS, 3 ZQ, 4 trained, 5 online), [4] ERR, [15:8] ERRCODE, [16] SCRUB_BUSY, [17] SCRUB_DONE |
-| `0x010` | CMD (w) | 1 RESET, 2 CKE, 3 MRW, 4 ZQCAL, 5 TRAIN, 6 ONLINE |
-| `0x018` | MRW | [7:0] mode register, [15:8] value, written by CMD MRW |
-| `0x020` | TCK_PS | DRAM clock period, ps |
-| `0x028` | TIM0 | [15:0] CL, [31:16] tRCD, [47:32] tRP, [63:48] tRAS, in clocks |
-| `0x030` | TIM1 | [15:0] tRC, [31:16] tRFC, [47:32] tREFI, [55:48] tCCD_L, [63:56] tCCD_S |
-| `0x040` | SCRUB (w) | 1: start the ECC init/scrub engine (online only) |
-| `0x048` / `0x050` | SCRUB_DONE / SCRUB_TOTAL (r) | bytes |
-| `0x058` / `0x060` | CE / UE (r) | corrected / uncorrected error counts |
-| `0x068` | ERR_ADDR (r) | physical address of the last error (8-byte word) |
-| `0x070` | ERR_INFO (r) | [0] CE, [1] UE, [11:8] slot |
-| `0x078` | INJECT (w) | physical address \| type: 1 single-bit (CE), 2 double-bit (UE); up to 8 pending |
-| `0x080` | ECC_CLEAR (w) | 1: clear CE, UE, ERR_ADDR, ERR_INFO |
-| `0x100 + 16n` | SLOT_CFG n | [0] enable, [1] ECC enable, [13:8] log2 size |
-| `0x108 + 16n` | SLOT_BASE n | physical base, 1 GiB aligned |
-| `0x200`–`0x218` | statistics (r) | row hits, closed-row activates, row conflicts, refresh stalls |
-
-**Bring-up** (the JESD79-5 order, much abbreviated): program TCK_PS, TIM0,
-TIM1 and the slots, then RESET → CKE → MRW (one or more) → ZQCAL → TRAIN →
-ONLINE, waiting for BUSY = 0 after each. A command in the wrong state sets
-ERR with code 1, and only RESET clears an error. The configuration registers
-are writable only before TRAIN succeeds. TRAIN checks the configuration
-against each enabled DIMM's SPD and fails with:
-
-| Code | Meaning |
-|---|---|
-| 1 | command out of sequence |
-| 2 | TCK_PS outside a DIMM's tCKAVGmin–tCKAVGmax |
-| 3 | a timing below a DIMM's minimum (CL must also be even and ≥ 20; tREFI ≤ 3.9 µs; tCCD_L ≥ max(8 nCK, 5 ns); tCCD_S ≥ 8) |
-| 4 | SLOT_CFG doesn't match the DIMM (absent, wrong size, ECC on a non-ECC DIMM) |
-| 5 | SLOT_BASE unaligned, outside the window, or overlapping |
-| 6 | no slot enabled |
-
-The mode-register values are recorded but not interpreted.
-
-**ECC.** With ECC enabled on a slot, every 8-byte word carries ECC. Power-on
-DRAM content is random and its ECC isn't valid, so:
-
-- a read of a word that was never written or scrubbed is an uncorrected
-  error (UE): it's counted and the random data is returned;
-- an aligned 8-byte (or larger) write seeds a word's ECC; a smaller write
-  into an unseeded word is a read-modify-write and also counts a UE (the word
-  is then seeded);
-- the **scrub engine** zeroes every ECC-enabled DIMM and seeds its ECC. It
-  is accelerated for simulation: 1 MiB per core cycle, so 8 GiB takes 8192
-  cycles (the real 8 GiB at DDR5-4800 is about 0.2 s). Storage is lazy, so
-  scrubbing allocates no host memory;
-- injected errors hit the next reads of that word. CE: the data is
-  corrected and the CE count increments. UE: two data bits come back flipped
-  and the UE count increments. Writing the word or scrubbing it removes the
-  injection.
-
-Each counted error is also reported to the core as a machine check (the
-`mce_*` pins); what the core does with it is the core version's business.
-A UE does not fault the access.
-
-### DDR5 timing model
-
-DRAM accesses get their bus acknowledge after a modeled latency. Every other
-device still answers in the same cycle. vsim performs the access when the
-core first presents it and holds `bus_ack` low for the latency. The core
-side of the bus is unchanged.
-
-- **Clocks.** One vsim cycle is 833 ps (a 1.2 GHz core). DRAM times are
-  `clocks × TCK_PS`. At DDR5-4800 the core:DRAM clock ratio is 1:2.
-- **Address map** inside a DIMM, low to high: 64-byte line, subchannel, bank
-  group, bank, column (4 KiB of row per subchannel), rank, row.
-- **Banks.** Open-page policy with per-bank state: open row, last ACT,
-  earliest next command. This follows DRAMSim2's per-bank model, simplified
-  to one outstanding request [Rosenfeld11].
-  - row hit: CAS only;
-  - closed row: ACT + tRCD;
-  - conflict: PRE (no earlier than ACT + tRAS) + tRP + ACT + tRCD;
-  - ACT-to-ACT in a bank: at least tRC;
-  - column commands: tCCD_L apart in a bank group, tCCD_S within a rank.
-- **Data.** Reads take CL, writes CWL = CL − 2, then BL16 = 8 clocks. The
-  controller adds 12 ns of queue/PHY time each way (on writes, only on the
-  way in: they're posted).
-- **Refresh.** All-bank refresh per rank every tREFI blocks the rank for
-  tRFC and closes its rows.
-
-On the default board a closed-row read takes about 73 cycles and a row hit
-about 53 (measured with vercpu's `tests/board/dram-timing.s`). `vsim -v` prints the controller
-statistics on exit.
-
-**References.** JEDEC JESD79-5, *DDR5 SDRAM* (organizations, timing
-parameters, refresh, BL16, init order). JEDEC JESD400-5, *DDR5 Serial
-Presence Detect (SPD) Contents* (SPD fields and CRC). [Rosenfeld11]
-P. Rosenfeld, E. Cooper-Balis, B. Jacob, "DRAMSim2: A Cycle Accurate Memory
-System Simulator", *IEEE Computer Architecture Letters* 10(1), 2011,
-doi:10.1109/L-CA.2011.4.
-
+The memory system is on the die (D-014): two DDR5 channels of two
+subchannels each, an RTL controller per subchannel, an init engine that
+plays AMD's PSP, and the fabric's map (DRAM below TOLM and hoisted above 4
+GiB). The DIMMs are pin-level C models (`sim/ddr5.c`) that check every
+command and timing against Micron's DDR5 core data sheet and count
+violations; their organisation, address map, SPD contents and ECC are in
+docs/ddr5.md and sim/ddr5.h, the controller's in docs/die-interface.md.
 
 ## Running
 
 ```
 cmake -S . -B build && cmake --build build -j
-build/sim/vsim -n -b test -e prog.elf          # headless, test board, program in SRAM
+build/sim/vsim -n -b test -e prog.elf          # headless, test board, program in DRAM
 build/sim/vsim -n -b test -t -e prog.elf 2>trace.txt   # per-instruction retire trace
 build/sim/vsim -b test flash.bin               # VGA window, serial on stdout
 ```
@@ -320,17 +158,17 @@ build/sim/vsim -b test flash.bin               # VGA window, serial on stdout
 | `-Y file.txt` | save the VGA text cells (25 lines) on exit |
 | `-T file` | keep the debug TPM's NV state in this file (loaded if it exists, saved on exit); default: the fixed debug state, fresh every run |
 | `-N file` | keep the NVRAM (firmware settings) in this file; default: erased every run |
-| `-l file@addr` | copy a raw image into memory before reset (repeatable): the test board's SRAM or the EEPROM range |
+| `-l file@addr` | copy a raw image into memory before reset (repeatable): DRAM (through the DIMMs' backdoor, at the address the fabric maps) or the EEPROM range |
 | `-e file.elf` | load an ELF64 x86-64 executable (repeatable): each `PT_LOAD` segment goes to its physical address (`p_paddr`), zero-filled past `p_filesz`, with the same limits as `-l`. The entry point isn't used: the core starts at the reset vector, so the program links a jump at `0xFFFF_FFF0` (ELF: *System V Application Binary Interface, AMD64 Architecture Processor Supplement*, and the generic gABI's program headers) |
 
-The server board's DRAM can't be preloaded: it isn't decoded until firmware
-has brought the memory controller online and programmed the DIMM bases.
+`-m slot:size` populates the DIMM slots (slot = channel × 2 + DIMM, 16G or
+32G); `-F 0|1` sets the die's `meminit_fast` strap (default 1).
 
 `vsim` exit status: 0 power off, 1 failure code from SYSCON, 2 shutdown
 (triple fault; RIP on stderr), 3 cycle limit, 4 setup error, 5 thermal
 shutdown (the PMC's critical trip), 6 halted (`HLT` for `-H` cycles with
 nothing to wake the core). A SYSCON reset (`0x7777`) or a `0xCF9` reset
-resets the core, the controller and the SMBus; DRAM contents are kept.
+resets the die (its init engine runs again); DRAM contents are kept.
 
 **Serial (COM1) always goes to stdout.** In window mode the one window is
 the **monitor**: only the VGA picture, always shown at 4:3 like a monitor
@@ -428,8 +266,9 @@ root port, and a programmed secondary bus number (the requester ID is
 `secondary bus << 8`). Every DMA request goes through the **IOMMU**
 (registers at `0xFE00_7000`; its programming model, page-table and
 device-context formats are vercpu's, `~/vercpu/docs/isa/21-iommu.md`, not
-Intel VT-d's yet) to physical memory: SRAM
-or DRAM, plus EEPROM reads. There are no caches, so DMA is coherent. An
+Intel VT-d's yet) and then over the I/O link into the die, whose fabric
+serves it from DRAM (D-014; anything else is an unsupported request).
+There are no caches, so DMA is coherent. An
 endpoint's **MSI** is a 4-byte DMA write of its MSI data to its MSI
 address, normally in the MSI window, through the same IOMMU.
 
