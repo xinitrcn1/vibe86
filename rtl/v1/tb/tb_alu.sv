@@ -94,7 +94,7 @@ module tb_alu;
     checks++;
     if (!de) begin errors++; $display("FAIL div by zero: no #DE"); end
 
-    if (errors) $fatal(1, "tb_alu: %0d of %0d checks failed", errors, checks);
+    if (errors != 0) $fatal(1, "tb_alu: %0d of %0d checks failed", errors, checks);
     $display("tb_alu: %0d checks passed", checks);
     $finish;
   end

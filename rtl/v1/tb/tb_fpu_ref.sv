@@ -95,8 +95,8 @@ module tb_fpu_ref;
         for (int rm = 0; rm < 4; rm++)
           for (int mode = 0; mode < 3; mode++)        // plain, DAZ, FTZ
             for (int i = 0; i < 400; i++)
-              one(dbl[0], op, rm, mode == 1, mode == 2);
-    if (errors) $fatal(1, "tb_fpu_ref: %0d of %0d checks differ from the host", errors, checks);
+              one(dbl[0], op, rm, int'(mode == 1), int'(mode == 2));
+    if (errors != 0) $fatal(1, "tb_fpu_ref: %0d of %0d checks differ from the host", errors, checks);
     $display("tb_fpu_ref: %0d checks agree with the host", checks);
     $finish;
   end

@@ -49,7 +49,7 @@ module v1_core
 
   // decode
   logic [3:0]  idx;             // bytes consumed
-  logic        p66, p67, plock;
+  logic        p66, p67;        // (LOCK, F0h, is accepted and ignored: v1 is one core)
   logic [1:0]  prep;            // 0 none, 1 F3, 2 F2
   logic [2:0]  pseg;            // segment override: 0-5, 7 none
   logic        rex_v;
@@ -62,7 +62,10 @@ module v1_core
   logic [2:0]  disp_n, disp_i;
   logic [63:0] imm_r, imm2_r;
   logic [3:0]  imm_n, imm_i;
+  // modrm and cls are used from the table lookup at decode, not from this latch
+  /* verilator lint_off UNUSEDSIGNAL */
   dattr_t      attr;
+  /* verilator lint_on UNUSEDSIGNAL */
   logic [127:0] ibytes;         // the instruction's bytes (trace)
   logic [3:0]  dreg, drm;       // decoded register numbers
   logic [63:0] ea;
@@ -81,8 +84,6 @@ module v1_core
   logic        in_delivery, in_trap, trap_fetch;
   logic [7:0]  ucount;
   logic        halt_req;
-  logic        intr_pend;
-  logic [7:0]  intr_vec;
   logic        nmi_pend;
   logic        smi_pend;        // SMI# latched until taken (outside SMM; AMD APM Vol. 2 10.3)
   wire         in_smm = sp[SP_SMM[7:0]][0];
@@ -124,10 +125,9 @@ module v1_core
   function automatic logic [7:0] segi(input int s, input int part);
     return 8'(64 + 4 * s + part);
   endfunction
-  wire [63:0] cs_attr = sp[segi(1, 3)];
-  wire [63:0] ss_attr = sp[segi(2, 3)];
-  wire cs_l = cs_attr[9];
-  wire cs_d = cs_attr[10];
+  // descriptor-cache attributes {G, D/B, L, AVL, P, DPL, S, Type} (bits 11:0)
+  wire cs_l = sp[segi(1, 3)][9];
+  wire cs_d = sp[segi(1, 3)][10];
   wire rf_vm = w_flags[17];
   logic [1:0] mode;   // 0 real, 1 16-bit protected / v86, 2 32-bit, 3 64-bit
   always_comb begin
@@ -136,7 +136,7 @@ module v1_core
     else if (rf_vm || !cs_d) mode = 2'd1;
     else mode = 2'd2;
   end
-  wire ssz = (mode != 0) && ss_attr[10];
+  wire ssz = (mode != 0) && sp[segi(2, 3)][10];
   assign bus_smm = sp[SP_SMM[7:0]][0];   // SMIACT#
   wire [1:0] cpl = (mode == 0) ? 2'd0 : sp[SP_CPL[7:0]][1:0];
 
@@ -152,7 +152,10 @@ module v1_core
   endfunction
 
   // x86 condition codes (Intel SDM Vol. 1, appendix B)
+  // RFLAGS is passed whole; a condition reads the arithmetic flags
+  /* verilator lint_off UNUSEDSIGNAL */
   function automatic logic cond(input logic [3:0] k, input logic [63:0] f);
+  /* verilator lint_on UNUSEDSIGNAL */
     logic r;
     case (k[3:1])
       3'd0: r = f[11];
@@ -169,24 +172,28 @@ module v1_core
 
   // register reads with x86 partial-register rules
   function automatic logic [63:0] gpr_rd(input logic [3:0] i, input logic hi8);
-    return hi8 ? {56'b0, w_gpr[i[1:0]][15:8]} : w_gpr[i];
+    return hi8 ? {56'b0, w_gpr[{2'b0, i[1:0]}][15:8]} : w_gpr[i];
   endfunction
 
+  // micro-op fields v1 doesn't execute yet (the vector operand fields)
+  /* verilator lint_off UNUSEDSIGNAL */
   uop_t u;
-  assign u = uop_t'(UROM[upc]);
+  /* verilator lint_on UNUSEDSIGNAL */
+  // the ROM index: UROM_N entries; upc never points past them
+  assign u = uop_t'(UROM[upc[$clog2(UROM_N)-1:0]]);
 
   wire reg_hi8 = (u.sz == 2'd0) && !rex_v && dreg[3:2] == 2'b01;
   wire rm_hi8  = (u.sz == 2'd0) && !rex_v && drm[3:2] == 2'b01;
 
   function automatic logic [63:0] rd(input logic [6:0] s);
     if (s < 7'd16) return w_gpr[s[3:0]];
-    if (s < 7'd20) return {56'b0, w_gpr[s[1:0]][15:8]};
+    if (s < 7'd20) return {56'b0, w_gpr[{2'b0, s[1:0]}][15:8]};
     if (s < S_T32) return tb[udepth][5'(s - S_T0)];
     if (s <= S_T63) return tt[5'(s - S_T32)];
     if (s >= S_A0 && s <= S_A3) return ua[2'(s - S_A0)];
     case (s)
-      S_REG:   return reg_hi8 ? {56'b0, w_gpr[dreg[1:0]][15:8]} : w_gpr[dreg];
-      S_RM:    return rm_hi8 ? {56'b0, w_gpr[drm[1:0]][15:8]} : w_gpr[drm];
+      S_REG:   return reg_hi8 ? {56'b0, w_gpr[{2'b0, dreg[1:0]}][15:8]} : w_gpr[dreg];
+      S_RM:    return rm_hi8 ? {56'b0, w_gpr[{2'b0, drm[1:0]}][15:8]} : w_gpr[drm];
       S_IMM:   return imm_r;
       S_IMM2:  return imm2_r;
       S_EA:    return ea;
@@ -241,7 +248,10 @@ module v1_core
   function automatic segchk_t seg_check(input logic [3:0] s, input logic [63:0] off,
                                         input int unsigned n, input logic wr);
     segchk_t r;
-    logic [63:0] base, limit, attr;
+    // the checks read P, S, type and D/B; AVL, L, DPL and A are not limit/type checks
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic [63:0] base, limit, sattr;
+    /* verilator lint_on UNUSEDSIGNAL */
     logic [63:0] last;
     r = '0;
     r.ss = (s == 4'd2);
@@ -251,7 +261,7 @@ module v1_core
     end
     base = sp[segi(int'(s), 1)];
     limit = sp[segi(int'(s), 2)];
-    attr = sp[segi(int'(s), 3)];
+    sattr = sp[segi(int'(s), 3)];
     if (mode == 2'd3) begin
       r.la = (s == 4'd4 || s == 4'd5) ? base + off : off;
       // canonical: bits 63:47 (63:56 with 5-level paging) all equal
@@ -267,13 +277,13 @@ module v1_core
       return r;
     end
     if (mode != 2'd0) begin
-      if (!attr[7]) r.fault = 1'b1;                       // not present / null selector
-      else if (attr[4] && attr[3]) begin                   // code segment
-        if (wr || !attr[1]) r.fault = 1'b1;               // not writable; execute-only
-      end else if (attr[4] && wr && !attr[1]) r.fault = 1'b1;   // read-only data
+      if (!sattr[7]) r.fault = 1'b1;                       // not present / null selector
+      else if (sattr[4] && sattr[3]) begin                   // code segment
+        if (wr || !sattr[1]) r.fault = 1'b1;               // not writable; execute-only
+      end else if (sattr[4] && wr && !sattr[1]) r.fault = 1'b1;   // read-only data
     end
-    if (attr[4] && !attr[3] && attr[2]) begin              // expand-down data
-      if (off <= limit || last > (attr[10] ? 64'hFFFF_FFFF : 64'hFFFF)) r.fault = 1'b1;
+    if (sattr[4] && !sattr[3] && sattr[2]) begin              // expand-down data
+      if (off <= limit || last > (sattr[10] ? 64'hFFFF_FFFF : 64'hFFFF)) r.fault = 1'b1;
     end else if (last > limit) r.fault = 1'b1;
     return r;
   endfunction
@@ -537,7 +547,7 @@ module v1_core
       logic hi8;
       i = (s == S_REG) ? dreg : (s == S_RM) ? drm : s[3:0];
       hi8 = (s == S_REG) ? reg_hi8 : (s == S_RM) ? rm_hi8 : 1'b0;
-      if (hi8) w_gpr[i[1:0]][15:8] <= v[7:0];
+      if (hi8) w_gpr[{2'b0, i[1:0]}][15:8] <= v[7:0];
       else case (sz)
         2'd0: w_gpr[i][7:0] <= v[7:0];
         2'd1: w_gpr[i][15:0] <= v[15:0];
@@ -545,7 +555,7 @@ module v1_core
         default: w_gpr[i] <= v;
       endcase
     end else if (s < 7'd20) begin
-      w_gpr[s[1:0]][15:8] <= v[7:0];
+      w_gpr[{2'b0, s[1:0]}][15:8] <= v[7:0];
     end else if (s < S_T32) begin
       tb[udepth][5'(s - S_T0)] <= v & m;
     end else if (s <= S_T63) begin
@@ -617,7 +627,6 @@ module v1_core
     in_delivery <= 1'b0;
     in_trap <= 1'b0;
     halt_req <= 1'b0;
-    intr_pend <= 1'b0;
     nmi_pend <= 1'b0;
     smi_pend <= 1'b0;
     shadow_set <= 1'b0;
@@ -628,7 +637,7 @@ module v1_core
 
   task automatic start_decode();
     idx <= '0;
-    p66 <= 1'b0; p67 <= 1'b0; plock <= 1'b0; prep <= 2'd0; pseg <= 3'd7;
+    p66 <= 1'b0; p67 <= 1'b0; prep <= 2'd0; pseg <= 3'd7;
     rex_v <= 1'b0; rex <= '0;
     dmap <= '0;
     has_modrm <= 1'b0; has_sib <= 1'b0;
@@ -702,7 +711,7 @@ module v1_core
                   case (b)
                     8'h66: p66 <= 1'b1;
                     8'h67: p67 <= 1'b1;
-                    8'hF0: plock <= 1'b1;
+                    8'hF0: ;
                     8'hF2: prep <= 2'd2;
                     8'hF3: prep <= 2'd1;
                     8'h26: pseg <= 3'd0;
@@ -810,7 +819,7 @@ module v1_core
                   v = imm_r | (64'(b) << {imm_i, 3'b0});
                   if (attr.imm == 4'd8 && imm_i + 2 >= imm_n) begin
                     // the far pointer's selector
-                    imm2_r <= imm2_r | (64'(b) << {imm_i + 2 - imm_n, 3'b0});
+                    imm2_r <= imm2_r | (64'(b) << {4'(imm_i + 4'd2 - imm_n), 3'b0});
                     v = imm_r;
                   end else if (attr.imm == 4'd8) begin
                     // the offset, zero-extended
@@ -1124,7 +1133,7 @@ module v1_core
                   hold = 1'b1;
                 end else begin
                   wr(u.dst, u.sz, alu_res);
-                  rem_r <= alu_hi;
+                  if (alu_rem_we) rem_r <= alu_hi;
                 end
               end
               default: begin

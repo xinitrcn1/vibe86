@@ -9,10 +9,11 @@ function(v1_testbench name)
     list(APPEND csrc ${CMAKE_CURRENT_SOURCE_DIR}/${c})
   endforeach()
   add_custom_command(OUTPUT ${out}/V${name}
-    COMMAND verilator --binary --timing -Wno-fatal -Wno-WIDTH -Wno-UNUSED -j 0
+    COMMAND verilator --binary --timing -j 0 ${CMAKE_CURRENT_SOURCE_DIR}/../v1.vlt
             -I${VIBE86_COMMON_DIR} --top-module ${name} --Mdir ${out} -o V${name}
             ${V1_RTL} ${CMAKE_CURRENT_SOURCE_DIR}/${name}.sv ${csrc}
-    DEPENDS ${V1_RTL} ${CMAKE_CURRENT_SOURCE_DIR}/${name}.sv ${csrc} ucode_v1
+    DEPENDS ${V1_RTL} ${CMAKE_CURRENT_SOURCE_DIR}/${name}.sv ${csrc} ${CMAKE_CURRENT_SOURCE_DIR}/../v1.vlt
+            ucode_v1
     COMMENT "testbench ${name}"
     VERBATIM)
   add_custom_target(tb-${name} ALL DEPENDS ${out}/V${name})

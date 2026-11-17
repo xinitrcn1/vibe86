@@ -17,6 +17,10 @@ module tb_fpu;
   // flag bits
   localparam logic [5:0] IE = 6'h01, DE = 6'h02, ZE = 6'h04, OE = 6'h08, UE = 6'h10, PE = 6'h20;
 
+  // The test vectors give f16/f32/f64 operands and results as their own
+  // width; the datapath takes them zero-extended in 80 bits (an f80 holds
+  // the narrower formats in its low bits), which is what the widening does.
+  /* verilator lint_off WIDTHEXPAND */
   initial begin
     fres_t r;
     logic [5:0] x;
@@ -84,8 +88,9 @@ module tb_fpu;
     c = fp_cmp(32'h7fc00000, 32'h40000000, FMT_F32, 5'd1, 0, x);   // LT_OS signals
     checks++;
     if (c || x != IE) begin errors++; $display("FAIL cmp lt qnan"); end
-    if (errors) $fatal(1, "tb_fpu: %0d of %0d checks failed", errors, checks);
+    if (errors != 0) $fatal(1, "tb_fpu: %0d of %0d checks failed", errors, checks);
     $display("tb_fpu: %0d checks passed", checks);
     $finish;
   end
+  /* verilator lint_on WIDTHEXPAND */
 endmodule

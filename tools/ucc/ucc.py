@@ -441,6 +441,8 @@ def main():
            "(do not edit)",
            f"// {len(words)} micro-ops, {len(compiled)} instruction forms",
            f"package {TARGET}_ucode_pkg;",
+           "  // tables: a core uses only some of these constants (Verilator -Wall: UNUSEDPARAM)",
+           "  /* verilator lint_off UNUSEDPARAM */",
            f"  import {TARGET}_uop_pkg::*;",
            f"  localparam int UADDR_W = {U.UADDR_W};",
            f"  localparam int UROM_N = {len(words)};",
@@ -462,6 +464,7 @@ def main():
     out.append("  };")
     out.append("")
     out += ["  " + x for x in sv_tables(compiled, image, cfg_of)]
+    out.append("  /* verilator lint_on UNUSEDPARAM */")
     out.append("endpackage")
     with open(args.out, "w") as fo:
         fo.write("\n".join(out) + "\n")

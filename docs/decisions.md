@@ -90,7 +90,7 @@ the compiled specification.
 ## D-009 (revised): v1 has a floating-point datapath in RTL
 
 ~~v1's floating-point micro-ops are computed by Berkeley SoftFloat through
-DPI-C.~~ Revised: v1 computes floating point in RTL (`rtl/v1/v1_fpu.sv`),
+DPI-C.~~ Revised: v1 computes floating point in RTL (`rtl/v1/v1_fp_pkg.sv`),
 so the microcode stays one micro-op per FP operation instead of emulating
 IEEE 754 in micro-ops. The unit unpacks f16, bf16, f32, f64 and x87's f80
 into a common wide format, computes add, multiply, fused multiply-add,
